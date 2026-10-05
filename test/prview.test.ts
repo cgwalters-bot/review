@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import type { DraftComment, ReviewAction } from "../src/github/forge.ts";
 import type { GuideState } from "../src/github/guide.ts";
 import type { PrDetail } from "../src/github/prs.ts";
+import { keyCommand } from "../src/github/keys.ts";
 import { buildTree, canReview, hotspotsFor, movedFrom, type PrViewHandlers, prView, rangeEnds, type ReviewAskInfo, unseenNote } from "../src/github/prview.ts";
 import type { Entry } from "../src/github/queue.ts";
 import type { PrWait } from "../src/github/waiting.ts";
@@ -183,6 +184,32 @@ describe("prView", () => {
     assert.equal(focused(), " c");
     p.command("next-file");
     assert.ok(p.el.querySelectorAll("details.file")[1]?.classList.contains("sel"));
+  });
+
+  it("n/p navigate files at the boundaries and ignore keys typed into a composer", () => {
+    const p = pane(detail());
+    const press = (key: string, editing = false) => {
+      const cmd = keyCommand({ key, editing, ctrlKey: false, metaKey: false, altKey: false }, "pr");
+      if (cmd && cmd !== "blur") assert.equal(p.command(cmd), true);
+    };
+    const selected = () => p.el.querySelector("details.file.sel")?.getAttribute("data-path");
+    try {
+      press("p");
+      assert.equal(selected(), `src/${EVIL}.rs`);
+      press("n");
+      assert.equal(selected(), "big.bin");
+      press("n");
+      assert.equal(selected(), "big.bin");
+      press("p");
+      assert.equal(selected(), `src/${EVIL}.rs`);
+      press("j");
+      press("c");
+      assert.ok(p.el.querySelector("tr.composer textarea"));
+      press("n", true);
+      assert.equal(selected(), `src/${EVIL}.rs`);
+    } finally {
+      p.dispose();
+    }
   });
 
   it("marks files viewed, folding them, and counts them", () => {
