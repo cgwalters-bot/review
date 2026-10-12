@@ -60,6 +60,11 @@ describe("operator dashboard", () => {
     assert.match(text(home.slots.weekly), /Claude.*42\.0% used \/ 49\.2% allowed/);
     assert.match(text(home.slots.weekly), /OpenAI.*80\.0% used \/ 30\.1% allowed.*over pace.*held/);
     assert.match(text(home.slots.weekly), /Publication time unknown/);
+    assert.match(text(home.slots.weekly.querySelector(".pool-sum.mistral")), /^Mistral 2,500 requests · 1,234,567 tokens since the broker started$/);
+    assert.equal(home.slots.weekly.querySelector(".mistral [role=progressbar]"), null, "counters have no bar");
+    fillUsage(home, { state: "ok", usage: Object.fromEntries(Object.entries(usage).filter(([k]) => k !== "mistral")) as typeof usage }, undefined, Date.parse("2026-10-09T14:00:00Z"));
+    assert.equal(home.slots.weekly.querySelector(".mistral"), null, "an older broker's snapshot shows no Mistral row");
+    fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-09T14:00:00Z"));
     assert.doesNotMatch(text(home.slots.usage), /Invalid Date|not reported yet/);
     assert.equal(home.sections.needs.details.open, true);
     assert.equal(home.slots.weekly.nextElementSibling, home.slots.status);

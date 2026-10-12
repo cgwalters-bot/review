@@ -56,6 +56,12 @@ export interface UsagePool {
   hold: boolean;
 }
 
+/** Mistral has no plan window, so no percent or pace: only the broker's counters since it started. */
+export interface MistralUsage {
+  requests: number;
+  tokens: number;
+}
+
 export interface Usage {
   updatedAt: string;
   /** When the status line last reported the percents. */
@@ -67,6 +73,7 @@ export interface Usage {
   workers: { name: string; tokens: Tokens }[];
   commentUrl?: string;
   pools?: Partial<Record<"claude" | "openai", UsagePool>>;
+  mistral?: MistralUsage;
 }
 
 /** What the ops view knows of the usage: the snapshot, none published yet, or a repository this token can't read. */
@@ -118,6 +125,13 @@ function parsePool(raw: unknown): UsagePool | undefined {
   return { usedPercent, allowedPercent, resetsAt, observedAt, hold: raw.hold };
 }
 
+function parseMistral(raw: unknown): MistralUsage | undefined {
+  if (!isObject(raw)) return undefined;
+  const requests = count(raw.requests, MAX_TOKENS);
+  const tokens = count(raw.tokens, MAX_TOKENS);
+  return requests === undefined || tokens === undefined ? undefined : { requests, tokens };
+}
+
 /** The usage in a comment's body, or undefined if it isn't one. Malformed windows and workers are left out. */
 export function parseUsage(body: string | null | undefined): Usage | undefined {
   if (!body?.startsWith(USAGE_MARKER)) return undefined;
@@ -146,6 +160,8 @@ export function parseUsage(body: string | null | undefined): Usage | undefined {
   // A pool-only publication need not carry a publication timestamp.
   const usage: Usage = { updatedAt: updatedAt ?? "", windows, workers };
   if (Object.keys(pools).length) usage.pools = pools;
+  const mistral = parseMistral(raw.mistral);
+  if (mistral) usage.mistral = mistral;
   const observedAt = time(raw.observed_at);
   if (observedAt) usage.observedAt = observedAt;
   const coordinatorTokens = parseTokens(raw.coordinator_tokens);

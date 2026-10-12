@@ -22,7 +22,7 @@ import {
   workGroups,
   type WorkGroup,
 } from "./ops.ts";
-import { type Tokens, tokenTotal, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
+import { type MistralUsage, type Tokens, tokenTotal, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
 import { age, pill, time } from "./view.ts";
 
 const SECOND = 1000;
@@ -435,6 +435,12 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
   );
 }
 
+/** Mistral's row: counters only, since the broker started; no bar, as there is no plan window to measure against. */
+function mistralRow(m: MistralUsage): HTMLElement {
+  const n = (v: number) => v.toLocaleString("en-US");
+  return h("div", { class: "pool-sum mistral" }, h("span", { class: "pool-name" }, "Mistral"), " ", h("span", { class: "pool-label" }, `${n(m.requests)} requests · ${n(m.tokens)} tokens since the broker started`));
+}
+
 /** Weekly pace uses the subscription's seven days, not the transcript accounting start. */
 export function weeklyUsage(data: UsageData | undefined, now: number): HTMLElement {
   const sec = h("div", {}, h("h2", {}, "Weekly subscription usage"));
@@ -449,6 +455,7 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
         "div",
         { class: "pools" },
         ...POOLS.map(([name, label]) => poolRow(name, label, usage.pools?.[name], now)),
+        ...(usage.mistral ? [mistralRow(usage.mistral)] : []),
         h("p", { class: "fine" }, usage.updatedAt ? `Published ${time(usage.updatedAt)}. ` : "Publication time unknown. ", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""),
       ),
     );

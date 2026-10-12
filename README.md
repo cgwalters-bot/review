@@ -162,7 +162,9 @@ reads Claude and OpenAI from `bot-usage/v1`'s `pools`, one compact row each: a
 thin bar of the percent used with a tick where the pace allows, coloured as a
 warning when over pace or held, and a short label that also says held or
 stale. Each row expands to the exact percentages, reset time and when it was
-observed. Older publications retain the Claude window display.
+observed. When the snapshot has a `mistral` object (the broker's requests and
+tokens since it started; it has no plan window, so no bar or pace) a plain
+counter row follows them. Older publications retain the Claude window display.
 **Status** comes right after usage, then the open questions, with Decisions open on entry,
 ranked by Priority, showing what they block and their inline answer forms.
 Each question leads with what it asks, then one small line (priority, the

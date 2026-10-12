@@ -45,6 +45,14 @@ describe("parseUsage", () => {
     }
   });
 
+  it("reads Mistral's counters when well formed, and shows nothing otherwise", () => {
+    const raw = fixture<{ mistral?: unknown }>("usage-pools.json");
+    assert.deepEqual(parseUsage(body(raw))?.mistral, { requests: 2500, tokens: 1234567 });
+    for (const bad of [undefined, null, "x", {}, { requests: 2 }, { requests: -1, tokens: 5 }, { requests: 2, tokens: "5" }]) {
+      assert.equal(parseUsage(body({ ...raw, mistral: bad }))?.mistral, undefined, JSON.stringify(bad));
+    }
+  });
+
   // (edit, windows kept, whether the first has a percent, workers kept)
   type Json = ReturnType<typeof valid>;
   const cases: [string, (j: Json) => unknown, number | undefined, boolean?, number?][] = [

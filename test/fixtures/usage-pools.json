@@ -29,5 +29,6 @@
       "reason": "pace",
       "next_dispatch_at": "2026-10-13T00:57:18.315Z"
     }
-  }
+  },
+  "mistral": { "requests": 2500, "tokens": 1234567 }
 }
