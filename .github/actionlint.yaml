@@ -1,0 +1,5 @@
+# actionlint 1.7.12, the version the shared check pins, does not know
+# ubuntu-26.04 yet and calls it unknown. Drop this once that pin knows it.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

@@ -1,0 +1,9 @@
+# The forge's own actions follow a ref (main) rather than a commit, like
+# the ci job's cgwalters-forge/actions/lint@main; everyone else's stay
+# pinned by commit.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "cgwalters-forge/*": ref-pin
+        "*": hash-pin

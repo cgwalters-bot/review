@@ -15,11 +15,15 @@ concurrency:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The forge's shared workflow check (actionlint, zizmor, no
+      # ubuntu-latest), which `just lint` runs locally. A step here rather
+      # than a job of its own, so that it gates merges like the rest.
+      - uses: cgwalters-forge/actions/lint@main
       # Until the app lands, main has no package.json and nothing to check.
       - if: hashFiles('package-lock.json') != ''
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
