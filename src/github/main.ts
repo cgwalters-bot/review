@@ -43,7 +43,7 @@ import { loadSeen, loadUrgentOnly, saveSeen, saveUrgentOnly, type Snapshot, snap
 import { cachedLabel, type CacheSession, forgetCache, openCache } from "./cache.ts";
 import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from "./capture.ts";
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
-import { chatPanel } from "./chat.ts";
+import { chatPanel, type ChatPanel } from "./chat.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import {
   CLASSIC_SCOPES,
@@ -205,6 +205,7 @@ interface State {
   pane?: PrPane;
   /** The capture bar, shown to OPERATOR only. */
   capture?: CaptureBar;
+  chat?: ChatPanel | undefined;
   help: boolean;
   /** The location hash last routed to. */
   hash: string;
@@ -1810,6 +1811,7 @@ type SignInReason = "none" | "rejected";
 function rejected(state: State): Promise<void> {
   if (!state.rejecting) {
     state.closed = true;
+    state.chat?.dispose();
     viewClosed = true;
     state.poller.close();
     clearInterval(state.metaTicker);
@@ -1915,6 +1917,7 @@ async function start(source: TokenSource): Promise<void> {
   if (state.login === OPERATOR) showCapture(state);
   byId("signout").onclick = () => {
     state.closed = true;
+    state.chat?.dispose();
     state.poller.close();
     clearInterval(state.metaTicker);
     forgetDraft(captureStore());
@@ -2007,7 +2010,9 @@ function showCapture(state: State): void {
   slot.replaceChildren(state.capture.el);
   slot.hidden = false;
   state.capture.mounted();
-  const chat = chatPanel();
+  const chat = chatPanel(state.gh);
+  state.chat?.dispose();
+  state.chat = chat;
   if (chat) {
     const chatSlot = byId("chat");
     chat.mount(chatSlot);

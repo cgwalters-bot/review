@@ -674,3 +674,8 @@ details.sub-fold > div { padding-top: 8px; }
 .focus-epic progress { width: min(100%, 24rem); }
 .watching { margin-top: 1rem; }
 .watching-item { opacity: .7; }
+/* Chat stays within the viewport, including long untrusted tool output. */
+.chat-panel { min-width: 0; max-width: 100%; }
+.chat-panel select, .chat-panel textarea { box-sizing: border-box; width: 100%; min-width: 0; }
+.chat-log { max-height: 50vh; overflow: auto; overflow-wrap: anywhere; }
+.chat-log p, .chat-log pre { white-space: pre-wrap; overflow-wrap: anywhere; }

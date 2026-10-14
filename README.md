@@ -335,7 +335,23 @@ something notable happens to an item (`bot-board set --news` in
 homegit); a new line shows highlighted under the item.
 
 **The "Ask anything" box** atop the page files a note onto the board
-(below). Its `#chat` slot is where a future coordinator chat view attaches (`chat.ts`).
+(below). Its `#chat` slot offers an opt-in ACP session chat. Configure
+`src/github/chat-config.json` on the default branch with `tailnetDomain`
+(a DNS name ending in `.ts.net`) and `sources`: each has `repo`, `workflow`,
+`issue` (the endpoint publication issue), and `publisher` (the trusted login).
+The empty configuration disables chat and leaves the CSP unchanged. Enabling
+it adds only `wss://*.TAILNET.ts.net` to the built page's CSP; the operator
+must approve that change. No tailnet infrastructure is changed here.
+
+Find sessions reads at most 100 in-progress runs and the final page of up to 100 publication comments
+per source, without polling. A publisher's comment must contain the exact
+Actions run URL and a `wss` endpoint in the configured tailnet. Older
+publications outside that window are not shown. Connect is explicit and uses
+the device's tailnet identity, never the GitHub token. The bridge must allow
+the page's origin. Disconnecting ends the run; there is no reconnect or
+session-start operation. Messages are plain text, tools start collapsed,
+and the transcript display is bounded. Live runner/browser testing and
+session writes are not part of this pane.
 
 **Controller**, first in the ops detail, says whether shutting the
 interactive session down would stop anything. Its hosted pieces are the
