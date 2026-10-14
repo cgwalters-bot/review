@@ -27,6 +27,11 @@ const MAX_WORKERS = 32;
 const MAX_TOKENS = 1e15;
 /** A percent used can pass 100 a little, when usage runs past the cap. */
 const MAX_PERCENT = 1000;
+/** Dollars, of an allowance, a spend or a price per million tokens, past this are nonsense. */
+const MAX_USD = 1e9;
+/** Mistral models priced or counted; more are dropped. */
+const MAX_MODELS = 32;
+const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 
 export interface Tokens {
   input: number;
@@ -56,10 +61,28 @@ export interface UsagePool {
   hold: boolean;
 }
 
-/** Mistral has no plan window, so no percent or pace: only the broker's counters since it started. */
+/**
+ * Spend against Mistral's monthly allowance. The allowance, its reset and
+ * the prices are the publisher's configuration, carried in the snapshot,
+ * so none of them is a constant here.
+ */
+export interface MistralAllowance {
+  limitUsd: number;
+  resetsAt: string;
+  spentUsd: number;
+  /** Worked out from tokens and the published prices, not Mistral's own figure. */
+  estimated: boolean;
+  /** Models with tokens but no price, left out of an estimate. */
+  unpriced: string[];
+  /** An estimate that left out any entry (unpriced, malformed or past the cap): the spend is at least this. */
+  lowerBound: boolean;
+}
+
+/** Mistral has no plan window, so no percent or pace: the broker's counters since it started, and the allowance when one is configured. */
 export interface MistralUsage {
   requests: number;
   tokens: number;
+  allowance?: MistralAllowance;
 }
 
 export interface Usage {
@@ -125,11 +148,57 @@ function parsePool(raw: unknown): UsagePool | undefined {
   return { usedPercent, allowedPercent, resetsAt, observedAt, hold: raw.hold };
 }
 
+/**
+ * The allowance: limit_usd and resets_at, with spent_usd (Mistral's own
+ * figure, preferred) or, failing that, this period's tokens per model
+ * ({model, input_tokens, output_tokens}) and prices per million tokens
+ * ({model: {input, output}}) to estimate it from. Undefined, and the
+ * counters shown instead, when it is malformed or can't give a spend.
+ */
+export function parseAllowance(raw: unknown): MistralAllowance | undefined {
+  if (!isObject(raw)) return undefined;
+  const limitUsd = count(raw.limit_usd, MAX_USD);
+  const resetsAt = time(raw.resets_at);
+  if (!limitUsd || !resetsAt) return undefined;
+  const spent = count(raw.spent_usd, MAX_USD);
+  if (spent !== undefined) return { limitUsd, resetsAt, spentUsd: spent, estimated: false, unpriced: [], lowerBound: false };
+  if (!Array.isArray(raw.models) || !isObject(raw.prices)) return undefined;
+  const prices = raw.prices;
+  let spentUsd = 0;
+  let priced = 0;
+  const unpriced: string[] = [];
+  let dropped = Math.max(0, raw.models.length - MAX_MODELS);
+  for (const m of raw.models.slice(0, MAX_MODELS)) {
+    const model = isObject(m) ? str(m.model, MODEL_RE) : undefined;
+    const input = isObject(m) ? count(m.input_tokens, MAX_TOKENS) : undefined;
+    const output = isObject(m) ? count(m.output_tokens, MAX_TOKENS) : undefined;
+    if (!model || input === undefined || output === undefined) {
+      dropped++;
+      continue;
+    }
+    // Own keys only: a model named "constructor" must not find a price on Object's prototype.
+    const price = Object.hasOwn(prices, model) ? prices[model] : undefined;
+    const inUsd = isObject(price) ? count(price.input, MAX_USD) : undefined;
+    const outUsd = isObject(price) ? count(price.output, MAX_USD) : undefined;
+    if (inUsd === undefined || outUsd === undefined) {
+      if (input + output > 0) unpriced.push(model);
+      continue;
+    }
+    spentUsd += (input * inUsd + output * outUsd) / 1e6;
+    priced++;
+  }
+  // Tokens with nothing priced is no estimate at all, not a spend of $0; no tokens yet this month is $0.
+  if (!priced && (unpriced.length || dropped)) return undefined;
+  return { limitUsd, resetsAt, spentUsd, estimated: true, unpriced, lowerBound: unpriced.length > 0 || dropped > 0 };
+}
+
 function parseMistral(raw: unknown): MistralUsage | undefined {
   if (!isObject(raw)) return undefined;
   const requests = count(raw.requests, MAX_TOKENS);
   const tokens = count(raw.tokens, MAX_TOKENS);
-  return requests === undefined || tokens === undefined ? undefined : { requests, tokens };
+  if (requests === undefined || tokens === undefined) return undefined;
+  const allowance = parseAllowance(raw.allowance);
+  return allowance ? { requests, tokens, allowance } : { requests, tokens };
 }
 
 /** The usage in a comment's body, or undefined if it isn't one. Malformed windows and workers are left out. */
