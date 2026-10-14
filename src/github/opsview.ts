@@ -435,10 +435,68 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
   );
 }
 
-/** Mistral's row: counters only, since the broker started; no bar, as there is no plan window to measure against. */
-function mistralRow(m: MistralUsage): HTMLElement {
+const usd = (v: number) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+/** The time to a monthly reset: days while more than one is left, or that it passed. */
+function monthLeft(iso: string, now: number): string {
+  const t = Date.parse(iso);
+  const days = Math.floor((t - now) / (24 * HOUR));
+  return t <= now ? "reset passed" : `resets in ${days > 1 ? `${days} days` : duration(t - now, false)}`;
+}
+
+/** A monthly reset: its date and the time to it. The date is UTC's, as billing months are: a reset at midnight UTC is on the 1st, not the 31st before it. */
+function monthResetText(iso: string, now: number): string {
+  const date = `${new Date(Date.parse(iso)).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })} UTC`;
+  return Date.parse(iso) <= now ? `reset ${date}; the spend is from before` : `${monthLeft(iso, now)}, on ${date}`;
+}
+
+/**
+ * Mistral's row: with an allowance, a bar of the month's spend against
+ * it (no pace tick: the broker reports no window start), marked as an
+ * estimate when it was worked out from tokens and prices; without one,
+ * the broker's counters since it started.
+ */
+function mistralRow(m: MistralUsage, now: number): HTMLElement {
   const n = (v: number) => v.toLocaleString("en-US");
-  return h("div", { class: "pool-sum mistral" }, h("span", { class: "pool-name" }, "Mistral"), " ", h("span", { class: "pool-label" }, `${n(m.requests)} requests · ${n(m.tokens)} tokens since the broker started`));
+  const counters = `${n(m.requests)} requests · ${n(m.tokens)} tokens since the broker started`;
+  const a = m.allowance;
+  if (!a) return h("div", { class: "pool-sum mistral" }, h("span", { class: "pool-name" }, "Mistral"), " ", h("span", { class: "pool-label" }, counters));
+  const pct = (100 * a.spentUsd) / a.limitUsd;
+  // An estimate that left models out is a lower bound.
+  const spent = `${a.estimated ? (a.lowerBound ? "≥ ~" : "~") : ""}${usd(a.spentUsd)}`;
+  const est = a.estimated ? " (estimate)" : "";
+  const clamp = (v: number) => String(Math.max(0, Math.min(POOL_BAR.width, v)));
+  const y = String((POOL_BAR.height - POOL_BAR.track) / 2);
+  const track = { x: "0", y, height: String(POOL_BAR.track), rx: String(POOL_BAR.track / 2) };
+  const bar = svg(
+    "svg",
+    {
+      class: "bar",
+      viewBox: `0 0 ${POOL_BAR.width} ${POOL_BAR.height}`,
+      preserveAspectRatio: "none",
+      role: "progressbar",
+      "aria-label": "Mistral monthly allowance",
+      "aria-valuemin": "0",
+      "aria-valuemax": "100",
+      "aria-valuenow": clamp(pct),
+      "aria-valuetext": `${spent} of ${usd(a.limitUsd)} spent${est}`,
+    },
+    svg("rect", { class: "track", ...track, width: String(POOL_BAR.width) }),
+    svg("rect", { class: "fill", ...track, width: clamp(pct) }),
+  );
+  return h(
+    "details",
+    { class: `pool mistral${pct >= 100 ? " over" : ""}`, [POOL_ATTR]: "mistral" },
+    // Short, like the pools' labels, so the bar keeps its room on a phone; the sentence is in the detail.
+    h("summary", { class: "pool-sum" }, h("span", { class: "pool-name" }, "Mistral"), " ", bar, h("span", { class: "pool-label" }, `${spent} / ${usd(a.limitUsd).replace(/\.00$/, "")}${a.estimated ? " est." : ""} · ${monthLeft(a.resetsAt, now).replace(/^resets in (\d+) days$/, "$1d left")}`)),
+    h(
+      "div",
+      { class: "pool-detail" },
+      h("p", {}, `${spent} of the ${usd(a.limitUsd)} monthly allowance${est} · ${monthResetText(a.resetsAt, now)} (${time(a.resetsAt)})`),
+      a.estimated && h("p", {}, `Estimated from this month's tokens and the published prices, not Mistral's own figure.${a.unpriced.length ? ` No price for ${a.unpriced.join(", ")}.` : ""}${a.lowerBound ? " Some models were left out, so the spend is at least this." : ""}`),
+      h("p", {}, `${counters}.`),
+    ),
+  );
 }
 
 /** Weekly pace uses the subscription's seven days, not the transcript accounting start. */
@@ -455,7 +513,7 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
         "div",
         { class: "pools" },
         ...POOLS.map(([name, label]) => poolRow(name, label, usage.pools?.[name], now)),
-        ...(usage.mistral ? [mistralRow(usage.mistral)] : []),
+        ...(usage.mistral ? [mistralRow(usage.mistral, now)] : []),
         h("p", { class: "fine" }, usage.updatedAt ? `Published ${time(usage.updatedAt)}. ` : "Publication time unknown. ", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""),
       ),
     );

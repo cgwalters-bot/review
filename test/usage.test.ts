@@ -53,6 +53,37 @@ describe("parseUsage", () => {
     }
   });
 
+  it("reads Mistral's allowance: its own spend first, else an estimate from tokens and prices", () => {
+    const raw = fixture<{ mistral: Record<string, unknown> }>("usage-pools.json");
+    const limit = { limit_usd: 300, resets_at: "2026-11-01T12:00:00Z" };
+    const models = [
+      { model: "mistral-large-latest", input_tokens: 1_000_000, output_tokens: 100_000 },
+      { model: "codestral-latest", input_tokens: 500_000, output_tokens: 0 },
+    ];
+    const prices = { "mistral-large-latest": { input: 2, output: 6 }, "codestral-latest": { input: 0.3, output: 0.9 } };
+    const allowance = (a: unknown) => parseUsage(body({ ...raw, mistral: { ...raw.mistral, allowance: a } }))?.mistral;
+    assert.deepEqual(allowance({ ...limit, spent_usd: 0.92, models, prices })?.allowance, { limitUsd: 300, resetsAt: limit.resets_at, spentUsd: 0.92, estimated: false, unpriced: [], lowerBound: false });
+    const est = allowance({ ...limit, models, prices })?.allowance;
+    assert.equal(est?.estimated, true);
+    assert.ok(Math.abs(est!.spentUsd - 2.75) < 1e-9, String(est?.spentUsd));
+    assert.deepEqual(est?.unpriced, []);
+    assert.equal(est?.lowerBound, false);
+    assert.deepEqual(allowance({ ...limit, models: [], prices })?.allowance?.spentUsd, 0, "a month with no tokens yet is $0, not no meter");
+    // A malformed entry beside priced ones is left out, and says so.
+    const bent = allowance({ ...limit, models: [...models, { model: "mistral/large", input_tokens: 5e7, output_tokens: 0 }], prices })?.allowance;
+    assert.deepEqual([bent?.unpriced, bent?.lowerBound], [[], true]);
+    // A model without a price leaves a lower bound; one named like an Object property finds no price there.
+    const partial = allowance({ ...limit, models: [...models, { model: "constructor", input_tokens: 5, output_tokens: 5 }], prices })?.allowance;
+    assert.deepEqual([partial?.unpriced, partial?.lowerBound], [["constructor"], true]);
+    assert.ok(Math.abs(partial!.spentUsd - 2.75) < 1e-9);
+    // No allowance, or one that can't give a spend, keeps the counters alone.
+    for (const bad of [undefined, {}, { ...limit, limit_usd: 0, spent_usd: 1 }, { ...limit, resets_at: "soon", spent_usd: 1 }, { ...limit, spent_usd: -1 }, { ...limit, spent_usd: "1" }, { ...limit, models }, { ...limit, models, prices: {} }, { ...limit, models: [{ model: "<b>", input_tokens: 1, output_tokens: 1 }], prices }]) {
+      assert.deepEqual(allowance(bad), { requests: 2500, tokens: 1234567 }, JSON.stringify(bad));
+    }
+    const capped = allowance({ ...limit, models: Array.from({ length: 40 }, (_, i) => ({ ...models[0], model: `m${i}` })), prices: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`m${i}`, prices["mistral-large-latest"]])) })?.allowance;
+    assert.deepEqual([capped?.spentUsd.toFixed(2), capped?.lowerBound], [(32 * 2.6).toFixed(2), true], "at most 32 models count, and the rest make it a lower bound");
+  });
+
   // (edit, windows kept, whether the first has a percent, workers kept)
   type Json = ReturnType<typeof valid>;
   const cases: [string, (j: Json) => unknown, number | undefined, boolean?, number?][] = [

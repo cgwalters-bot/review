@@ -163,8 +163,13 @@ thin bar of the percent used with a tick where the pace allows, coloured as a
 warning when over pace or held, and a short label that also says held or
 stale. Each row expands to the exact percentages, reset time and when it was
 observed. When the snapshot has a `mistral` object (the broker's requests and
-tokens since it started; it has no plan window, so no bar or pace) a plain
-counter row follows them. Older publications retain the Claude window display.
+tokens since it started; it has no plan window, so no pace) a Mistral row
+follows them. If the publisher configures an `allowance` in it (`limit_usd`,
+`resets_at`, and `spent_usd` from Mistral or, failing that, this month's
+`models` tokens and `prices` per million tokens), the row is a bar of the
+month's spend against the allowance with the time to its reset, an estimate
+from tokens marked as one; otherwise it is a plain counter row. Older
+publications retain the Claude window display.
 **Status** comes right after usage, then the open questions, with Decisions open on entry,
 ranked by Priority, showing what they block and their inline answer forms.
 Each question leads with what it asks, then one small line (priority, the
