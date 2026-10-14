@@ -1,0 +1,51 @@
+import { h, link } from "../dom.ts";
+import type { GitHub } from "./api.ts";
+import { execute, loadProposals, prepare, type ActionConfig, type Offered } from "./actions.ts";
+
+/** Explicit reads only; mounting the page never discovers or executes proposals. */
+export function actionsPanel(gh: GitHub, config: ActionConfig): HTMLElement {
+  const body = h("div");
+  const status = h("p", { role: "status" });
+  const load = h("button", { type: "button" }, "Load proposals");
+  const panel = h("details", { class: "operator-actions sec" }, h("summary", {}, "Proposed operator actions (opt in)"),
+    h("p", { class: "note" }, "Reads only the 20 most recently updated open tracker issues, at most 100 comments each. Execution uses your own token; interrupted or failed batches cannot be retried here."), load, status, body);
+  let busy = false;
+  load.addEventListener("click", () => {
+    if (busy) return;
+    busy = true; load.disabled = true; body.replaceChildren(); status.textContent = "Reading proposals…";
+    void loadProposals(gh, config).then(async ({ offers, warnings }) => {
+      for (const offer of offers) body.append(await proposalCard(gh, config, offer, () => busy, (v) => { busy = v; load.disabled = v; }));
+      status.textContent = offers.length ? `${offers.length} open proposals in this bounded window.` : "No open proposals in this bounded window.";
+      for (const warning of warnings) body.append(h("p", { class: "note" }, `Refused issue: ${warning}`));
+    }).catch((e: unknown) => { status.textContent = String(e); }).finally(() => { busy = false; load.disabled = false; });
+  });
+  return panel;
+}
+
+async function proposalCard(gh: GitHub, config: ActionConfig, o: Offered, isBusy: () => boolean, setBusy: (v: boolean) => void): Promise<HTMLElement> {
+  const rows = h("ol");
+  const results: HTMLElement[] = [];
+  let stale = false;
+  for (const action of o.proposal.actions) {
+    const current = h("p", { class: "note" });
+    try { current.textContent = (await prepare(gh, config, action)).state; }
+    catch (e) { stale = true; current.textContent = `Refused: ${String(e)}`; }
+    const result = h("p", { role: "status" }); results.push(result);
+    // Literal JSON is the exact typed mutation, including every precondition.
+    rows.append(h("li", {}, link(`https://github.com/${action.repo}/issues/${action.number}`, `${action.repo}#${action.number}`), h("pre", {}, JSON.stringify(action, null, 2)), current, result));
+  }
+  const status = h("p", { role: "status" });
+  const button = h("button", { type: "button" }, "Execute proposal as yourself");
+  button.disabled = stale;
+  button.addEventListener("click", () => {
+    if (button.disabled || isBusy()) return;
+    if (!window.confirm(`Execute ${o.proposal.actions.length} actions as ${config.operator}? Stops at the first failure. This proposal cannot be retried after reservation.`)) return;
+    setBusy(true); button.disabled = true; status.textContent = "Executing…";
+    void execute(gh, config, o, (i, result) => { results[i]!.textContent = result; })
+      .then(() => { status.textContent = "Executed; result recorded on the proposal issue."; })
+      .catch((e: unknown) => { status.textContent = `${String(e)}. Check the proposal issue and targets; do not retry an uncertain action.`; })
+      .finally(() => { setBusy(false); });
+  });
+  return h("section", { class: "operator-proposal" }, h("h3", {}, o.proposal.title), h("p", {}, o.proposal.why),
+    link(`https://github.com/${config.tracker}/issues/${o.issue}#issuecomment-${o.comment.databaseId}`, "Proposal comment"), rows, button, status);
+}

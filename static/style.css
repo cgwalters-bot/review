@@ -681,3 +681,9 @@ details.sub-fold > div { padding-top: 8px; }
 .chat-panel select, .chat-panel textarea { box-sizing: border-box; width: 100%; min-width: 0; }
 .chat-log { max-height: 50vh; overflow: auto; overflow-wrap: anywhere; }
 .chat-log p, .chat-log pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Proposal text and literal mutations must wrap without widening a phone. */
+.operator-actions { padding: .75rem; }
+.operator-proposal { min-width: 0; overflow-wrap: anywhere; }
+.operator-proposal pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.operator-proposal ol { padding-left: 1.5rem; }
+.operator-proposal button { max-width: 100%; white-space: normal; min-height: 44px; }

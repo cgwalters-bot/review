@@ -10,3 +10,11 @@
 # Check the workflows with the forge's shared actionlint, zizmor and runner-label check
 lint actions=env("FORGE_ACTIONS", justfile_directory() / ".." / "actions"):
     {{ quote(just_executable()) }} --justfile {{ quote(actions / "lint" / "Justfile") }} --working-directory {{ quote(justfile_directory()) }} check
+
+# Typecheck, unit tests and production build
+check:
+    npm run check
+
+# Narrow operator-action tests
+test-actions:
+    node --test test/actions.test.ts

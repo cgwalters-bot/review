@@ -69,6 +69,8 @@ import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
 import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { ACTION_CONFIG } from "./actions.ts";
+import { actionsPanel } from "./actionsview.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { filterNeeds, type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
@@ -426,6 +428,7 @@ function homeHooks(state: State): HomeHooks {
 function mountHome(state: State): Home {
   if (state.home?.el.isConnected) return state.home;
   state.home = homeSkeleton(homeHooks(state));
+  if (ACTION_CONFIG) state.home.el.prepend(actionsPanel(state.gh, ACTION_CONFIG));
   showMain(state.home.el);
   return state.home;
 }
