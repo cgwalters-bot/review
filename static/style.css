@@ -377,6 +377,18 @@ details.history summary { cursor: pointer; color: var(--accent); }
 .lw .name { overflow-wrap: anywhere; }
 .lw .ds { font: 12px var(--mono); color: var(--muted); }
 .lw .up { font: 12px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+/* The controller panel: one row a hosted piece; on a phone the time and details wrap under the name. */
+.st.c-ok { --dot: var(--ok); color: var(--ok); }
+.ctl-list { list-style: none; margin: 4px 0 0; padding: 0; }
+.ctl { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) auto; gap: 2px 10px; align-items: baseline; padding: 4px 0; font-size: 14px; }
+.ctl .name { overflow-wrap: anywhere; }
+.ctl .what, .ctl .when, .ctl .flight .age { color: var(--muted); font-size: 12px; }
+.ctl .when { font-family: var(--mono); white-space: nowrap; text-align: right; }
+.ctl .detail { grid-column: 2 / 4; font: 12px var(--mono); color: var(--muted); }
+.ctl .detail.mode-acting { color: var(--ink); font-weight: 600; }
+.ctl .flight { list-style: none; margin: 0; padding: 0; overflow-wrap: anywhere; }
+.ctl-session { font-size: 14px; margin: 4px 0 8px; }
+.ctl-session.none { color: var(--ink); }
 .past-list.stale, .uw-list.stale, .uc-list.stale { opacity: 0.6; }
 .uw { display: grid; grid-template-columns: 4.5em minmax(8em, 14em) minmax(0, 1fr) auto; gap: 2px 12px; align-items: center; padding: 5px 0; font-size: 14px; --fill: var(--ok); }
 .uw.u-warn { --fill: var(--p2); }
@@ -442,6 +454,9 @@ summary.pool-sum::before { content: "▸"; }
   .past { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
   .past .ran, .past .age { grid-column: 2; }
   .lw { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
+  .ctl { grid-template-columns: 7.5em minmax(0, 1fr); }
+  .ctl .when { grid-column: 2; text-align: left; white-space: normal; }
+  .ctl .detail { grid-column: 2; }
   .uw { grid-template-columns: 4.5em minmax(0, 1fr); }
   .uw .reset, .uw .tok { grid-column: 2; }
   .pool-sum { grid-template-columns: 1em minmax(0, 1fr) auto; }

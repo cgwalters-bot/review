@@ -25,6 +25,7 @@ import {
   OPS_RUNS_PER_PAGE,
   OPS_WINDOW_HOURS,
 } from "./config.ts";
+import { CONTROLLER, type ControllerData, loadController } from "./controller.ts";
 import { isOwnOrg, itemOrg, type Preset } from "./filter.ts";
 import { type Heartbeat, loadHeartbeat } from "./heartbeat.ts";
 import { loadUsage, type UsageData } from "./usage.ts";
@@ -479,6 +480,8 @@ export interface Ops {
   board?: Item[];
   work?: Item[];
   events?: BotEvent[];
+  /** The hosted pieces of the controller (controller.ts). */
+  controller?: ControllerData;
   warnings: string[];
   at: number;
   /** Read from the cache only (a first render before GitHub answers): sections not cached are undefined, without a warning. */
@@ -576,7 +579,7 @@ export async function loadActive(gh: GitHub, now: number = Date.now()): Promise<
 }
 
 /** Read every section side by side; one failing leaves the others. */
-export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.now()): Promise<Ops> {
+export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.now(), controller: unknown = CONTROLLER): Promise<Ops> {
   const warnings: string[] = [];
   const guard = guarded(warnings);
   const sources: Sources = {};
@@ -591,13 +594,14 @@ export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.no
       throw e;
     }
   };
-  const [devspaces, agents, local, usage, board, events] = await Promise.all([
+  const [devspaces, agents, local, usage, board, events, hosted] = await Promise.all([
     guard(`the devspaces in ${DEVSPACE_REPO}`, loadDevspaces(gh, cache, now)),
     guard(`the agent runs in ${DEVSPACE_REPO}`, loadAgents(gh)),
     guard("the coordinator's heartbeat", tracked("heartbeat", (source) => loadHeartbeat(source))),
     guard("the plan's usage", tracked("usage", (source) => loadUsage(source))),
     guard("the board", tracked("board", (source) => loadWholeBoard(source).then((q) => q.items))),
     guard(`${BOT_LOGIN}'s recent activity`, loadEvents(gh)),
+    guard("the controller's hosted runs", loadController(gh, controller)),
   ]);
   const ops: Ops = { warnings, at: now, sources };
   if (devspaces) ops.devspaces = devspaces;
@@ -609,6 +613,7 @@ export async function loadOps(gh: GitHub, cache: JobCache, now: number = Date.no
     ops.work = board.filter((i) => i.status === IN_PROGRESS);
   }
   if (events) ops.events = events;
+  if (hosted) ops.controller = hosted;
   return ops;
 }
 

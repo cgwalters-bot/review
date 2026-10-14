@@ -337,6 +337,22 @@ homegit); a new line shows highlighted under the item.
 **The "Ask anything" box** atop the page files a note onto the board
 (below). Its `#chat` slot is where a future coordinator chat view attaches (`chat.ts`).
 
+**Controller**, first in the ops detail, says whether shutting the
+interactive session down would stop anything. Its hosted pieces are the
+workflows, or jobs of one, listed in `src/github/controller.json`: each
+with its last finished run (conclusion, age, link) and one running now.
+A workflow with no runs yet shows as not built; a job missing from its
+last few runs, as not seen. The board scheduler's mode (preview or
+acting) and how many items its last pass would start or started are read
+from that job's annotations: its pass's lines, published as a notice
+(`[dry-run]` before each line of a preview). The log has them too, but
+it redirects to blob storage, which the page's `connect-src` refuses;
+until the job publishes the notice, the row says so and links to the
+job. `read: "in-flight"` lists every run in flight with its title. The interactive session (the controller chat)
+counts as present only while its heartbeat is fresh, as Local agents
+judges it (15 minutes, or asleep until a wake time it gave); otherwise
+the panel says new work starts only from the board scheduler.
+
 Devspaces are the live runs of `devspace.yml` in
 bootc-dev/cgwalters-devspace-sandbox, each with its tailnet host, cores,
 uptime and time left (exact when the run's title carries its duration,
