@@ -384,7 +384,9 @@ details.history summary { cursor: pointer; color: var(--accent); }
 .ctl .name { overflow-wrap: anywhere; }
 .ctl .what, .ctl .when, .ctl .flight .age { color: var(--muted); font-size: 12px; }
 .ctl .when { font-family: var(--mono); white-space: nowrap; text-align: right; }
-.ctl .detail { grid-column: 2 / 4; font: 12px var(--mono); color: var(--muted); }
+.ctl .detail, .ctl .ctl-output { grid-column: 2 / 4; font: 12px var(--mono); color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.ctl .detail pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ctl textarea { width: 100%; box-sizing: border-box; }
 .ctl .detail.mode-acting { color: var(--ink); font-weight: 600; }
 .ctl .flight { list-style: none; margin: 0; padding: 0; overflow-wrap: anywhere; }
 .ctl-session { font-size: 14px; margin: 4px 0 8px; }
@@ -456,7 +458,7 @@ summary.pool-sum::before { content: "▸"; }
   .lw { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
   .ctl { grid-template-columns: 7.5em minmax(0, 1fr); }
   .ctl .when { grid-column: 2; text-align: left; white-space: normal; }
-  .ctl .detail { grid-column: 2; }
+  .ctl .detail, .ctl .ctl-output { grid-column: 2; }
   .uw { grid-template-columns: 4.5em minmax(0, 1fr); }
   .uw .reset, .uw .tok { grid-column: 2; }
   .pool-sum { grid-template-columns: 1em minmax(0, 1fr) auto; }

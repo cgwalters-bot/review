@@ -27,15 +27,10 @@ const cfg: ControllerConfig = parseControllerConfig({
 // As schedule.cjs prints a pass in the job's log, timestamps and all (trimmed from a real one).
 const PREVIEW_LOG = [
   "2026-10-14T19:11:20.0000000Z ##[group]Run node .github/poll/schedule.cjs  2>&1 | tee \"$RUNNER_TEMP/pass.log\"",
-  "2026-10-14T19:11:30.1191405Z [dry-run] 3 ready item(s), taken by Priority; 1 of 4 run(s) in flight; at most 1 triage run(s) a pass",
-  "2026-10-14T19:11:30.2000000Z [dry-run] example-org/a#1 dispatch: plan 7",
-  "2026-10-14T19:11:30.3000000Z [dry-run] example-org/a#2 triage: no plan",
-  "2026-10-14T19:11:30.4000000Z [dry-run] example-org/a#3 skip: work-in-progress cap of 4 reached",
+  "2026-10-14T19:11:30.1191405Z [dry-run] no live epics; nothing started",
 ].join("\n");
 const ACTING_LOG = [
-  "2026-10-14T19:11:30Z 2 ready item(s), taken by Priority; 0 of 4 run(s) in flight",
-  "2026-10-14T19:11:31Z example-org/a#1 dispatch: plan 7; https://github.com/example-org/tracker/actions/runs/9",
-  "2026-10-14T19:11:32Z example-org/a#2 triage error: HTTP 500",
+  "2026-10-14T19:11:30Z no live epics; nothing started",
 ].join("\n");
 
 describe("parseControllerConfig", () => {
@@ -60,17 +55,17 @@ describe("parseControllerConfig", () => {
 });
 
 describe("schedulerPass", () => {
-  it("reads a preview and what it would start, not skips", () => {
-    assert.deepEqual(schedulerPass(PREVIEW_LOG), { mode: "preview", starts: 2 });
+  it("reads an idle preview", () => {
+    assert.deepEqual(schedulerPass(PREVIEW_LOG), { mode: "preview", starts: 0, liveEpics: 0, candidates: 0, items: [] });
   });
-  it("reads an acting pass, not counting errors", () => {
-    assert.deepEqual(schedulerPass(ACTING_LOG), { mode: "acting", starts: 1 });
+  it("reads an idle acting pass", () => {
+    assert.deepEqual(schedulerPass(ACTING_LOG), { mode: "acting", starts: 0, liveEpics: 0, candidates: 0, items: [] });
   });
   it("counts the last pass of a log holding two", () => {
-    assert.deepEqual(schedulerPass(`${PREVIEW_LOG}\n${ACTING_LOG}`), { mode: "acting", starts: 1 });
+    assert.deepEqual(schedulerPass(`${PREVIEW_LOG}\n${ACTING_LOG}`), { mode: "acting", starts: 0, liveEpics: 0, candidates: 0, items: [] });
   });
   it("says unknown when no pass is in the log", () => {
-    assert.deepEqual(schedulerPass("2026-10-14T19:11:30Z schedule: GH_TOKEN required\nexample-org/a#1 dispatch: plan 1"), { mode: "unknown", starts: 0 });
+    assert.equal(schedulerPass("2026-10-14T19:11:30Z schedule: GH_TOKEN required\nexample-org/a#1 dispatch: plan 1").starts, undefined);
   });
 });
 
@@ -121,7 +116,7 @@ describe("loadController", () => {
     assert.equal(poll?.state, "ok");
     assert.deepEqual(poll?.last, { url: `https://github.com/${REPO}/actions/runs/1/job/11`, at: "2026-10-14T19:12:00Z", conclusion: "failure" });
     assert.equal(poll?.running?.url, `https://github.com/${REPO}/actions/runs/2/job/21`);
-    assert.deepEqual(board?.scheduler, { mode: "preview", starts: 2 });
+    assert.deepEqual(board?.scheduler, { mode: "unknown" });
     assert.equal(board?.last?.conclusion, "success");
     assert.deepEqual(usage?.last, { url: `https://github.com/${REPO}/actions/runs/5`, at: "2026-10-14T19:07:00Z", conclusion: "success" });
     assert.equal(usage?.running, undefined);
@@ -130,28 +125,27 @@ describe("loadController", () => {
     // poll.yml's runs and jobs are shared by its pieces: each read once.
     assert.equal(calls.filter((c) => c.includes("/poll.yml/runs")).length, 1);
     assert.equal(calls.filter((c) => c.includes("/runs/1/jobs")).length, 1);
-    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 1);
-    // A finished job's annotations are read once, however often the panel refreshes.
+    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 0);
+    // Tracker does not publish annotations: do not request them on refresh either.
     await loadController(gh, cfg);
-    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 1);
+    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 0);
   });
 
   it("says the mode isn't published when no annotation has a pass", async () => {
     const { fetchImpl } = script({ notes: ["Node.js 20 actions are deprecated"] });
     const board = (await loadController(new GitHub(async () => "t", fetchImpl), cfg)).pieces[1];
-    assert.deepEqual(board?.scheduler, { mode: "unknown", starts: 0 });
+    assert.deepEqual(board?.scheduler, { mode: "unknown" });
   });
 
-  it("keeps the scheduler's run when its annotations can't be read, and retries them", async () => {
+  it("keeps the scheduler's run without attempting annotation reads", async () => {
     const { fetchImpl, calls } = script({ notesStatus: 410 });
     const gh = new GitHub(async () => "t", fetchImpl);
     const board = (await loadController(gh, cfg)).pieces[1];
     assert.equal(board?.state, "ok");
     assert.equal(board?.last?.conclusion, "success");
-    assert.equal(board?.scheduler, undefined);
-    assert.match(board?.schedulerError ?? "", /Gone/);
+    assert.deepEqual(board?.scheduler, { mode: "unknown" });
     await loadController(gh, cfg);
-    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 2);
+    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 0);
   });
 
   it("looks past a skipped job to the last run of it, and says unseen when none ran", async () => {
@@ -171,7 +165,7 @@ describe("loadController", () => {
     const [poll, board, , coord] = cached.pieces;
     assert.equal(poll?.last?.conclusion, "failure");
     assert.equal(board?.last?.conclusion, "success");
-    assert.deepEqual(board?.scheduler, { mode: "preview", starts: 2 });
+    assert.deepEqual(board?.scheduler, { mode: "unknown" });
     // A 404 isn't cached.
     assert.equal(coord?.state, "uncached");
   });
@@ -209,7 +203,7 @@ describe("the controller panel", () => {
     assert.deepEqual(rows.map((r) => r.querySelector("strong")?.textContent), ["Poll", "Board scheduler", "Usage", "Coordinator", "Dispatch"]);
     assert.equal(rows[0]?.querySelector(".st")?.textContent, "failure");
     assert.equal(rows[0]?.querySelector(".now a")?.getAttribute("href"), `https://github.com/${REPO}/actions/runs/2/job/21`);
-    assert.equal(rows[1]?.querySelector(".detail")?.textContent, "preview · would start 2");
+    assert.equal(rows[1]?.querySelector(".detail")?.textContent, "unknown · see the job's log ↗");
     assert.equal(rows[3]?.querySelector(".st")?.textContent, "not built");
     const flight = [...(rows[4]?.querySelectorAll(".flight a") ?? [])];
     assert.deepEqual(flight.map((a) => [a.textContent, a.getAttribute("href")]), [[`implement ${EVIL}#64`, `https://github.com/${REPO}/actions/runs/8`], ["triage example-org/a#2", `https://github.com/${REPO}/actions/runs/7`], ["fix example-org/b#2", `https://github.com/${REPO}/actions/runs/4`], ["implement example-org/c#9", `https://github.com/${REPO}/actions/runs/3`]]);
@@ -221,17 +215,17 @@ describe("the controller panel", () => {
     const last = { url: `https://github.com/${REPO}/actions/runs/1/job/12`, at: "2026-10-14T19:11:32Z", conclusion: "success" };
     const controller: ControllerData = { pieces: [
       { piece: poll!, state: "error", error: "HTTP 500" },
-      { piece: board!, state: "ok", last, schedulerError: "HTTP 410" },
-      { piece: board!, state: "ok", last, scheduler: { mode: "acting", starts: 3 } },
-      { piece: board!, state: "ok", last, scheduler: { mode: "unknown", starts: 0 } },
+      { piece: board!, state: "ok", last },
+      { piece: board!, state: "ok", last, scheduler: { mode: "acting", starts: 3, liveEpics: 2, candidates: 4 } },
+      { piece: board!, state: "ok", last, scheduler: { mode: "unknown" } },
       { piece: coord!, state: "uncached" },
       { piece: { ...board!, job: "coordinator" }, state: "unseen" },
     ] };
     const rows = [...opsDetail({ at: NOW, warnings: [], controller, local: null }, NOW).querySelectorAll(".ctl-list > .ctl")];
     assert.deepEqual(rows.map((r) => r.querySelector(".st")?.textContent), ["unread", "ok", "ok", "ok", "…", "not seen"]);
-    assert.equal(rows[1]?.querySelector(".detail")?.textContent, "mode unread: its annotations couldn't be read");
-    assert.equal(rows[2]?.querySelector(".detail")?.textContent, "acting · started 3");
-    assert.equal(rows[3]?.querySelector(".detail")?.textContent, "mode not published: see the job's log ↗");
+    assert.equal(rows[1]?.querySelector(".detail")?.textContent, "unknown · see the job's log ↗");
+    assert.equal(rows[2]?.querySelector(".detail")?.textContent, "acting · 2 live epics · 4 candidates · started 3");
+    assert.equal(rows[3]?.querySelector(".detail")?.textContent, "unknown · see the job's log ↗");
     assert.equal(rows[3]?.querySelector(".detail a")?.getAttribute("href"), last.url);
     assert.equal(rows[2]?.querySelector(".when a")?.getAttribute("href"), last.url);
   });

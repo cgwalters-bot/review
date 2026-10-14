@@ -329,6 +329,14 @@ export function fillAgents(home: Home, active: Active | undefined, now: number, 
 /** The ops detail; returns its element, whose live times main.ts keeps ticking. */
 export function fillOps(home: Home, ops: Ops | undefined, now: number): HTMLElement {
   const el = opsDetail(ops, now);
+  // Keep pasted evidence only while the same completed job is shown.
+  // Reuse its nodes rather than persisting private logs or retaining them
+  // across navigation/sign-out. A new run deliberately starts unknown.
+  const previous = [...home.slots.ops.querySelectorAll<HTMLElement>(".ctl-output")];
+  for (const output of el.querySelectorAll<HTMLElement>(".ctl-output")) {
+    const old = previous.find(p => p.dataset.run && p.dataset.run === output.dataset.run);
+    if (old) output.replaceWith(old);
+  }
   home.slots.ops.replaceChildren(el);
   return el;
 }
