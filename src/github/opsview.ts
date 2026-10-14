@@ -6,6 +6,7 @@
 import { h, link, svg } from "../dom.ts";
 import { type IssueRef, type Item, parseIssueUrl } from "./board.ts";
 import { AGENT_WORKFLOW, BOT_LOGIN, DEVSPACE_REPO, DEVSPACE_WORKFLOW, HEARTBEAT_ISSUE, HEARTBEAT_STALE_MS, OPS_EVENTS_SHOWN, OPS_WINDOW_HOURS, TRACKER_REPO, USAGE_REPO } from "./config.ts";
+import { type ControllerData, type PieceState, sessionPresent } from "./controller.ts";
 import { PRESET_LABEL, PRESET_TITLE } from "./filter.ts";
 import { type Heartbeat, isStale, type LocalWorker } from "./heartbeat.ts";
 import {
@@ -599,6 +600,81 @@ export function usageSection(data: UsageData | undefined, hb: Heartbeat | null |
   return sec;
 }
 
+/** A finished run's conclusion as a dot; cancelled is how a newer pass replaces one, so not a failure. */
+function conclusionStatus(c: string | undefined): HTMLElement {
+  if (c === "success") return status("c-ok", "ok", "the last run succeeded");
+  if (c === "cancelled" || c === "skipped") return status("o-stopped", c, "the last run was cancelled or skipped");
+  if (c === "failure" || c === "timed_out" || c === "startup_failure") return status("o-failed", c.replace(/_/g, " "), "the last run failed");
+  return status("o-other", c ?? "done", c ?? "");
+}
+
+function pieceRow(p: PieceState, now: number): HTMLElement {
+  const { piece } = p;
+  const name = h("span", { class: "name" }, h("strong", {}, piece.label), " ", h("span", { class: "what" }, piece.what));
+  if (p.state === "absent") return h("li", { class: "ctl" }, status("s-unknown", "not built", `${piece.repo} has no runs of ${piece.workflow}${piece.job ? `'s ${piece.job} job` : ""} yet`), name);
+  if (p.state === "unseen") return h("li", { class: "ctl" }, status("s-unknown", "not seen", `its ${piece.job} job isn't in the last runs of ${piece.workflow}: not built yet, or skipped`), name);
+  if (p.state === "uncached") return h("li", { class: "ctl" }, status("s-unknown", "…", "not cached; loading"), name, h("span", { class: "when" }, "loading…"));
+  if (p.state === "error") return h("li", { class: "ctl" }, status("o-failed", "unread", p.error ?? ""), name, h("span", { class: "when" }, "couldn't read its runs"));
+  const st = p.last ? conclusionStatus(p.last.conclusion) : p.running ? status("s-ready", "running", "running, none finished yet") : status("s-unknown", "no run", "");
+  const li = h(
+    "li",
+    { class: "ctl" },
+    st,
+    name,
+    h(
+      "span",
+      { class: "when" },
+      p.last ? h("span", { title: `finished ${time(p.last.at)}` }, `${age(p.last.at, now)} ago `) : "",
+      p.last ? link(p.last.url, "run ↗") : "",
+      p.running ? h("span", { class: "now", title: `started ${time(p.running.at)}` }, p.last ? " · " : "", link(p.running.url, `${p.running.status && p.running.status !== "in_progress" ? p.running.status.replace(/_/g, " ") : "running"} now ↗`)) : "",
+    ),
+  );
+  const pass = p.scheduler;
+  if (p.schedulerError) li.append(h("span", { class: "detail", title: p.schedulerError }, "mode unread: its annotations couldn't be read"));
+  else if (pass?.mode === "unknown") {
+    li.append(h("span", { class: "detail mode-unknown", title: "the job publishes no pass as a notice; its log has it" }, "mode not published: see the job's log", p.last ? " " : "", p.last ? link(p.last.url, "↗") : ""));
+  } else if (pass) {
+    const verb = pass.mode === "preview" ? "would start" : "started";
+    li.append(h("span", { class: `detail mode-${pass.mode}`, title: "from the last pass; [dry-run] lines are a preview" }, `${pass.mode} · ${verb} ${pass.starts}`));
+  }
+  if (p.inFlight) {
+    li.append(
+      p.inFlight.length
+        ? h("ul", { class: "detail flight" }, ...p.inFlight.map((r) => h("li", {}, link(r.url, r.title), h("span", { class: "age", title: `started ${time(r.since)}` }, ` ${r.status === "in_progress" ? "" : `${r.status.replace(/_/g, " ")} · `}${age(r.since, now)}`))))
+        : h("span", { class: "detail" }, "none in flight"),
+    );
+  }
+  return li;
+}
+
+/**
+ * What runs hosted and whether the interactive session is there: the
+ * operator can tell whether shutting the session down would stop
+ * anything. The session counts only while its heartbeat is fresh.
+ */
+function controllerSection(data: ControllerData | undefined, hb: Heartbeat | null | undefined, now: number, fromCache = false): HTMLElement {
+  const sec = section("Controller");
+  if (!data) sec.append(h("p", { class: "note" }, unavailable(fromCache)));
+  else if (data.pieces.length) sec.append(h("h3", { class: "group-h" }, "Hosted"), h("ul", { class: "ctl-list" }, ...data.pieces.map((p) => pieceRow(p, now))));
+  sec.append(h("h3", { class: "group-h" }, "Interactive"));
+  if (hb === undefined) {
+    sec.append(h("p", { class: "ctl-session" }, status("s-unknown", "unknown", "the heartbeat wasn't read"), " Heartbeat not read, so whether a session is there is unknown."));
+  } else if (hb && sessionPresent(hb, now)) {
+    sec.append(h("p", { class: "ctl-session" }, status("s-ready", "present", "its heartbeat is fresh"), " Controller chat · heartbeat ", `${age(hb.updatedAt, now)} ago · `, hb.commentUrl ? link(hb.commentUrl, "source ↗") : `${TRACKER_REPO}#${HEARTBEAT_ISSUE}`));
+  } else {
+    sec.append(
+      h(
+        "p",
+        { class: "ctl-session none" },
+        status("s-unknown", "absent", hb ? `last heartbeat ${time(hb.updatedAt)}` : "no heartbeat read"),
+        " No interactive session: new work starts only from the board scheduler.",
+        hb ? h("span", { class: "fine" }, ` Last heartbeat ${age(hb.updatedAt, now)} ago${hb.loopState === "stopped" ? ", stopped" : ""}.`) : "",
+      ),
+    );
+  }
+  return sec;
+}
+
 function refLabel(url: string): string {
   const ref: IssueRef | undefined = parseIssueUrl(url);
   if (ref) return `${ref.owner}/${ref.repo}#${ref.number}`;
@@ -687,7 +763,7 @@ export function usageSummary(data: UsageData | undefined): string {
 }
 
 /**
- * The ops detail: devspaces, the coordinator's local agents, agent runs,
+ * The ops detail: the controller, devspaces, the coordinator's local agents, agent runs,
  * active work and the bot's activity. The changes feed and the usage
  * have sections of their own.
  */
@@ -701,6 +777,7 @@ export function opsDetail(ops: Ops | undefined, now: number = Date.now()): HTMLE
   const t = tiles(ops.devspaces, now);
   if (t) root.append(t);
   root.append(
+    controllerSection(ops.controller, ops.local, now, ops.fromCache),
     devspacesSection(ops.devspaces, now, ops.fromCache),
     localSection(ops.local, ops.devspaces, now, ops.fromCache),
     agentsSection(ops.agents, now, ops.fromCache),
