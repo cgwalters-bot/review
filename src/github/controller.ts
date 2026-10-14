@@ -4,12 +4,12 @@
 // here; for each the latest finished run (and one in progress) is read
 // from the Actions API. The board scheduler's mode and what it started
 // come from its pass's first line and item lines, as schedule.cjs prints
-// them, read from the job's annotations: the repository variable that
+// them. The repository variable that
 // sets the mode may not be readable with the viewer's token, the job
 // summary has no API, and the log redirects to blob storage, which the
 // page's connect-src (api.github.com only, the token's second fence)
-// refuses. Until the job publishes its pass as a notice, the row says so
-// and links to the job, whose log has it.
+// refuses. The row accepts an optional pasted log/summary instead of
+// assuming that tracker publishes check annotations (it does not).
 
 import { CacheMiss, GitHubError, type GitHub } from "./api.ts";
 import config from "./controller.json" with { type: "json" };
@@ -81,8 +81,6 @@ const RUNS_READ = 30;
 const IN_FLIGHT_STATUSES = ["in_progress", "queued", "waiting", "pending", "requested"] as const;
 /** Runs whose jobs are read looking for a piece's job: a few, since a dispatched run may skip it. */
 const JOB_RUNS_READ = 5;
-/** A job's annotations read (one page). */
-const ANNOTATIONS_READ = 50;
 
 export interface RawJobRun {
   id: number;
@@ -107,11 +105,12 @@ export interface Ran {
 /** What the scheduler's last pass did: previewed (`[dry-run]`) or acted, and the runs it would start or started. */
 export interface SchedulerPass {
   mode: "preview" | "acting" | "unknown";
-  starts: number;
-}
-
-export interface RawAnnotation {
-  message?: string;
+  starts?: number;
+  liveEpics?: number;
+  candidates?: number;
+  items?: string[];
+  census?: string[];
+  raw?: string;
 }
 
 export interface InFlight {
@@ -132,8 +131,6 @@ export interface PieceState {
   last?: Ran;
   running?: Ran;
   scheduler?: SchedulerPass;
-  /** Why the scheduler's annotations couldn't be read; the run is still shown. */
-  schedulerError?: string;
   inFlight?: InFlight[];
   error?: string;
 }
@@ -143,26 +140,48 @@ export interface ControllerData {
 }
 
 /** A scheduler pass's first line, and a line for an item it starts (not a skip, nor an error). */
-const PASS_RE = /^(\[dry-run\] )?\d+ ready item\(s\)/;
-const START_RE = /^(\[dry-run\] )?\S+#\d+ (?:dispatch|triage): /;
+const FORMATS = config.formats;
+const PASS_RE = new RegExp(FORMATS.pass);
+const IDLE_RE = new RegExp(FORMATS.idle);
+const ITEM_RE = new RegExp(FORMATS.item);
+const CENSUS_RE = new RegExp(FORMATS.census);
+/** Avoid freezing the panel on a pasted build log; no network read is added. */
+export const MAX_CONTROLLER_OUTPUT = 128 * 1024;
 /** An Actions log line's timestamp, should a notice carry log lines as they were. */
 const STAMP_RE = /^\d{4}-\d\d-\d\dT[\d:.]+Z /;
 
 /** The scheduler's pass, from its lines (schedule.cjs prints "[dry-run] " before each line of a preview). */
 export function schedulerPass(log: string): SchedulerPass {
-  let mode: SchedulerPass["mode"] = "unknown";
-  let starts = 0;
+  if (log.length > MAX_CONTROLLER_OUTPUT) return { mode: "unknown", raw: "Output exceeds 128 KiB; paste only the scheduler and census output." };
+  let out: SchedulerPass = { mode: "unknown" };
+  const census: string[] = [];
   for (const raw of log.split("\n")) {
     const line = raw.replace(STAMP_RE, "").trimEnd();
     const pass = PASS_RE.exec(line);
-    if (pass) {
+    const idle = IDLE_RE.exec(line);
+    if (pass || idle) {
       // A log with two passes counts the last.
-      mode = pass[1] ? "preview" : "acting";
-      starts = 0;
+      census.length = 0;
+      const match = pass ?? idle!;
+      const candidates = pass ? Number(pass[2]) : 0;
+      const liveEpics = pass ? Number(pass[3]) : 0;
+      out = Number.isSafeInteger(candidates) && Number.isSafeInteger(liveEpics)
+        ? { mode: match[1] ? "preview" : "acting", starts: 0, candidates, liveEpics, items: [] }
+        : { mode: "unknown", raw: line };
     }
-    else if (mode !== "unknown" && START_RE.test(line)) starts++;
+    else if (CENSUS_RE.test(line)) census.push(line);
+    else {
+      const item = ITEM_RE.exec(line);
+      if (item && out.mode !== "unknown" && Boolean(item[1]) === (out.mode === "preview")) {
+        out.items!.push(line);
+        if (item[4] === "dispatch" || item[4] === "triage") out.starts!++;
+      } else if (line.startsWith("[dry-run] ") || /^(?:\d+ |no live epics|schedule:|\S+#\d+ )/.test(line)) {
+        out = { mode: "unknown", raw: line };
+      } else if (out.mode === "unknown" && line.trim() && !out.raw) out.raw = line;
+    }
   }
-  return { mode, starts };
+  if (census.length) out.census = census;
+  return out;
 }
 
 function ranOf(url: string, at: string | null | undefined, conclusion: string | null | undefined): Ran | undefined {
@@ -226,15 +245,7 @@ async function loadPiece(gh: GitHub, piece: HostedPiece, reads: Reads): Promise<
     const last = ranOf(url, job.completed_at, job.conclusion);
     if (last) out.last = last;
     if (piece.read === "scheduler") {
-      try {
-        // A job's check run has its id; a finished one's annotations are final.
-        const path = `/repos/${piece.repo}/check-runs/${job.id}/annotations?per_page=${ANNOTATIONS_READ}`;
-        const notes = (await gh.getSettled<RawAnnotation[]>(path, () => true)).data;
-        out.scheduler = schedulerPass(notes.map((n) => n.message ?? "").join("\n"));
-      } catch (e) {
-        // A cached render without them shows the run without its pass.
-        if (!(e instanceof CacheMiss)) out.schedulerError = message(e);
-      }
+      out.scheduler = { mode: "unknown" };
     }
     break;
   }

@@ -6,7 +6,7 @@
 import { h, link, svg } from "../dom.ts";
 import { type IssueRef, type Item, parseIssueUrl } from "./board.ts";
 import { AGENT_WORKFLOW, BOT_LOGIN, DEVSPACE_REPO, DEVSPACE_WORKFLOW, HEARTBEAT_ISSUE, HEARTBEAT_STALE_MS, OPS_EVENTS_SHOWN, OPS_WINDOW_HOURS, TRACKER_REPO, USAGE_REPO } from "./config.ts";
-import { type ControllerData, type PieceState, sessionPresent } from "./controller.ts";
+import { type ControllerData, type PieceState, sessionPresent, schedulerPass, MAX_CONTROLLER_OUTPUT } from "./controller.ts";
 import { PRESET_LABEL, PRESET_TITLE } from "./filter.ts";
 import { type Heartbeat, isStale, type LocalWorker } from "./heartbeat.ts";
 import {
@@ -629,13 +629,21 @@ function pieceRow(p: PieceState, now: number): HTMLElement {
       p.running ? h("span", { class: "now", title: `started ${time(p.running.at)}` }, p.last ? " · " : "", link(p.running.url, `${p.running.status && p.running.status !== "in_progress" ? p.running.status.replace(/_/g, " ") : "running"} now ↗`)) : "",
     ),
   );
-  const pass = p.scheduler;
-  if (p.schedulerError) li.append(h("span", { class: "detail", title: p.schedulerError }, "mode unread: its annotations couldn't be read"));
-  else if (pass?.mode === "unknown") {
-    li.append(h("span", { class: "detail mode-unknown", title: "the job publishes no pass as a notice; its log has it" }, "mode not published: see the job's log", p.last ? " " : "", p.last ? link(p.last.url, "↗") : ""));
-  } else if (pass) {
-    const verb = pass.mode === "preview" ? "would start" : "started";
-    li.append(h("span", { class: `detail mode-${pass.mode}`, title: "from the last pass; [dry-run] lines are a preview" }, `${pass.mode} · ${verb} ${pass.starts}`));
+  if (piece.read === "scheduler") {
+    const detail = h("div", { class: "detail" });
+    const show = (pass: ReturnType<typeof schedulerPass>) => {
+      detail.replaceChildren();
+      detail.append(h("span", {}, pass.mode === "unknown" ? "unknown · see the job's log " : `${pass.mode} · ${pass.liveEpics} live epics · ${pass.candidates} candidates · ${pass.mode === "preview" ? "would start" : "started"} ${pass.starts}`));
+      if (pass.mode === "unknown" && p.last) detail.append(link(p.last.url, "↗"));
+      if (pass.raw) detail.append(h("pre", {}, pass.raw));
+      for (const line of [...(pass.items ?? []), ...(pass.census ?? [])]) detail.append(h("div", {}, line));
+    };
+    show(p.scheduler ?? { mode: "unknown" });
+    // Do not set maxlength: browsers truncate an oversized paste before
+    // input, which could turn a partial log into a false "started 0".
+    const input = h("textarea", { "aria-label": "Scheduler and census output", rows: "4" }) as HTMLTextAreaElement;
+    input.addEventListener("input", () => show(schedulerPass(input.value)));
+    li.append(h("div", { class: "ctl-output", "data-run": p.last ? `${piece.repo}/${piece.workflow}/${piece.job}/${p.last.url}/${p.last.at}` : "" }, detail, h("details", {}, h("summary", {}, "Read pasted job output"), h("p", {}, `Paste up to ${MAX_CONTROLLER_OUTPUT / 1024} KiB of the linked job's scheduler and epic census output. This stays in this panel; GitHub summaries have no API and log redirects are blocked by this app's token boundary.`), input)));
   }
   if (p.inFlight) {
     li.append(

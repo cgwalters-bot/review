@@ -545,3 +545,18 @@ permissions aren't reported).
 
 The answers and reviews it posts are real, so test against throwaway
 items.
+## Controller output
+
+The board row reads pasted scheduler/census output from the linked job. This
+optional input stays in the panel and is limited to 128 KiB; it makes no network
+request and is not persisted. Automatic log retrieval remains unavailable:
+GitHub's summaries have no API, and Actions logs redirect outside the app's
+API-only token boundary. Tracker does not publish the assumed annotations.
+Until output is supplied, the row says **unknown**, not zero.
+
+The current scheduler and census formats live in `src/github/controller.json`
+and are covered by `test/controller-output.test.ts`. Unknown scheduler wording keeps
+the raw line rather than guessing a count. Census lines are shown verbatim as
+text, not used to infer scheduling counts. The coordinator summary line planned
+for tracker#572 slice 4 is not available yet; add its format and fixtures when
+the producer lands rather than inventing its output now.
