@@ -1,0 +1,8 @@
+{
+  "schema": "agent-board/operator-action/v1",
+  "title": "Close a superseded task",
+  "why": "The replacement task covers this work.",
+  "actions": [
+    { "type": "close_issue", "repo": "example/tasks", "number": 1, "updatedAt": "2026-10-14T12:00:00Z", "reason": "Superseded by the replacement task." }
+  ]
+}
