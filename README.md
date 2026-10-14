@@ -473,6 +473,19 @@ npm run check    # tsc, the unit tests, and a build into dist/
 npm run dev      # serves http://127.0.0.1:8787/
 ```
 
+## Review gate
+
+Runs may edit `.github/` here, so pull requests are reviewed by
+cgwalters-forge/agentic-job's [review workflow](.github/workflows/review.yml),
+called as in its `docs/review.md`, with this repository's bounds and task
+in [workflow/](workflow/review.toml); `test/reviewgate.test.ts` pins the
+caller and the bounds. The ruleset on `main` is to require its approval,
+dismissed when new commits are pushed; the approval is submitted only
+with the repository variable `AGENT_REAL_REVIEWS=true`, beside the agent
+and inference variables its `docs/review.md` lists. Without
+`.github/agentic-job/merge.toml` the reviewer is told a person approves
+after it.
+
 ## Hosting and sign-in
 
 The app is published on GitHub Pages at
