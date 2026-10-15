@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { GitHub, GitHubError, nextLink } from "../src/github/api.ts";
+import { GitHub, GitHubError, nextLink, RateLimited, rateLimitWait } from "../src/github/api.ts";
+import { GITHUB_CONCURRENCY } from "../src/github/config.ts";
 import { scriptedFetch } from "./helpers.ts";
 
 const token = async () => "t0ken";
@@ -161,5 +162,114 @@ describe("GitHub.getAll", () => {
   it("stops at the page limit", async () => {
     const { fetchImpl } = scriptedFetch((_m, url) => ({ body: [1], headers: { link: `<${url}x>; rel="next"` } }));
     await assert.rejects(new GitHub(token, fetchImpl).getAll("/loop", 3), /more than 3 pages/);
+  });
+});
+
+describe("GitHub rate limits", () => {
+  const refuse = (status: number, headers: Record<string, string>, message: string) => {
+    const { fetchImpl, calls } = scriptedFetch(() => ({ status, headers, body: { message } }));
+    return { gh: new GitHub(token, fetchImpl), calls };
+  };
+
+  it("a secondary limit with retry-after: says when it retries, not a permission, and sends nothing until then", async () => {
+    const { gh, calls } = refuse(403, { "retry-after": "30" }, "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.");
+    const before = Date.now();
+    await assert.rejects(gh.get("/search/issues?q=x"), (e: unknown) => {
+      assert.ok(e instanceof RateLimited);
+      assert.equal(e.status, 403);
+      assert.equal(e.message, "GitHub rate limit: retrying in 30 s");
+      assert.doesNotMatch(e.message, /permission/);
+      return true;
+    });
+    assert.ok(gh.blockedUntil >= before + 30_000 && gh.blockedUntil <= Date.now() + 30_000);
+    // Held back without asking GitHub again, writes too.
+    await assert.rejects(gh.get("/x"), RateLimited);
+    await assert.rejects(gh.send("POST", "/y", {}), /GitHub rate limit: retrying in \d+ s/);
+    assert.equal(calls.length, 1);
+  });
+
+  it("the secondary-limit message alone waits GitHub's minute", async () => {
+    const { gh } = refuse(403, {}, "You have exceeded a secondary rate limit.");
+    await assert.rejects(gh.get("/x"), /: GitHub rate limit: retrying in 60 s$/);
+  });
+
+  it("a spent primary limit waits until its reset", async () => {
+    const reset = Math.ceil(Date.now() / 1000) + 120;
+    const { gh } = refuse(403, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset), "x-ratelimit-limit": "5000" }, "API rate limit exceeded for user ID 1.");
+    await assert.rejects(gh.get("/x"), (e: unknown) => e instanceof RateLimited && /retrying in 1[12]\d s/.test(e.message));
+    assert.equal(gh.blockedUntil, reset * 1000);
+  });
+
+  it("retries by itself once the wait is over", async () => {
+    let n = 0;
+    const { fetchImpl } = scriptedFetch(() => (n++ === 0 ? { status: 429, headers: { "retry-after": "0" }, body: {} } : { body: { ok: true } }));
+    const gh = new GitHub(token, fetchImpl);
+    await assert.rejects(gh.get("/x"), RateLimited);
+    assert.deepEqual((await gh.get("/x")).data, { ok: true });
+  });
+
+  it("a real 403 keeps its permission hint, and blocks nothing", async () => {
+    const { gh, calls } = refuse(403, { "x-ratelimit-remaining": "4000", "x-ratelimit-reset": "1" }, "Resource not accessible by personal access token");
+    await assert.rejects(gh.get("/x"), (e: unknown) => {
+      assert.ok(e instanceof GitHubError && !(e instanceof RateLimited));
+      assert.match(e.message, /HTTP 403: Resource not accessible by personal access token \(no access with this token, or it lacks a permission\)$/);
+      return true;
+    });
+    assert.equal(gh.blockedUntil, 0);
+    await assert.rejects(gh.get("/x"), /HTTP 403/);
+    assert.equal(calls.length, 2);
+  });
+
+  it("recognises each documented signal", () => {
+    const h = (o: Record<string, string>) => new Headers(o);
+    assert.equal(rateLimitWait(403, h({ "retry-after": "7" }), "", 0), 7_000);
+    assert.equal(rateLimitWait(429, h({}), "", 0), 60_000);
+    assert.equal(rateLimitWait(403, h({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": "100" }), "", 40_000), 60_000);
+    assert.equal(rateLimitWait(403, h({}), "secondary rate limit", 0), 60_000);
+    assert.equal(rateLimitWait(403, h({ "x-ratelimit-remaining": "12" }), "Must have admin rights", 0), undefined);
+    assert.equal(rateLimitWait(404, h({ "retry-after": "7" }), "rate limit", 0), undefined);
+  });
+});
+
+describe("GitHub concurrency", () => {
+  /** A fetch whose answers the test releases, recording how many were in flight at most, overall and of searches. */
+  const gated = () => {
+    const waiting: (() => void)[] = [];
+    const peak = { all: 0, search: 0 };
+    const now = { all: 0, search: 0 };
+    const fetchImpl = async (url: string) => {
+      const search = url.includes("/search/");
+      now.all++;
+      if (search) now.search++;
+      peak.all = Math.max(peak.all, now.all);
+      peak.search = Math.max(peak.search, now.search);
+      await new Promise<void>((r) => waiting.push(r));
+      now.all--;
+      if (search) now.search--;
+      return Response.json({});
+    };
+    return { fetchImpl, waiting, peak };
+  };
+  const drain = async (waiting: (() => void)[], done: () => boolean) => {
+    while (!done()) {
+      await new Promise((r) => setImmediate(r));
+      waiting.shift()?.();
+    }
+  };
+
+  it(`sends at most ${GITHUB_CONCURRENCY} requests at once, and one search at a time`, async () => {
+    const { fetchImpl, waiting, peak } = gated();
+    const gh = new GitHub(token, fetchImpl);
+    let settled = 0;
+    const all = [
+      ...Array.from({ length: 10 }, (_, i) => gh.get(`/repos/o/r/issues/${i}`)),
+      ...Array.from({ length: 4 }, (_, i) => gh.get(`/search/issues?q=${i}`)),
+    ].map((p) => p.finally(() => settled++));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(waiting.length, GITHUB_CONCURRENCY);
+    await drain(waiting, () => settled === all.length);
+    await Promise.all(all);
+    assert.equal(peak.all, GITHUB_CONCURRENCY);
+    assert.equal(peak.search, 1);
   });
 });

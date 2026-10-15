@@ -2,9 +2,15 @@
 // Last-Modified (a 304 costs no rate budget when authorised) against one
 // response cache (cache.ts), pagination by Link header, and rate-limit
 // tracking. `fetch` is injected so tests can script responses.
+//
+// It also keeps the app inside GitHub's secondary rate limits, which
+// punish concurrent requests: at most GITHUB_CONCURRENCY requests are in
+// flight, searches (which have a budget of their own, 30 a minute) one
+// at a time. Once GitHub says a limit was hit, nothing more is sent until
+// it said to retry; until then requests fail at once with RateLimited.
 
 import { type CachedResponse, ResponseCache, staleAfterWrite } from "./cache.ts";
-import { API_ROOT, REQUEST_TIMEOUT_MS } from "./config.ts";
+import { API_ROOT, GITHUB_CONCURRENCY, RATE_LIMIT_WAIT_MS, REQUEST_TIMEOUT_MS } from "./config.ts";
 
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 export type TokenGetter = () => Promise<string>;
@@ -15,6 +21,57 @@ export class GitHubError extends Error {
   constructor(status: number, message: string) {
     super(message);
     this.status = status;
+  }
+}
+
+/** GitHub refused a request for a rate limit, or one was still in force: nothing is sent before `retryAt`. */
+export class RateLimited extends GitHubError {
+  override name = "RateLimited";
+  /** Epoch ms. */
+  readonly retryAt: number;
+  constructor(status: number, retryAt: number, now: number) {
+    super(status, `GitHub rate limit: retrying in ${Math.max(1, Math.ceil((retryAt - now) / 1000))} s`);
+    this.retryAt = retryAt;
+  }
+}
+
+/**
+ * How long a refused request says to wait (ms), if it was refused for a
+ * rate limit, the documented ways: a 403 or 429 with retry-after, or with
+ * x-ratelimit-remaining 0 and x-ratelimit-reset; or the secondary-limit
+ * message without either, for which GitHub says to wait a minute.
+ * Undefined for any other failure, such as a 403 for a missing permission.
+ */
+export function rateLimitWait(status: number, headers: Headers, message: string, now: number): number | undefined {
+  if (status !== 403 && status !== 429) return undefined;
+  const after = Number(headers.get("retry-after") ?? NaN);
+  if (Number.isFinite(after) && after >= 0) return after * 1000;
+  const reset = Number(headers.get("x-ratelimit-reset") ?? NaN);
+  if (headers.get("x-ratelimit-remaining") === "0" && Number.isFinite(reset)) return Math.max(0, reset * 1000 - now);
+  if (status === 429 || /rate limit/i.test(message)) return RATE_LIMIT_WAIT_MS;
+  return undefined;
+}
+
+/** At most `n` holders at once; the others wait their turn, first come first served. */
+class Slots {
+  #free: number;
+  readonly #waiting: (() => void)[] = [];
+  constructor(n: number) {
+    this.#free = n;
+  }
+
+  /** Wait for a slot; call the returned function once to give it back. */
+  async take(): Promise<() => void> {
+    if (this.#free > 0) this.#free--;
+    else await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    let given = false;
+    return () => {
+      if (given) return;
+      given = true;
+      const next = this.#waiting.shift();
+      if (next) next();
+      else this.#free++;
+    };
   }
 }
 
@@ -53,22 +110,27 @@ function errorText(e: unknown): string {
   return typeof m === "string" ? m : "";
 }
 
-async function errorMessage(res: Response, what: string): Promise<string> {
-  let detail = "";
+/** GitHub's error details, joined; empty if the body has none or isn't JSON. */
+async function errorDetail(res: Response): Promise<string> {
   try {
     const body = (await res.json()) as { message?: unknown; errors?: unknown };
-    const parts = [body.message, ...(Array.isArray(body.errors) ? body.errors : [])].map(errorText).filter(Boolean);
-    if (parts.length) detail = `: ${parts.join("; ")}`;
+    return [body.message, ...(Array.isArray(body.errors) ? body.errors : [])].map(errorText).filter(Boolean).join("; ");
   } catch {
     // Not JSON; the status is enough.
+    return "";
   }
+}
+
+async function errorMessage(res: Response, what: string): Promise<string> {
+  const detail = await errorDetail(res);
+  // A rate limit never gets here: #send throws RateLimited for it.
   const hint =
     res.status === 401
       ? " (the token is invalid or expired; sign in again)"
       : res.status === 403 || res.status === 404
         ? " (no access with this token, or it lacks a permission)"
         : "";
-  return `${what} failed with HTTP ${res.status}${detail}${hint}`;
+  return `${what} failed with HTTP ${res.status}${detail ? `: ${detail}` : ""}${hint}`;
 }
 
 export class GitHub {
@@ -88,6 +150,9 @@ export class GitHub {
   timeoutMs = REQUEST_TIMEOUT_MS;
   /** The GETs waiting for an answer, and when each was sent, for abandonGets. */
   readonly #pending = new Set<{ sent: number; abort: AbortController }>();
+  readonly #slots = new Slots(GITHUB_CONCURRENCY);
+  readonly #searchSlot = new Slots(1);
+  #blockedUntil = 0;
 
   constructor(token: TokenGetter, fetchImpl: Fetch = (i, init) => fetch(i, init), cache: ResponseCache = new ResponseCache()) {
     this.#token = token;
@@ -148,7 +213,42 @@ export class GitHub {
     for (const p of this.#pending) if (p.sent < before) p.abort.abort();
   }
 
+  /** Until when (epoch ms) GitHub said to send nothing; 0 or past when nothing is held back. */
+  get blockedUntil(): number {
+    return this.#blockedUntil;
+  }
+
+  /**
+   * Send a request once a slot is free (and, for a search, once no other
+   * search is in flight), unless a rate limit holds it back. The slot is
+   * held until the response's headers arrive, not while its body is read.
+   */
   async #send(method: string, url: string, headers: Record<string, string>, body?: unknown): Promise<Response> {
+    const search = url.startsWith(`${API_ROOT}/search/`);
+    const releaseSearch = search ? await this.#searchSlot.take() : undefined;
+    const release = await this.#slots.take();
+    try {
+      // Checked once it is this request's turn: a limit may have been hit while it waited.
+      const now = Date.now();
+      if (now < this.#blockedUntil) throw new RateLimited(429, this.#blockedUntil, now);
+      const res = await this.#sendNow(method, url, headers, body);
+      if (res.status === 403 || res.status === 429) {
+        // A clone, so the caller can still read the body of any other 403.
+        const at = Date.now();
+        const wait = rateLimitWait(res.status, res.headers, await errorDetail(res.clone()), at);
+        if (wait !== undefined) {
+          this.#blockedUntil = Math.max(this.#blockedUntil, at + wait);
+          throw new RateLimited(res.status, this.#blockedUntil, at);
+        }
+      }
+      return res;
+    } finally {
+      release();
+      releaseSearch?.();
+    }
+  }
+
+  async #sendNow(method: string, url: string, headers: Record<string, string>, body?: unknown): Promise<Response> {
     const timeout = AbortSignal.timeout(this.timeoutMs);
     // AbortSignal.any is recent (Safari 17.4); without it, GETs just can't be abandoned.
     const pending = method === "GET" && typeof AbortSignal.any === "function" ? { sent: Date.now(), abort: new AbortController() } : undefined;

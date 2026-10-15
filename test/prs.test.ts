@@ -3,7 +3,6 @@ import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { composeReview, composeReviews, refKey, type ForgePr } from "../src/github/forge.ts";
 import {
-  FORGE_QUERY,
   loadFileLines,
   loadForgePrs,
   loadOtherPrs,
@@ -48,19 +47,29 @@ function pull(over: Record<string, unknown> = {}) {
 }
 
 describe("loadForgePrs", () => {
-  it("searches the bot's open forge drafts, page by page", async () => {
-    const item = (n: number) => ({ html_url: `https://github.com/cgwalters-forge/r/pull/${n}`, pull_request: {}, title: `#${n}` });
+  it("searches the bot's open PRs, page by page, and keeps the forge's drafts", async () => {
+    const item = (n: number) => ({ html_url: `https://github.com/cgwalters-forge/r/pull/${n}`, pull_request: {}, title: `#${n}`, draft: true, user: { login: "cgwalters-bot" } });
     const { fetchImpl, calls } = scriptedFetch((_m, url) => {
       const page = Number(new URL(url).searchParams.get("page"));
       if (page === 1) return { body: { total_count: 101, items: Array.from({ length: 100 }, (_, i) => item(i + 1)) } };
-      if (page === 2) return { body: { total_count: 101, items: [item(101), { html_url: "https://github.com/x/y/issues/1" }] } };
+      if (page === 2) {
+        const upstream = { ...item(102), html_url: "https://github.com/bootc-dev/bootc/pull/102" };
+        const ready = { ...item(103), draft: false };
+        return { body: { total_count: 104, items: [item(101), upstream, ready, { html_url: "https://github.com/x/y/issues/1" }] } };
+      }
       return undefined;
     });
     const prs = await loadForgePrs(new GitHub(token, fetchImpl));
     assert.equal(prs.length, 101);
     assert.equal(calls.length, 2);
-    assert.equal(new URL(calls[0]?.url ?? "").searchParams.get("q"), FORGE_QUERY);
-    assert.match(FORGE_QUERY, /is:open draft:true org:cgwalters-forge author:cgwalters-bot/);
+    assert.equal(new URL(calls[0]?.url ?? "").searchParams.get("q"), OTHER_QUERY);
+  });
+
+  it("reuses a search already made rather than searching again", async () => {
+    const { fetchImpl, calls } = scriptedFetch(() => undefined);
+    const gh = new GitHub(token, fetchImpl);
+    assert.deepEqual(await loadForgePrs(gh, []), []);
+    assert.equal(calls.length, 0);
   });
 });
 

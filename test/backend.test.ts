@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import type { Item } from "../src/github/board.ts";
 import { itemAction } from "../src/github/asks.ts";
-import { FETCH_CONCURRENCY } from "../src/github/config.ts";
+import { FETCH_CONCURRENCY, GITHUB_CONCURRENCY } from "../src/github/config.ts";
 import {
   gistId,
   loadAnswered,
@@ -279,7 +279,8 @@ describe("loadAnswered", () => {
       return new Response(JSON.stringify([comment("cgwalters", 1)]), { status: 200 });
     });
     assert.equal((await loadAnswered(gh, many)).size, 20);
-    assert.equal(peak, FETCH_CONCURRENCY);
+    // The client caps every caller at GITHUB_CONCURRENCY.
+    assert.equal(peak, Math.min(FETCH_CONCURRENCY, GITHUB_CONCURRENCY));
   });
 
   it("counts a question it can't read as unanswered", async () => {

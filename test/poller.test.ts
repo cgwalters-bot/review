@@ -371,6 +371,12 @@ describe("pollDelay", () => {
     ["spent, reset passed: low", { limit: 5000, remaining: 0, reset: 999 }, { ms: 4 * INTERVAL, why: "slowed: rate limit low" }],
   ];
   for (const [name, rate, want] of cases) it(name, () => assert.deepEqual(pollDelay(rate, now, policy), want));
+  it("refused for a rate limit: until GitHub said to retry, at least the interval", () => {
+    const plenty = { limit: 5000, remaining: 4766, reset: 2000 };
+    assert.deepEqual(pollDelay(plenty, now, policy, now + 90_000), { ms: 90_000, why: "paused: GitHub rate limit until t1090" });
+    assert.deepEqual(pollDelay(plenty, now, policy, now + 1_000), { ms: INTERVAL, why: "paused: GitHub rate limit until t1001" });
+    assert.deepEqual(pollDelay(plenty, now, policy, now - 1), { ms: INTERVAL });
+  });
 });
 
 describe("pollNote", () => {

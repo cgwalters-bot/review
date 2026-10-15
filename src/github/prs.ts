@@ -2,7 +2,7 @@
 // their verdicts, one PR's details for the review pane, and the review
 // itself. Views call these; tests drive them with a scripted fetch.
 
-import { type GitHub, GitHubError } from "./api.ts";
+import { type GitHub, GitHubError, RateLimited } from "./api.ts";
 import type { RunRef } from "./asks.ts";
 import type { IssueRef } from "./board.ts";
 import { findGuide, type GuideState } from "./guide.ts";
@@ -37,8 +37,6 @@ import {
   type Verdict,
 } from "./forge.ts";
 
-/** The search for the bot's open draft PRs on the forge. */
-export const FORGE_QUERY = `is:pr is:open draft:true org:${FORGE_ORG} author:${BOT_LOGIN}`;
 /**
  * The bot's open non-draft PRs anywhere that request his review, from him
  * directly (review-requested: would also match teams he is on, such as
@@ -47,17 +45,23 @@ export const FORGE_QUERY = `is:pr is:open draft:true org:${FORGE_ORG} author:${B
  */
 export const REQUESTED_QUERY = `is:pr is:open draft:false author:${BOT_LOGIN} user-review-requested:${OPERATOR}`;
 /**
- * All the bot's open PRs: upstream, in its own repositories, and in the
- * forge's own (non-fork) repositories, which open ready rather than as
- * drafts. The forge's drafts among them are FORGE_QUERY's, and dropped.
+ * All the bot's open PRs: upstream, in its own repositories, and the
+ * forge's, drafts in its forks and ready ones in its own (non-fork)
+ * repositories. One search serves both lists, the forge's drafts and the
+ * others: search has a budget of its own, 30 requests a minute.
  */
 export const OTHER_QUERY = `is:pr is:open author:${BOT_LOGIN}`;
 /** Search pages to read at most (100 each). */
 const MAX_SEARCH_PAGES = 5;
 
-/** The bot's open draft PRs on the forge, oldest first. Search has no ETags, so poll it sparingly. */
-export function loadForgePrs(gh: GitHub): Promise<ForgePr[]> {
-  return searchPrs(gh, FORGE_QUERY);
+/** The bot's open PRs, oldest first (OTHER_QUERY). Search has no ETags, so poll it sparingly. */
+export function searchBotPrs(gh: GitHub): Promise<ForgePr[]> {
+  return searchPrs(gh, OTHER_QUERY);
+}
+
+/** The bot's open draft PRs on the forge, oldest first: from `all`, searchBotPrs' answer, else searched. */
+export async function loadForgePrs(gh: GitHub, all?: readonly ForgePr[]): Promise<ForgePr[]> {
+  return (all ?? (await searchBotPrs(gh))).filter((pr) => pr.author === BOT_LOGIN && isForgeDraft(pr));
 }
 
 /** A PR other than a forge draft, and whether his review is requested on it. */
@@ -66,7 +70,7 @@ export interface OtherPr {
   requested: boolean;
 }
 
-/** Whether a PR is one of FORGE_QUERY's: a draft in the forge. */
+/** Whether a PR is a draft in the forge. */
 function isForgeDraft(pr: ForgePr): boolean {
   return pr.draft && pr.ref.owner.toLowerCase() === FORGE_ORG.toLowerCase();
 }
@@ -74,10 +78,12 @@ function isForgeDraft(pr: ForgePr): boolean {
 /**
  * The bot's open PRs other than the forge's drafts (which loadForgePrs
  * lists), oldest first, each marked with whether it requests his
- * review: two searches, side by side.
+ * review: from `searched`, searchBotPrs' answer (else searched), and a
+ * search for the requests.
  */
-export async function loadOtherPrs(gh: GitHub): Promise<OtherPr[]> {
-  const [all, requested] = await Promise.all([searchPrs(gh, OTHER_QUERY), searchPrs(gh, REQUESTED_QUERY)]);
+export async function loadOtherPrs(gh: GitHub, searched?: readonly ForgePr[]): Promise<OtherPr[]> {
+  const all = searched ?? (await searchBotPrs(gh));
+  const requested = await searchPrs(gh, REQUESTED_QUERY);
   const want = new Set(requested.map((p) => refKey(p.ref).toLowerCase()));
   const merged = new Map([...all, ...requested].filter((pr) => pr.author === BOT_LOGIN).map((pr) => [refKey(pr.ref).toLowerCase(), pr]));
   return [...merged.values()].filter((pr) => !isForgeDraft(pr)).map((pr) => ({ pr, requested: want.has(refKey(pr.ref).toLowerCase()) }));
@@ -275,7 +281,7 @@ export async function loadWaiting(gh: GitHub, others: readonly OtherPr[]): Promi
         const key = `${repo}:${base}`;
         // Rules this token can't read mean none; any other failure fails
         // the PR's read, so it keeps its last standing instead of losing a rerun.
-        if (!rules.has(key)) rules.set(key, requiredChecks(gh, repo, base).catch((e: unknown) => (e instanceof GitHubError && (e.status === 403 || e.status === 404) ? [] : Promise.reject(e))));
+        if (!rules.has(key)) rules.set(key, requiredChecks(gh, repo, base).catch((e: unknown) => (e instanceof GitHubError && (e.status === 403 || e.status === 404) && !(e instanceof RateLimited) ? [] : Promise.reject(e))));
         const [required, runs] = await Promise.all([
           rules.get(key) as Promise<string[]>,
           headCheckRuns(gh, repo, head),

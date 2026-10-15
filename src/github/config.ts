@@ -112,8 +112,12 @@ export const DECISION_LABEL = "decision";
  */
 export const CAPTURE_LABEL = "needs-triage";
 
-/** Poll every this many ms while the tab is visible. */
-export const POLL_INTERVAL_MS = 30_000;
+/**
+ * Poll every this many ms while the tab is visible (never while hidden).
+ * Not faster: each poll makes a dozen or more requests, and GitHub's
+ * secondary rate limits punish rapid repeats.
+ */
+export const POLL_INTERVAL_MS = 60_000;
 /**
  * Give up on a request GitHub hasn't answered in this long. A connection
  * that died without an error (e.g. across a laptop's sleep) otherwise
@@ -135,8 +139,16 @@ export const FORGE_MIN_INTERVAL_MS = 10_000;
 export const OPTIMISTIC_TTL_MS = 5 * 60_000;
 /** How long the "Done: ... → next" notice stays after moving on. */
 export const DONE_NOTICE_MS = 15_000;
-/** Parallel requests when refreshing PR verdicts. */
+/** Parallel requests when refreshing PR verdicts (the client caps them at GITHUB_CONCURRENCY anyway). */
 export const FETCH_CONCURRENCY = 6;
+/**
+ * GitHub requests in flight at once, from the whole page; searches go one
+ * at a time besides. GitHub's secondary rate limits punish concurrency,
+ * and once tripped refuse every request for a minute or more.
+ */
+export const GITHUB_CONCURRENCY = 4;
+/** After a rate-limit refusal that doesn't say how long to wait, wait this long (GitHub's documented minimum). */
+export const RATE_LIMIT_WAIT_MS = 60_000;
 /** A file's diff starts collapsed above this many lines (files build lazily, so this is for reading, not speed). */
 export const DIFF_COLLAPSE_LINES = 1000;
 /** Poll this many times slower when the rate budget runs low. */

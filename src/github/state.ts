@@ -6,7 +6,7 @@ import { readSource, type Sources } from "./freshness.ts";
 import { buildNeeds } from "./needs.ts";
 import { loadActive } from "./ops.ts";
 import { buildEntries, type Entry } from "./queue.ts";
-import { loadForgePrs, loadOtherPrs, loadWaiting, refreshVerdicts } from "./prs.ts";
+import { loadForgePrs, loadOtherPrs, loadWaiting, refreshVerdicts, searchBotPrs } from "./prs.ts";
 import { loadActionRuns, runTotals, type RunsData } from "./runs.ts";
 import { parseDecision, sortDecisions, type Decision } from "./triage.ts";
 
@@ -61,14 +61,17 @@ export type PageState = ReturnType<typeof pageState>;
 /** The CLI uses the same loaders and derivations as the page, tolerating partial access. */
 export async function loadPageState(gh: GitHub, now = Date.now()): Promise<PageState> {
   const sources: Sources = {};
+  // One search of the bot's PRs serves both lists; each source reports its failure.
+  const botPrs = searchBotPrs(gh);
+  botPrs.catch(() => {});
   const [active, status, queue, decisions, runs, forge, others] = await Promise.all([
     loadActive(gh, now),
     readSource(sources, "status", () => loadProjectStatus(gh)),
     readSource(sources, "queue", async () => { const q = await loadQueue(gh); return { ...q, answered: await loadAnswered(gh, q.items) }; }),
     readSource(sources, "decisions", async () => { const q = await loadDecisions(gh); return { decisions: sortDecisions(q.items.map(parseDecision)), answered: await loadAnswered(gh, q.items) }; }),
     loadActionRuns(gh, now),
-    readSource(sources, "forge", async () => { const prs = await loadForgePrs(gh); return { prs, verdicts: await refreshVerdicts(gh, prs, new Map()) }; }),
-    readSource(sources, "otherPrs", async () => loadWaiting(gh, await loadOtherPrs(gh))),
+    readSource(sources, "forge", async () => { const prs = await loadForgePrs(gh, await botPrs); return { prs, verdicts: await refreshVerdicts(gh, prs, new Map()) }; }),
+    readSource(sources, "otherPrs", async () => loadWaiting(gh, await loadOtherPrs(gh, await botPrs))),
   ]);
   if (status !== undefined) active.status = status;
   sources.runs = { state: runs.state, checkedAt: runs.at, ...(runs.state === "ok" ? { fetchedAt: runs.at } : { error: runs.warnings.join(" ") }) };
