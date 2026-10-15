@@ -30,6 +30,8 @@ export interface HostedPiece {
   /** One job of it, by name; else the run as a whole. */
   job?: string;
   read?: PieceRead;
+  /** Opt-in warning when no pass has finished within this many minutes. */
+  staleAfterMinutes?: number;
 }
 
 export interface ControllerConfig {
@@ -63,6 +65,10 @@ export function parseControllerConfig(raw: unknown): ControllerConfig {
       if (!REPO_RE.test(piece.repo)) throw new Error(`controller config: ${at}.repo is not OWNER/NAME`);
       if (!WORKFLOW_RE.test(piece.workflow)) throw new Error(`controller config: ${at}.workflow is not a workflow file name`);
       if (p.job !== undefined) piece.job = text(p.job, `${at}.job`);
+      if (p.staleAfterMinutes !== undefined) {
+        if (typeof p.staleAfterMinutes !== "number" || !Number.isInteger(p.staleAfterMinutes) || p.staleAfterMinutes < 1 || p.staleAfterMinutes > 10080) throw new Error(`controller config: ${at}.staleAfterMinutes must be an integer from 1 to 10080`);
+        piece.staleAfterMinutes = p.staleAfterMinutes;
+      }
       if (p.read !== undefined) {
         if (p.read !== "scheduler" && p.read !== "in-flight") throw new Error(`controller config: ${at}.read must be scheduler or in-flight`);
         piece.read = p.read;
@@ -218,7 +224,7 @@ async function loadPiece(gh: GitHub, piece: HostedPiece, reads: Reads): Promise<
     out.inFlight = [...byId.values()].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((r) => ({ title: r.display_title?.trim() || `run ${r.id}`, url: r.html_url, status: r.status ?? "unknown", since: r.run_started_at ?? r.created_at }));
   }
   if (!piece.job) {
-    const done = runs.find((r) => !isActiveRun(r));
+    const done = runs.find((r) => r.status === "completed");
     const active = runs.find(isActiveRun);
     if (done) {
       const last = ranOf(done.html_url, done.updated_at ?? done.created_at, done.conclusion);

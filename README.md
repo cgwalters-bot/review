@@ -357,6 +357,17 @@ session writes are not part of this pane.
 interactive session down would stop anything. Its hosted pieces are the
 workflows, or jobs of one, listed in `src/github/controller.json`: each
 with its last finished run (conclusion, age, link) and one running now.
+Poll and Coordinator show a linked **last pass N minutes ago**, derived
+from Actions runs (and the configured job for Poll), never the heartbeat
+comment. Their `staleAfterMinutes: 60` warns after an hour without a
+completed pass; queued or running successors do not hide that warning,
+and failed passes retain their failure status. The age and warning update
+while the page stays open. This setting is opt-in per hosted piece, accepts
+1–10080 minutes, and adds no reads beyond the existing bounded run/job lists.
+Missing workflows, unreadable sources and no completed pass remain explicit,
+not evidence of a live controller. The configured `coordinator.yml` is not
+deployed yet; this does not infer a coordinator step's success from its parent
+job or implement the broader agent-run/usage migration in tracker#422.
 A workflow with no runs yet shows as not built; a job missing from its
 last few runs, as not seen. The board scheduler's mode (preview or
 acting) and how many items its last pass would start or started are read

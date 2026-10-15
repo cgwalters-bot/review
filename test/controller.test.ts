@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { CONTROLLER, type ControllerConfig, type ControllerData, loadController, parseControllerConfig, schedulerPass, sessionPresent } from "../src/github/controller.ts";
 import type { Heartbeat } from "../src/github/heartbeat.ts";
-import { opsDetail } from "../src/github/opsview.ts";
+import { opsDetail, tickOps } from "../src/github/opsview.ts";
 import { installDom } from "./helpers.ts";
 
 installDom();
@@ -51,6 +51,8 @@ describe("parseControllerConfig", () => {
     assert.throws(() => parseControllerConfig({}), /list/);
     assert.throws(() => parseControllerConfig({ hosted: Array.from({ length: 13 }, () => ({ label: "x", what: "y", repo: REPO, workflow: "a.yml" })) }), /at most/);
     assert.deepEqual(one({})().hosted[0], { label: "x", what: "y", repo: REPO, workflow: "a.yml" });
+    for (const staleAfterMinutes of [0, -1, 1.5, 10081, "60", null, Infinity]) assert.throws(one({ staleAfterMinutes }), /staleAfterMinutes/);
+    for (const staleAfterMinutes of [1, 60, 10080]) assert.equal(one({ staleAfterMinutes })().hosted[0]?.staleAfterMinutes, staleAfterMinutes);
   });
 });
 
@@ -108,6 +110,30 @@ function script(opts: { notesStatus?: number; notes?: string[]; boardSkipped?: b
 }
 
 describe("loadController", () => {
+  it("derives monitored workflow liveness from bounded run lists alone", async () => {
+    const calls: string[] = [];
+    const config = { hosted: cfg.hosted.filter((p) => p.label === "Poll" || p.label === "Coordinator").map((p) => ({ ...p, job: undefined, staleAfterMinutes: 60 })) };
+    const gh = new GitHub(async () => "t", async (url) => {
+      calls.push(url);
+      return new Response(JSON.stringify({ workflow_runs: [
+        run(3, "queued", null, "2026-10-14T19:19:00Z"),
+        run(2, "in_progress", null, "2026-10-14T19:14:00Z"),
+        run(1, "completed", "failure", "2026-10-14T18:00:00Z"),
+      ] }), { status: 200 });
+    });
+    const data = await loadController(gh, config);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((url) => url.endsWith("/runs?per_page=30")));
+    for (const p of data.pieces) {
+      assert.equal(p.last?.url, `https://github.com/${REPO}/actions/runs/1`);
+      assert.equal(p.last?.conclusion, "failure");
+      assert.equal(p.running?.status, "queued");
+    }
+    const panel = opsDetail({ at: NOW, warnings: [], controller: data }, NOW);
+    assert.equal(panel.querySelectorAll(".ctl-pass-age.warn").length, 2);
+    assert.match(panel.querySelector(".ctl-list")?.textContent ?? "", /last pass 80 minutes ago · stale/);
+  });
+
   it("reads each piece's latest run, the scheduler's pass and the runs in flight", async () => {
     const { fetchImpl, calls } = script();
     const gh = new GitHub(async () => "t", fetchImpl);
@@ -190,6 +216,35 @@ describe("loadController", () => {
 });
 
 describe("the controller panel", () => {
+  it("ages passes independently of heartbeat, preserves failures, and updates stale warnings on tick", () => {
+    const piece = { ...cfg.hosted[0]!, staleAfterMinutes: 10 };
+    const last = { url: `https://github.com/${REPO}/actions/runs/1`, at: "2026-10-14T19:10:00Z", conclusion: "failure" };
+    for (const local of [undefined, null, hb("2026-10-14T19:20:00Z"), hb("2026-10-14T17:00:00Z")]) {
+      const el = opsDetail({ at: NOW, warnings: [], ...(local !== undefined ? { local } : {}), controller: { pieces: [{ piece, state: "ok", last }] } }, NOW);
+      const pass = el.querySelector(".ctl-pass-age")!;
+      assert.equal(pass.textContent, "last pass 10 minutes ago");
+      assert.equal(pass.parentElement?.getAttribute("href"), last.url);
+      assert.equal(pass.classList.contains("warn"), false);
+      assert.equal(el.querySelector(".ctl .st")?.textContent, "failure");
+      tickOps(el, NOW + 60_000);
+      assert.equal(pass.textContent, "last pass 11 minutes ago · stale");
+      assert.equal(pass.classList.contains("warn"), true);
+    }
+  });
+
+  it("keeps freshness opt-in and does not invent a completed pass", () => {
+    for (const at of ["bad", "2026-10-15T00:00:00Z"]) {
+      const el = opsDetail({ at: NOW, warnings: [], controller: { pieces: [{ piece: { ...cfg.hosted[0]!, staleAfterMinutes: 60 }, state: "ok", last: { at, url: "https://github.com/example-org/tracker/actions/runs/1" } }] } }, NOW);
+      assert.equal(el.querySelector(".ctl-pass-age.warn")?.textContent, "last pass time unknown · stale");
+    }
+    const el = opsDetail({ at: NOW, warnings: [], controller: { pieces: [
+      { piece: cfg.hosted[0]!, state: "ok", last: { at: "2026-10-14T00:00:00Z", url: "https://github.com/example-org/tracker/actions/runs/1" } },
+      { piece: { ...cfg.hosted[0]!, staleAfterMinutes: 60 }, state: "ok", running: { at: "2026-10-14T19:19:00Z", url: "https://github.com/example-org/tracker/actions/runs/2", status: "queued" } },
+    ] } }, NOW);
+    assert.equal(el.querySelector(".ctl-pass-age"), null);
+    assert.match(el.querySelectorAll(".ctl")[1]?.textContent ?? "", /No completed pass.*queued now/);
+  });
+
   const hb = (updatedAt: string, loopState = "sleeping"): Heartbeat => ({ updatedAt, session: "abcdef0123", loopState, workers: [], skipped: 0, commentUrl: "https://github.com/example-org/tracker/issues/176#issuecomment-1" });
 
   async function render(local: Heartbeat | null | undefined): Promise<HTMLElement> {

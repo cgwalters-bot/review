@@ -6,11 +6,11 @@
     "census": "^- [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\\d+: (live;|not live,|could not be read:)"
   },
   "hosted": [
-    { "label": "Poll", "what": "fixes, merges, marks drafts ready", "repo": "cgwalters-forge/tracker", "workflow": "poll.yml", "job": "poll" },
+    { "label": "Poll", "what": "fixes, merges, marks drafts ready", "repo": "cgwalters-forge/tracker", "workflow": "poll.yml", "job": "poll", "staleAfterMinutes": 60 },
     { "label": "Board scheduler", "what": "starts Ready items", "repo": "cgwalters-forge/tracker", "workflow": "poll.yml", "job": "board", "read": "scheduler" },
     { "label": "agent-board", "what": "previews its poll", "repo": "cgwalters-forge/tracker", "workflow": "poll.yml", "job": "agent-board" },
     { "label": "Usage", "what": "publishes the usage snapshot", "repo": "cgwalters-forge/tracker", "workflow": "usage.yml" },
-    { "label": "Coordinator", "what": "breaks epics into sub-issues (tracker#572)", "repo": "cgwalters-forge/tracker", "workflow": "coordinator.yml" },
+    { "label": "Coordinator", "what": "breaks epics into sub-issues (tracker#572)", "repo": "cgwalters-forge/tracker", "workflow": "coordinator.yml", "staleAfterMinutes": 60 },
     { "label": "Dispatch", "what": "agent runs", "repo": "cgwalters-forge/tracker", "workflow": "dispatch.yml", "read": "in-flight" }
   ]
 }
