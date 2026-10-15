@@ -91,6 +91,7 @@ import {
   type OtherPr,
   type PrDetail,
   refreshVerdicts,
+  searchBotPrs,
   submitReview,
   type VerdictEntry,
   type WaitingPr,
@@ -1344,8 +1345,10 @@ async function pollForge(state: State): Promise<boolean> {
   if (Date.now() - state.lastForgePoll < wait) return false;
   state.forceForge = false;
   try {
-    // Settled apart: a failed search of the other PRs keeps them as they were, and the drafts still refresh.
-    const [forge, others] = await Promise.allSettled([loadForgePrs(state.gh), loadOtherPrs(state.gh)]);
+    // One search of the bot's PRs serves both lists. Settled apart: a failed
+    // search of the requests keeps the other PRs as they were, and the drafts still refresh.
+    const all = await searchBotPrs(state.gh);
+    const [forge, others] = await Promise.allSettled([loadForgePrs(state.gh, all), loadOtherPrs(state.gh, all)]);
     if (forge.status === "rejected") throw forge.reason;
     const prs = forge.value;
     state.lastForgePoll = Date.now();
@@ -1368,6 +1371,8 @@ async function pollForge(state: State): Promise<boolean> {
   } catch (e) {
     state.forgeError = `Couldn't search the bot's PRs: ${message(e)}`;
     state.sources.forge = { ...state.sources.forge, state: "unavailable", checkedAt: Date.now(), error: message(e) };
+    // The same search serves the other PRs: they weren't refreshed either.
+    state.sources.otherPrs = { ...state.sources.otherPrs, state: "unavailable", checkedAt: Date.now(), error: message(e) };
     return false;
   }
 }
@@ -1440,8 +1445,9 @@ async function showCached(state: State): Promise<void> {
   } catch {
     return;
   }
-  const prs = await loadForgePrs(queueReads).catch(() => undefined);
-  const others = await loadOtherPrs(queueReads).catch(() => undefined);
+  const all = await searchBotPrs(queueReads).catch(() => undefined);
+  const prs = all && (await loadForgePrs(queueReads, all));
+  const others = all && (await loadOtherPrs(queueReads, all).catch(() => undefined));
   const waiting = others ? (await loadWaiting(otherReads, others)).prs : [];
   const verdicts = new Map<string, VerdictEntry>();
   const parts = await mapLimit(prs ?? [], FETCH_CONCURRENCY, (p) => refreshVerdicts(otherReads, [p], new Map()).catch(() => new Map<string, VerdictEntry>()));
@@ -1623,7 +1629,7 @@ function refreshSoon(state: State): void {
 function newPoller(get: () => State): Poller {
   return new Poller({
     run: (current) => poll(get(), current),
-    delay: () => pollDelay(get().gh.rate, Date.now(), { interval: POLL_INTERVAL_MS, backoff: POLL_BACKOFF_FACTOR, lowFraction: RATE_LOW_FRACTION, clock }),
+    delay: () => pollDelay(get().gh.rate, Date.now(), { interval: POLL_INTERVAL_MS, backoff: POLL_BACKOFF_FACTOR, lowFraction: RATE_LOW_FRACTION, clock }, get().gh.blockedUntil),
     hidden: () => document.hidden,
     changed: () => {
       if (get().loaded) renderChrome(get());

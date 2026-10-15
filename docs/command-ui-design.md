@@ -256,7 +256,7 @@ the forge remains authoritative for work. Reuse visibility-aware
 polling, ETags where offered, rate-limit backoff and sign-out cache deletion;
 GraphQL/search reads need explicit cadence rather than assumed conditional
 caching. Render last-confirmed times, stale/partial/access errors and empty
-states independently. Board polling remains about 30s, searches/runs about
+states independently. Board polling, searches and runs remain about
 60s while visible; discovering boards is on selection/refresh, not every tick.
 
 ## 3. TypeScript, Rust/WASM and a conditional Datastar server

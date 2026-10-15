@@ -7,7 +7,7 @@
 // viewer's token, and a token that can't read it just gets no panel.
 // The comment is parsed strictly, like the heartbeat.
 
-import { GitHubError, type GitHub } from "./api.ts";
+import { GitHubError, type GitHub, RateLimited } from "./api.ts";
 import { BOT_LOGIN, USAGE_ISSUE, USAGE_REPO } from "./config.ts";
 import type { RawComment } from "./heartbeat.ts";
 
@@ -260,8 +260,7 @@ export async function loadUsage(gh: GitHub): Promise<UsageData> {
     return usage ? { state: "ok", usage } : { state: "none" };
   } catch (e) {
     // A 403 is also how GitHub says a rate limit ran out: that's a failed read, not a private repository.
-    const rateLimited = e instanceof GitHubError && e.status === 403 && (gh.rate?.remaining === 0 || /rate limit/i.test(e.message));
-    if (e instanceof GitHubError && (e.status === 403 || e.status === 404) && !rateLimited) return { state: "unreadable" };
+    if (e instanceof GitHubError && (e.status === 403 || e.status === 404) && !(e instanceof RateLimited)) return { state: "unreadable" };
     throw e;
   }
 }

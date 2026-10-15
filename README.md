@@ -457,9 +457,14 @@ On a narrow screen (a phone) the header's buttons fold into a ⋯ menu
 button, and the summary line is hidden, so the first entry shows near
 the top; the key hints are hidden on touch screens.
 
-The board is polled every 30 seconds with ETags while the tab is
-visible, the forge's PR search every minute, and a PR's reviews only
-when it changed. With "remember" ticked at sign-in, responses are also
+The board is polled every minute with ETags while the tab is visible
+(never while it is hidden), the bot's PRs with two searches every
+minute, and a PR's reviews only when it changed. At most four requests
+to GitHub are in flight at once, searches one at a time: GitHub's
+secondary rate limits punish concurrency. When GitHub refuses a request
+for a rate limit, the app says "GitHub rate limit: retrying in N s",
+keeps what is on screen, sends nothing until then, and retries by
+itself. With "remember" ticked at sign-in, responses are also
 kept in IndexedDB (for your login only, roughly 50 MB at most, and
 entries unconfirmed for 7 days are dropped at the next load),
 so a reload shows the queue, a PR, the news or ops at once, marked "cached ·
@@ -469,7 +474,7 @@ GitHub rejecting the token at any time, deletes that cache; without
 
 When the header's time isn't moving, it says why next to it: "paused:
 tab hidden", "slowed: rate limit low", "paused: rate limit until
-14:05", "waiting on GitHub for 45 s". A request GitHub hasn't answered
+14:05", "paused: GitHub rate limit until 14:05", "waiting on GitHub for 45 s". A request GitHub hasn't answered
 in a minute fails, and a poll still running after two minutes is given
 up on ("stalled"), so a connection that died silently never stops the
 polling. Over the queue's cached copy it always says why, "refreshing…"

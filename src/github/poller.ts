@@ -244,8 +244,13 @@ export interface DelayPolicy {
 /** Past the rate budget's reset, wait this much longer for GitHub's clock. */
 const RESET_SLACK_MS = 5_000;
 
-/** The next poll's delay under the rate budget: usual, slowed when low, or paused until it resets when spent. */
-export function pollDelay(rate: RateLimit | undefined, now: number, p: DelayPolicy): Delay {
+/**
+ * The next poll's delay under the rate budget: usual, slowed when low, or
+ * paused until it resets when spent, or until `blockedUntil` (epoch ms)
+ * when GitHub refused a request for a rate limit and said when to retry.
+ */
+export function pollDelay(rate: RateLimit | undefined, now: number, p: DelayPolicy, blockedUntil = 0): Delay {
+  if (blockedUntil > now) return { ms: Math.max(p.interval, blockedUntil - now), why: `paused: GitHub rate limit until ${p.clock(blockedUntil)}` };
   if (!rate) return { ms: p.interval };
   const reset = rate.reset * 1000;
   if (rate.remaining <= 0 && reset > now) return { ms: Math.max(p.interval, reset - now + RESET_SLACK_MS), why: `paused: rate limit until ${p.clock(reset)}` };
