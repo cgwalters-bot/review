@@ -86,8 +86,8 @@ describe("operator dashboard", () => {
     fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-09T14:00:00Z"));
     assert.doesNotMatch(text(home.slots.usage), /Invalid Date|not reported yet/);
     assert.equal(home.sections.needs.details.open, true);
-    assert.equal(home.slots.weekly.nextElementSibling, home.slots.status);
-    assert.equal(home.slots.status.nextElementSibling, home.sections.needs.details);
+    assert.equal(home.slots.weekly.nextElementSibling, home.sections.needs.details);
+    assert.equal(home.sections.needs.details.nextElementSibling, home.slots.status);
   });
 
   it("shows each pool as a compact bar with a pace tick, the sentence folded away", () => {
@@ -133,7 +133,7 @@ describe("operator dashboard", () => {
     assert.equal(home.el.firstElementChild, home.slots.weekly);
     const people = home.el.querySelector<HTMLDetailsElement>("#sec-people")!;
     assert.equal(people.open, false);
-    assert.equal(people.previousElementSibling, home.sections.needs.details);
+    assert.equal(people.previousElementSibling, home.slots.status);
     fillUsage(home, { state: "ok", usage: {
       updatedAt: "2026-10-08T23:01:01Z", observedAt: "2026-10-08T22:58:47Z", workers: [],
       windows: [{ kind: "seven_day", since: "2026-10-05T23:00:00Z", usedPercent: 40, resetsAt: "2026-10-12T23:00:00Z", requests: 7360, tokens: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 } }],
@@ -180,6 +180,30 @@ describe("operator dashboard", () => {
     assert.equal(home.slots.status.querySelector(".status-preview"), null);
     fillStatus(home, status, render);
     assert.equal(home.slots.status.querySelector("button"), button);
+  });
+
+  it("puts Decisions before Status and refreshes its age without resetting expansion", () => {
+    const home = homeSkeleton(hooks());
+    assert.ok([...home.el.children].indexOf(home.sections.needs.details) < [...home.el.children].indexOf(home.slots.status));
+    const status = { body: "First paragraph\n\nSecond paragraph", createdAt: "2026-10-15T10:00:00Z" };
+    fillStatus(home, status, render, undefined, Date.parse("2026-10-15T10:30:00Z"));
+    assert.match(text(home.slots.status.querySelector(".status-age")), /As of .*30 min ago/);
+    assert.equal(home.slots.status.querySelector(".status-age.hot"), null);
+    home.slots.status.querySelector<HTMLButtonElement>("button")!.click();
+    fillStatus(home, status, render, undefined, Date.parse("2026-10-15T11:01:00Z"));
+    assert.match(text(home.slots.status.querySelector(".status-age.hot")), /61 min ago · stale/);
+    assert.equal(home.slots.status.querySelector("button")?.getAttribute("aria-expanded"), "true");
+    fillStatus(home, { ...status, createdAt: "invalid" }, render);
+    assert.match(text(home.slots.status), /Status age unknown/);
+  });
+
+  it("previews the first paragraph even after a heading or list", () => {
+    for (const prefix of ["## Update", "- One\n- Two"]) {
+      const home = homeSkeleton(hooks());
+      fillStatus(home, { body: `${prefix}\n\nSummary.\n\nDetails.`, createdAt: "2026-10-15T10:00:00Z" }, render);
+      const body = home.slots.status.querySelector(".status-preview")!;
+      assert.deepEqual([...body.children].filter((el) => el.matches(".status-summary")).map(text), ["Summary."]);
+    }
   });
 
   it("shows active epics by priority with progress, running children and gray paused work", () => {

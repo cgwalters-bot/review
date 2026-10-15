@@ -13,6 +13,7 @@
 // read an item, and the CSP blocks third-party images anyway.
 
 import MarkdownIt from "markdown-it";
+import Token from "markdown-it/lib/token.mjs";
 import createDOMPurify, { type Config, type WindowLike } from "dompurify";
 
 /** Sources larger than this are cut, with a note, to keep a phone responsive. */
@@ -50,7 +51,7 @@ function markdownIt(): MarkdownIt {
   return md;
 }
 
-export type Renderer = (source: string) => DocumentFragment;
+export type Renderer = (source: string, repository?: string) => DocumentFragment;
 
 /**
  * Make a renderer bound to a window: the browser's, or jsdom's in tests.
@@ -67,9 +68,38 @@ export function createRenderer(win: WindowLike): Renderer {
       node.setAttribute("rel", "noopener noreferrer");
     }
   });
-  return (source: string) => {
+  return (source: string, repository?: string) => {
     const cut = source.length > MAX_SOURCE_CHARS;
     const text = cut ? `${source.slice(0, MAX_SOURCE_CHARS)}\n\n*(cut: too long to show here)*` : source;
-    return purify.sanitize(md.render(text), PURIFY_CONFIG);
+    const tokens = md.parse(text, {});
+    if (repository && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+      for (const block of tokens) {
+        let depth = 0;
+        block.children = block.children?.flatMap((token) => {
+          if (token.type === "link_open") depth++;
+          if (token.type === "link_close") depth--;
+          // Only prose: never rewrite code, URLs or existing link labels.
+          if (token.type !== "text" || depth) return [token];
+          const result = [];
+          let end = 0;
+          // Do not retry at each dot/hyphen in a long non-reference word.
+          const refs = /(?<![\w/.#-])(?:([A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+))?#([1-9][0-9]*)(?![\w])/g;
+          for (const match of token.content.matchAll(refs)) {
+            const before = new Token("text", "", 0);
+            before.content = token.content.slice(end, match.index);
+            const open = new Token("link_open", "a", 1);
+            open.attrSet("href", `https://github.com/${match[1] ?? repository}/issues/${match[2]}`);
+            const label = new Token("text", "", 0);
+            label.content = match[0];
+            result.push(before, open, label, new Token("link_close", "a", -1));
+            end = match.index + match[0].length;
+          }
+          const tail = new Token("text", "", 0);
+          tail.content = token.content.slice(end);
+          return [...result, tail];
+        }) ?? null;
+      }
+    }
+    return purify.sanitize(md.renderer.render(tokens, md.options, {}), PURIFY_CONFIG);
   };
 }
