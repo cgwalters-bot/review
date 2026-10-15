@@ -608,6 +608,15 @@ function conclusionStatus(c: string | undefined): HTMLElement {
   return status("o-other", c ?? "done", c ?? "");
 }
 
+/** A queued or stuck successor must not make an old completed pass look fresh. */
+function updatePassAge(el: Element, now: number): void {
+  const at = Date.parse(el.getAttribute(ATTR_T) ?? "");
+  const minutes = Math.max(0, Math.floor((now - at) / MINUTE));
+  const stale = !Number.isFinite(at) || at > now || now - at > Number(el.getAttribute("data-stale-ms"));
+  el.textContent = Number.isFinite(at) && at <= now ? `last pass ${minutes} minutes ago${stale ? " · stale" : ""}` : "last pass time unknown · stale";
+  el.classList.toggle("warn", stale);
+}
+
 function pieceRow(p: PieceState, now: number): HTMLElement {
   const { piece } = p;
   const name = h("span", { class: "name" }, h("strong", {}, piece.label), " ", h("span", { class: "what" }, piece.what));
@@ -616,6 +625,13 @@ function pieceRow(p: PieceState, now: number): HTMLElement {
   if (p.state === "uncached") return h("li", { class: "ctl" }, status("s-unknown", "…", "not cached; loading"), name, h("span", { class: "when" }, "loading…"));
   if (p.state === "error") return h("li", { class: "ctl" }, status("o-failed", "unread", p.error ?? ""), name, h("span", { class: "when" }, "couldn't read its runs"));
   const st = p.last ? conclusionStatus(p.last.conclusion) : p.running ? status("s-ready", "running", "running, none finished yet") : status("s-unknown", "no run", "");
+  let lastPass: Node | undefined;
+  if (piece.staleAfterMinutes !== undefined && p.last) {
+    const passAge = h("span", { class: "ctl-pass-age", [ATTR_T]: p.last.at, "data-stale-ms": String(piece.staleAfterMinutes * MINUTE), title: `finished ${time(p.last.at)}; stale after ${piece.staleAfterMinutes} minutes` });
+    updatePassAge(passAge, now);
+    lastPass = link(p.last.url, "");
+    lastPass.appendChild(passAge);
+  }
   const li = h(
     "li",
     { class: "ctl" },
@@ -624,8 +640,8 @@ function pieceRow(p: PieceState, now: number): HTMLElement {
     h(
       "span",
       { class: "when" },
-      p.last ? h("span", { title: `finished ${time(p.last.at)}` }, `${age(p.last.at, now)} ago `) : "",
-      p.last ? link(p.last.url, "run ↗") : "",
+      lastPass ?? (p.last ? h("span", { title: `finished ${time(p.last.at)}` }, `${age(p.last.at, now)} ago `) : ""),
+      lastPass ? "" : p.last ? link(p.last.url, "run ↗") : piece.staleAfterMinutes !== undefined ? h("span", { class: "warn" }, "No completed pass") : "",
       p.running ? h("span", { class: "now", title: `started ${time(p.running.at)}` }, p.last ? " · " : "", link(p.running.url, `${p.running.status && p.running.status !== "in_progress" ? p.running.status.replace(/_/g, " ") : "running"} now ↗`)) : "",
     ),
   );
@@ -797,6 +813,7 @@ export function opsDetail(ops: Ops | undefined, now: number = Date.now()): HTMLE
 
 /** Move the live times in `root` to `now`. */
 export function tickOps(root: ParentNode, now: number): void {
+  for (const el of root.querySelectorAll(".ctl-pass-age")) updatePassAge(el, now);
   for (const el of root.querySelectorAll(`.${TICK_SINCE}`)) {
     el.textContent = duration(now - Number(el.getAttribute(ATTR_T)));
   }
