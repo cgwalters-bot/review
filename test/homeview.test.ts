@@ -410,7 +410,7 @@ describe("the sections' fills", () => {
     const entries = buildEntries([...questions(7), tracked("PVTI_rev", 200, { labels: ["review"], body: `Blocks: ${TRACKER}/9\nAsk: look\n` })], [], new Map(), true);
     const waiting = fillNeeds(home, buildNeeds({ entries }), needsHooks(), entries);
     assert.equal(waiting, 7);
-    assert.equal(text(count(home, "needs")), "7");
+    assert.equal(text(count(home, "needs")), "document + 7 other asks");
     assert.ok(count(home, "needs").classList.contains("hot"));
     const rows = [...home.slots.needs.querySelectorAll<HTMLElement>(".row")];
     assert.equal(rows.length, 7);
@@ -419,11 +419,11 @@ describe("the sections' fills", () => {
     assert.equal(rows.filter((r) => r.querySelector("form.answer")).length, 7, "the review row has no form");
   });
 
-  it("says all caught up when nothing waits on him", () => {
+  it("points to the document when no legacy asks wait on him", () => {
     const home = mounted();
     assert.equal(fillNeeds(home, [], needsHooks()), 0);
-    assert.match(text(home.slots.needs), /All caught up: nothing needs you right now/);
-    assert.equal(text(count(home, "needs")), "0");
+    assert.match(text(home.slots.needs), /No other asks. See the decisions document above\./);
+    assert.equal(text(count(home, "needs")), "document + 0 other asks");
     assert.ok(!count(home, "needs").classList.contains("hot"));
   });
 

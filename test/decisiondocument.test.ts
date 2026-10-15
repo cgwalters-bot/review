@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GitHub } from "../src/github/api.ts";
-import { answerDocument, documentView, parseDocument, refreshDocument, sendDocumentAnswer } from "../src/github/decisiondocument.ts";
+import { DECISIONS_CONFIG, answerDocument, documentView, parseDocument, refreshDocument, sendDocumentAnswer } from "../src/github/decisiondocument.ts";
 import { installDom } from "./helpers.ts";
 
 const win = installDom();
 const body = "### D12 Enable scheduler? (P0, blocks example/work#3)\nContext.\n- [ ] A) Yes ← recommended: ready\n- [ ] B) Wait\n\nReply:\n\n### D13 Another?\n- [ ] A) Yes\n- [ ] B) No\nReply:\n\n## Done\n### D1 Old\nOutcome: kept\n";
 const path = "/repos/example/private/issues/8";
+
+test("site configuration enables a valid document and retains legacy questions", () => {
+  assert.ok(DECISIONS_CONFIG.document);
+  assert.match(DECISIONS_CONFIG.document.repo, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
+  assert.equal(DECISIONS_CONFIG.document.number, 1);
+  assert.equal(DECISIONS_CONFIG.legacyQuestions, true);
+});
 
 test("render document and submit tick and reply through viewer client", async () => {
   const calls: string[] = [];
