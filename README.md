@@ -171,6 +171,20 @@ month's spend against the allowance with the time to its reset, an estimate
 from tokens marked as one; otherwise it is a plain counter row. Older
 publications retain the Claude window display.
 **Decisions** comes right after usage, before Status, open on entry,
+The optional single checklist document is configured in
+`src/github/decisions-config.json`: set `document` to an object with `repo`
+(`owner/repository`) and `number`. It is disabled (`null`) by default;
+`legacyQuestions: true` retains old per-issue asks during migration. The
+browser reads this one issue once per refresh with the viewer's token, including
+for private repositories. Entries use `### D12 Question`, checklist options
+`- [ ] A) Answer ← recommended: reason`, and one `Reply:` line. `## Done`
+starts the collapsed history. Answers tick one option and fill a one-line reply
+only within that id. A fresh body comparison refuses stale forms with
+“changed, reload”; GitHub has no atomic issue-body compare-and-swap, so an edit
+between that final read and write can still race. No private contents ship in
+the build. Configuration and migration are left to the operator.
+
+The legacy Decisions list is
 ranked by Priority, showing what they block and their inline answer forms.
 Each question leads with what it asks, then one small line (priority, the
 issue as a link to GitHub, how long it has waited), its options as radio

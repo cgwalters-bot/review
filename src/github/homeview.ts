@@ -7,6 +7,7 @@
 
 import { h } from "../dom.ts";
 import { TRACKER_REPO } from "./config.ts";
+import { DECISIONS_CONFIG } from "./decisiondocument.ts";
 import { CONTROLLER, parseControllerConfig } from "./controller.ts";
 import { runsPanel } from "./runsview.ts";
 import type { PageState } from "./state.ts";
@@ -69,6 +70,7 @@ export interface Slots {
   status: HTMLElement;
   focus: HTMLElement;
   needs: HTMLElement;
+  decisionDocument: HTMLElement;
   agents: HTMLElement;
   /** The ops detail under the agents, and its fold. */
   ops: HTMLElement;
@@ -144,6 +146,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   peopleSection.addEventListener("toggle", () => hooks.peopleToggled?.(peopleSection.open));
   const weekly = h("section", { class: "usage-body weekly-usage", "aria-label": "Weekly subscription usage" }, h("h2", {}, "Weekly subscription usage"), h("p", { class: "note" }, "Reading usage…"));
   const needs = h("div", { class: "needs-slot" });
+  const decisionDocument = h("div", { class: "decision-document-slot" });
   const status = h("section", { class: "dashboard-status", "aria-label": "Status" }, h("h2", {}, "Status"));
   const focus = h("section", { class: "dashboard-focus", "aria-label": "Focus" }, h("h2", {}, "Focus"));
   const runs = h("div", { class: "runs-slot" });
@@ -157,14 +160,14 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const usage = h("div", { class: "usage-slot" });
   const ctx = { expected };
   const sections: Record<SectionId, SectionEls> = {
-    needs: section("needs", ctx, hooks, needs),
+    needs: section("needs", ctx, hooks, decisionDocument, needs),
     agents: section("agents", ctx, hooks, agents, ops.box),
     changes: section("changes", ctx, hooks, feed, news),
     priority: section("priority", ctx, hooks, priority, themes.box),
     usage: section("usage", ctx, hooks, usage),
   };
   const el = h("div", { class: HOME_CLASS }, weekly, sections.needs.details, status, peopleSection, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
-  return { el, sections, slots: { people, peopleCount, runs, freshness, status, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
+  return { el, sections, slots: { people, peopleCount, runs, freshness, status, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
 }
 
 export function fillState(home: Home, state: PageState): void {
@@ -263,7 +266,7 @@ export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks,
   const slot = home.slots.needs;
   const waiting = waitingCount(needs);
   const limit = Math.max(DECISION_LIMIT, needs.filter((n) => n.action === "answer" && !n.done).length);
-  if (needs.length === 0) slot.replaceChildren(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, "All caught up: nothing needs you right now."));
+  if (needs.length === 0) slot.replaceChildren(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, DECISIONS_CONFIG.document ? "No other asks. See the decisions document above." : "All caught up: nothing needs you right now."));
   else slot.replaceChildren(needsHead(needs, hooks, slot), ...needs.slice(0, limit).map((n) => needRow(n, hooks)));
   const keys = new Set(needs.map((n) => n.key));
   const identity = (e: Entry): string => {
@@ -285,7 +288,7 @@ export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks,
     return h("p", { class: "watching-item" }, h("a", { href: e.href }, e.title), ` · ${e.where} `, h("span", { class: `state ${label?.cls ?? "read"}` }, state), h("span", { class: "why" }, ` · ${reason}`));
   })));
   applyPriority(slot, hooks.priority ?? ALL_PRIORITIES);
-  setCount(home, "needs", String(waiting), { title: `${waiting} waiting on you`, hot: waiting > 0 });
+  setCount(home, "needs", DECISIONS_CONFIG.document ? `document + ${waiting} other asks` : String(waiting), { title: `${waiting} other asks waiting on you`, hot: waiting > 0 });
   return waiting;
 }
 
