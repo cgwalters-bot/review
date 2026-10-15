@@ -45,6 +45,7 @@ import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from 
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
+import { DECISIONS_CONFIG, refreshDocument } from "./decisiondocument.ts";
 import {
   CLASSIC_SCOPES,
   BOT_LOGIN,
@@ -476,7 +477,7 @@ function needsHooks(state: State, now: number): NeedsHooks {
 }
 
 function currentNeeds(state: State): Need[] {
-  return snapshot(state).people;
+  return snapshot(state).people.filter((need) => DECISIONS_CONFIG.legacyQuestions || need.action !== "answer");
 }
 
 function snapshot(state: State): PageState {
@@ -1266,6 +1267,8 @@ interface DecisionsRead {
  * only say so, unless `force` (he asked to reload).
  */
 async function refreshDecisions(state: State, force = false): Promise<void> {
+  if (state.home) await refreshDocument(state.gh, state.home.slots.decisionDocument, DECISIONS_CONFIG.document, force);
+  if (!DECISIONS_CONFIG.legacyQuestions) return;
   const read = async (gh: GitHub) => {
     const q = await loadDecisions(gh);
     const answered = await loadAnswered(gh, q.items);
