@@ -6,6 +6,8 @@
 // before "View all".
 
 import { h } from "../dom.ts";
+import { TRACKER_REPO } from "./config.ts";
+import { CONTROLLER, parseControllerConfig } from "./controller.ts";
 import { runsPanel } from "./runsview.ts";
 import type { PageState } from "./state.ts";
 import type { Renderer } from "../markdown.ts";
@@ -39,6 +41,17 @@ export const HOME_CLASS = "home";
 export const SECTION_CLASS = "sec";
 export const COUNT_CLASS = "sec-count";
 export const VIEW_ALL_CLASS = "view-all";
+
+function statusInterval(): number | undefined {
+  try {
+    return parseControllerConfig(CONTROLLER).hosted.find((p) => p.label === "Coordinator")?.staleAfterMinutes;
+  } catch {
+    // Invalid ops configuration must not prevent the dashboard rendering.
+    return undefined;
+  }
+}
+
+const STATUS_INTERVAL = statusInterval();
 
 /** A section's parts. */
 export interface SectionEls {
@@ -150,7 +163,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     priority: section("priority", ctx, hooks, priority, themes.box),
     usage: section("usage", ctx, hooks, usage),
   };
-  const el = h("div", { class: HOME_CLASS }, weekly, status, sections.needs.details, peopleSection, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
+  const el = h("div", { class: HOME_CLASS }, weekly, sections.needs.details, status, peopleSection, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
   return { el, sections, slots: { people, peopleCount, runs, freshness, status, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
 }
 
@@ -276,8 +289,20 @@ export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks,
   return waiting;
 }
 
-export function fillStatus(home: Home, status: ProjectStatus | null | undefined, render: Renderer, error?: string): void {
+export function fillStatus(home: Home, status: ProjectStatus | null | undefined, render: Renderer, error?: string, now = Date.now()): void {
   const slot = home.slots.status;
+  const timestamp = status ? Date.parse(status.createdAt) : NaN;
+  const minutes = Math.max(0, Math.floor((now - timestamp) / 60_000));
+  const interval = STATUS_INTERVAL;
+  const age = () => {
+    const el = slot.querySelector<HTMLElement>(".status-age");
+    if (!el) return;
+    el.textContent = Number.isFinite(timestamp) ? `As of ${new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}, ${minutes} min ago` : "Status age unknown";
+    const stale = interval !== undefined && now - timestamp > interval * 60_000;
+    el.classList.toggle("hot", stale);
+    if (stale) el.append(" · stale");
+  };
+  age();
   if (status && slot.dataset.signature === JSON.stringify(status)) return;
   slot.dataset.signature = JSON.stringify(status) ?? "";
   slot.replaceChildren(h("h2", {}, "Status"));
@@ -285,7 +310,9 @@ export function fillStatus(home: Home, status: ProjectStatus | null | undefined,
     slot.append(h("p", { class: "note" }, error ?? (status === null ? "No project status update yet." : "Reading project status…")));
     return;
   }
-  const body = h("div", { class: "md status-preview" }, render(status.body));
+  const body = h("div", { class: "md status-preview" }, render(status.body, TRACKER_REPO));
+  const paragraph = body.querySelector(":scope > p") ?? body.firstElementChild;
+  paragraph?.classList.add("status-summary");
   const button = h("button", { type: "button", class: "small", "aria-expanded": "false" }, "Expand");
   button.addEventListener("click", () => {
     const open = button.getAttribute("aria-expanded") !== "true";
@@ -293,7 +320,8 @@ export function fillStatus(home: Home, status: ProjectStatus | null | undefined,
     button.setAttribute("aria-expanded", String(open));
     button.textContent = open ? "Collapse" : "Expand";
   });
-  slot.append(body, button);
+  slot.append(h("p", { class: "note status-age" }), body, button);
+  age();
 }
 
 /** Active epics, with GitHub's progress and their running child work. */

@@ -9,6 +9,25 @@ import { installDom } from "./helpers.ts";
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
 
+it("bounds reference recognition on long punctuation and non-reference words", { timeout: 2000 }, () => {
+  for (const character of [".", "-", "a"]) {
+    const root = win.document.createElement("div");
+    root.append(render(character.repeat(MAX_SOURCE_CHARS), "local/board"));
+    assert.equal(root.querySelector("a"), null);
+  }
+});
+
+it("linkifies status references only in prose, and still sanitizes", () => {
+  const root = win.document.createElement("div");
+  root.append(render("other/project#12 #34 https://example.com/x#56 `#78`\n\n```\nother/project#90\n```\n\n[#91](https://example.com) <script>alert(1)</script> [bad](javascript:alert(1))", "local/board"));
+  assert.deepEqual([...root.querySelectorAll("a")].map((a) => a.getAttribute("href")), [
+    "https://github.com/other/project/issues/12", "https://github.com/local/board/issues/34", "https://example.com/x#56", "https://example.com",
+  ]);
+  assert.equal(root.querySelectorAll("code a, a a").length, 0);
+  assertSafe(root);
+  assert.equal(dom("#34 other/project#12").querySelector("a"), null);
+});
+
 function html(source: string): string {
   const div = win.document.createElement("div");
   div.append(render(source));

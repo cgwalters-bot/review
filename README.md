@@ -170,7 +170,7 @@ follows them. If the publisher configures an `allowance` in it (`limit_usd`,
 month's spend against the allowance with the time to its reset, an estimate
 from tokens marked as one; otherwise it is a plain counter row. Older
 publications retain the Claude window display.
-**Status** comes right after usage, then the open questions, with Decisions open on entry,
+**Decisions** comes right after usage, before Status, open on entry,
 ranked by Priority, showing what they block and their inline answer forms.
 Each question leads with what it asks, then one small line (priority, the
 issue as a link to GitHub, how long it has waited), its options as radio
@@ -207,8 +207,11 @@ Questions retain their inline answer forms and draft protection. Reviews
 open the existing head-checked review pane; **Write text** on an escalation
 opens its GitHub issue.
 
-**Status** renders the newest ProjectV2 status update as sanitized markdown,
-with a four-line preview and Expand. **Focus** shows active epics by priority,
+**Status** renders the newest ProjectV2 status update as sanitized Markdown,
+showing only its first paragraph until Expand. Issue references link to GitHub
+(bare `#N` uses the configured tracker repository); code and existing links are
+left alone. Its publication time and age update on refresh, with a stale warning
+after the Coordinator's configured `staleAfterMinutes` interval. **Focus** shows active epics by priority,
 sub-issue progress and running child items; paused or parked epics are gray.
 **Agents** shows remote/local placement, engine, item and age, the count
 against `AGENT_TARGET`, and OpenCode's share. Engines come from the optional

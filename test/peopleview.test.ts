@@ -16,8 +16,8 @@ describe("From people UI", () => {
     const people: People = { rows: Array.from({ length: 7 }, (_, i) => row(i + 1)), warnings: [] };
     fillPeople(home, people, Date.now(), { done: async () => {}, changed: () => {} });
     assert.equal(home.el.firstElementChild, home.slots.weekly);
-    assert.equal(home.el.children[1], home.slots.status);
-    assert.equal(home.el.children[2]?.id, "sec-needs");
+    assert.equal(home.el.children[1]?.id, "sec-needs");
+    assert.equal(home.el.children[2], home.slots.status);
     assert.equal(home.el.children[3]?.id, "sec-people");
     assert.equal((home.el.children[3] as HTMLDetailsElement).open, false);
     assert.equal(home.slots.peopleCount.textContent, "7");

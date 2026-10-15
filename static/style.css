@@ -669,7 +669,7 @@ details.sub-fold > div { padding-top: 8px; }
 .runs-spark span { flex: 1; min-width: 0; background: var(--accent); }
 .source-freshness { overflow-wrap: anywhere; padding: .5rem 1rem; }
 .state-export pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.status-preview { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; line-height: 1.5em; max-height: 6em; overflow: hidden; }
+.status-preview > :not(.status-summary) { display: none; }
 .status-preview > :first-child { margin-top: 0; }
 .focus-epic.paused { color: #888; }
 .focus-epic.paused a { color: inherit; }
