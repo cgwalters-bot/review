@@ -10,6 +10,14 @@
 import { GitHubError, type GitHub, RateLimited } from "./api.ts";
 import { BOT_LOGIN, USAGE_ISSUE, USAGE_REPO } from "./config.ts";
 import type { RawComment } from "./heartbeat.ts";
+import config from "./usage-config.json" with { type: "json" };
+
+/**
+ * Where Mistral's monthly allowance is configured, when the snapshot
+ * carries none: a pools file whose "mistral" pool has an "allowance".
+ * null turns the read off.
+ */
+export const USAGE_CONFIG = config as { mistralAllowance: { repo: string; path: string } | null };
 
 /** The comment's first line. */
 export const USAGE_MARKER = "<!-- bot-usage v1 -->";
@@ -55,10 +63,44 @@ export interface UsageWindow {
 
 export interface UsagePool {
   usedPercent: number;
+  /** The scheduler's allowance at observedAt: its target times the share of the window gone, roughly. */
   allowedPercent: number;
   resetsAt: string;
   observedAt: string;
   hold: boolean;
+  /** The window's length; a week when the snapshot doesn't say. */
+  windowMinutes: number;
+}
+
+/** A pool's window, in minutes, when the snapshot doesn't give one. */
+const WEEK_MINUTES = 7 * 24 * 60;
+/** Before this share of the window has gone a projection is noise (8 hours of a week): none is made. */
+const PROJECT_FROM_PERCENT = 5;
+
+/** What a pool's numbers say together, at the time they were observed. */
+export interface PoolPace {
+  /** "week", or the window's length ("5h", "3d"). */
+  unit: string;
+  /** Percent of the window gone when the percent used was observed. */
+  gonePercent: number;
+  /** Percent used the window would end at, at the rate so far. */
+  projectedPercent?: number;
+}
+
+/**
+ * "Pace" alone was ambiguous: the tick is the scheduler's allowance, not
+ * the share of the window gone. This works that share out from the
+ * window's end and length (OpenAI's week runs from its own reset, not a
+ * calendar week), and projects the percent used to the window's end.
+ */
+export function poolPace(pool: UsagePool): PoolPace {
+  const length = pool.windowMinutes * 60_000;
+  const gonePercent = Math.max(0, Math.min(100, 100 * (1 - (Date.parse(pool.resetsAt) - Date.parse(pool.observedAt)) / length)));
+  const hours = pool.windowMinutes / 60;
+  const unit = pool.windowMinutes === WEEK_MINUTES ? "week" : hours % 24 === 0 ? `${hours / 24}d window` : `${+hours.toFixed(1)}h window`;
+  const pace: PoolPace = { unit, gonePercent };
+  if (gonePercent >= PROJECT_FROM_PERCENT) pace.projectedPercent = (100 * pool.usedPercent) / gonePercent;
+  return pace;
 }
 
 /**
@@ -83,6 +125,18 @@ export interface MistralUsage {
   requests: number;
   tokens: number;
   allowance?: MistralAllowance;
+  /** The allowance from the pools file, for a snapshot that carries none: what is allowed, but no spend. */
+  budget?: MistralBudget;
+}
+
+export interface MistralBudget {
+  limitUsd: number;
+  /** The start of the next calendar month, UTC. */
+  resetsAt: string;
+  /** The start of this one. */
+  since: string;
+  /** Where it was read from, to link. */
+  url?: string;
 }
 
 export interface Usage {
@@ -145,7 +199,9 @@ function parsePool(raw: unknown): UsagePool | undefined {
   const resetsAt = time(raw.resets_at);
   const observedAt = time(raw.observed_at);
   if (usedPercent === undefined || allowedPercent === undefined || !resetsAt || !observedAt || typeof raw.hold !== "boolean") return undefined;
-  return { usedPercent, allowedPercent, resetsAt, observedAt, hold: raw.hold };
+  // A year at most: past that the "window" is no plan's.
+  const minutes = count(raw.window_minutes, 366 * 24 * 60);
+  return { usedPercent, allowedPercent, resetsAt, observedAt, hold: raw.hold, windowMinutes: minutes && minutes >= 1 ? minutes : WEEK_MINUTES };
 }
 
 /**
@@ -252,11 +308,66 @@ export function findUsage(comments: readonly RawComment[]): Usage | undefined {
 
 export const usagePath = `/repos/${USAGE_REPO}/issues/${USAGE_ISSUE}/comments?per_page=100`;
 
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const PATH_RE = /^(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.json$/;
+/** Pools files this tab's token can't read: not asked for again until a reload. */
+const unreadableBudgets = new Set<string>();
+/** A pools file is a few hundred bytes; past this it is not one. */
+const MAX_POOLS_BYTES = 64 * 1024;
+
+/**
+ * The "mistral" pool's allowance in a pools file, as tracker's
+ * .github/agentic-job/pools.json has it: {amount, currency: "USD",
+ * period: "calendar-month"}. Anything else is not understood, so no budget.
+ */
+export function parseBudget(text: string, now: number): MistralBudget | undefined {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const allowance = isObject(raw) && isObject(raw.mistral) ? raw.mistral.allowance : undefined;
+  if (!isObject(allowance) || allowance.currency !== "USD" || allowance.period !== "calendar-month") return undefined;
+  const limitUsd = count(allowance.amount, MAX_USD);
+  if (!limitUsd) return undefined;
+  const d = new Date(now);
+  return { limitUsd, since: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString(), resetsAt: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString() };
+}
+
+/**
+ * The allowance from the configured pools file: one more conditional
+ * GET (a 304 costs no rate budget), made only for a snapshot with a
+ * Mistral row and no allowance of its own, after the usage read rather
+ * than beside it. A file that can't be read just leaves the counters.
+ */
+async function loadBudget(gh: GitHub, now: number, target = USAGE_CONFIG.mistralAllowance): Promise<MistralBudget | undefined> {
+  // Both are spliced into a path the viewer's token is sent to: no "." or "..".
+  if (!target || !REPO_RE.test(target.repo) || !PATH_RE.test(target.path) || [...target.repo.split("/"), ...target.path.split("/")].some((part) => /^\.+$/.test(part))) return undefined;
+  const path = `/repos/${target.repo}/contents/${target.path}`;
+  // A 404 has no ETag to revalidate, so asking again would cost budget each refresh.
+  if (unreadableBudgets.has(path)) return undefined;
+  try {
+    const { data } = await gh.get<{ content?: string; encoding?: string; size?: number; html_url?: string }>(path);
+    if (data.encoding !== "base64" || typeof data.content !== "string" || (data.size ?? 0) > MAX_POOLS_BYTES) return undefined;
+    const budget = parseBudget(new TextDecoder().decode(Uint8Array.from(atob(data.content.replace(/\s/g, "")), (c) => c.charCodeAt(0))), now);
+    if (budget && typeof data.html_url === "string" && data.html_url.startsWith("https://github.com/")) budget.url = data.html_url;
+    return budget;
+  } catch (e) {
+    if (e instanceof GitHubError && (e.status === 403 || e.status === 404) && !(e instanceof RateLimited)) unreadableBudgets.add(path);
+    return undefined;
+  }
+}
+
 /** The published usage, read conditionally with the viewer's token; a repository it can't see (403 or 404) is "unreadable", not an error. */
-export async function loadUsage(gh: GitHub): Promise<UsageData> {
+export async function loadUsage(gh: GitHub, now = Date.now(), budgetFrom = USAGE_CONFIG.mistralAllowance): Promise<UsageData> {
   try {
     const res = await gh.get<RawComment[]>(usagePath);
     const usage = findUsage(Array.isArray(res.data) ? res.data : []);
+    if (usage?.mistral && !usage.mistral.allowance) {
+      const budget = await loadBudget(gh, now, budgetFrom);
+      if (budget) usage.mistral.budget = budget;
+    }
     return usage ? { state: "ok", usage } : { state: "none" };
   } catch (e) {
     // A 403 is also how GitHub says a rate limit ran out: that's a failed read, not a private repository.

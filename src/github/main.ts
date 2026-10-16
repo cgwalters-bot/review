@@ -69,7 +69,7 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG } from "./actions.ts";
 import { actionsPanel } from "./actionsview.ts";
 import { loadProjectStatus } from "./backend.ts";
@@ -341,6 +341,7 @@ function renderChrome(state: State): void {
   if (json) json.textContent = JSON.stringify(model, null, 2);
   if (state.home?.el.isConnected) {
     fillState(state.home, model);
+    fillSummary(state.home, model, state.ops?.controller, Date.now());
     const signature = JSON.stringify(model.agents);
     if (state.home.slots.agents.dataset.signature !== signature) {
       fillAgents(state.home, state.active, Date.now(), model.agents);
@@ -621,6 +622,7 @@ function paintActive(state: State): void {
   fillFocus(state.home, state.active?.board ? model.focus : undefined);
   fillUsage(state.home, model.usage ?? undefined, state.active?.local, Date.now());
   fillState(state.home, model);
+  fillSummary(state.home, model, state.ops?.controller, Date.now());
 }
 
 function paintChanges(state: State): void {
@@ -1267,7 +1269,7 @@ interface DecisionsRead {
  * only say so, unless `force` (he asked to reload).
  */
 async function refreshDecisions(state: State, force = false): Promise<void> {
-  if (state.home) await refreshDocument(state.gh, state.home.slots.decisionDocument, DECISIONS_CONFIG.document, force);
+  if (state.home) await refreshDocument(state.gh, state.home.slots.decisionDocument, render, DECISIONS_CONFIG.document, force);
   if (!DECISIONS_CONFIG.legacyQuestions) return;
   const read = async (gh: GitHub) => {
     const q = await loadDecisions(gh);

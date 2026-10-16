@@ -10,7 +10,9 @@
 //    reaches an innerHTML sink.
 //
 // Images become plain links: loading them would tell their host when you
-// read an item, and the CSP blocks third-party images anyway.
+// read an item, and the CSP blocks third-party images anyway. Task list
+// items ("- [x] done") get a ☑ or ☐ glyph, as GitHub shows a checkbox:
+// a real <input> would be one more element for the sanitizer to allow.
 
 import MarkdownIt from "markdown-it";
 import Token from "markdown-it/lib/token.mjs";
@@ -72,6 +74,12 @@ export function createRenderer(win: WindowLike): Renderer {
     const cut = source.length > MAX_SOURCE_CHARS;
     const text = cut ? `${source.slice(0, MAX_SOURCE_CHARS)}\n\n*(cut: too long to show here)*` : source;
     const tokens = md.parse(text, {});
+    tokens.forEach((token, i) => {
+      const first = token.children?.[0];
+      if (token.type !== "inline" || tokens[i - 2]?.type !== "list_item_open" || first?.type !== "text") return;
+      const box = /^\[([ xX])\] /.exec(first.content);
+      if (box) first.content = `${box[1] === " " ? "☐" : "☑"} ${first.content.slice(box[0].length)}`;
+    });
     if (repository && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
       for (const block of tokens) {
         let depth = 0;

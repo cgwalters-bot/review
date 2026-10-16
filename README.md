@@ -157,19 +157,36 @@ priority, then the newest ask. Missing request timestamps are shown as
 unknown rather than using the PR's creation date. Other queue entries and
 decisions beyond the first fifteen are in collapsed **Watching**.
 
-**Weekly subscription usage** is first on the dashboard, always visible. It
+A **summary** comes first on the dashboard, a line each: the agents running
+by pool (engine), each linked; the agent runs queued; the board scheduler's
+mode (dispatching or previewing) and the coordinator's and poll's last passes,
+once the ops detail has read them; and each pool's line as below, with held.
+Its names open the section with the detail. It is made from what the sections
+already read, so it adds no GitHub request (its Scheduler link opens the ops
+detail, whose reads then start as if opened by hand). Merge queues and the broker's
+probe are not in it: nothing on the page reads them yet.
+
+**Weekly subscription usage** follows, always visible. It
 reads Claude and OpenAI from `bot-usage/v1`'s `pools`, one compact row each: a
-thin bar of the percent used with a tick where the pace allows, coloured as a
-warning when over pace or held, and a short label that also says held or
-stale. Each row expands to the exact percentages, reset time and when it was
+thin bar of the percent used with a tick at the scheduler's allowance by now
+(`allowed_percent`), coloured as a warning when over it or held, and a label
+such as "50% used · 8% of week gone · ~636% at reset": the share of the window
+gone is worked out from the pool's `resets_at` and `window_minutes` (a week by
+default) at the time it was observed, and the projection is the rate so far
+carried to the window's end (none before 5% of it). The label also says held
+or stale. Each row expands to the exact percentages, reset time and when it was
 observed. When the snapshot has a `mistral` object (the broker's requests and
 tokens since it started; it has no plan window, so no pace) a Mistral row
 follows them. If the publisher configures an `allowance` in it (`limit_usd`,
 `resets_at`, and `spent_usd` from Mistral or, failing that, this month's
 `models` tokens and `prices` per million tokens), the row is a bar of the
 month's spend against the allowance with the time to its reset, an estimate
-from tokens marked as one; otherwise it is a plain counter row. Older
-publications retain the Claude window display.
+from tokens marked as one. Otherwise the allowance is read from the pools file
+named in `src/github/usage-config.json` (`mistralAllowance`: `repo` and `path`;
+`null` turns it off), one more conditional GET after the usage read: its
+`mistral.allowance` (`amount`, `currency: "USD"`, `period: "calendar-month"`)
+gives the row the allowance and the share of the month gone, with the spend
+shown as unknown. Older publications retain the Claude window display.
 **Decisions** comes right after usage, before Status, open on entry,
 The optional single checklist document is configured in
 `src/github/decisions-config.json`: set `document` to an object with `repo`
@@ -178,7 +195,9 @@ The optional single checklist document is configured in
 browser reads this one issue once per refresh with the viewer's token, including
 for private repositories. Entries use `### D12 Question`, checklist options
 `- [ ] A) Answer ← recommended: reason`, and one `Reply:` line. `## Done`
-starts the collapsed history. Answers tick one option and fill a one-line reply
+starts the collapsed history. Each entry's text is rendered as GitHub-flavored
+markdown by the same sanitizing renderer as issue bodies (task list items show
+☑ or ☐). Answers tick one option and fill a one-line reply
 only within that id. A fresh body comparison refuses stale forms with
 “changed, reload”; GitHub has no atomic issue-body compare-and-swap, so an edit
 between that final read and write can still race. No private contents ship in

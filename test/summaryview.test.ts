@@ -1,0 +1,82 @@
+// The summary at the top of the page: made from what the sections read,
+// with no read of its own.
+
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { ControllerData } from "../src/github/controller.ts";
+import { fillSummary, homeSkeleton } from "../src/github/homeview.ts";
+import type { ActionRun, RunsData } from "../src/github/runs.ts";
+import { pageState } from "../src/github/state.ts";
+import { parseUsage, USAGE_MARKER } from "../src/github/usage.ts";
+import { fixture, installDom } from "./helpers.ts";
+
+const win = installDom();
+const NOW = Date.parse("2026-10-09T14:00:00Z");
+const text = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+const noHooks = { open: () => false, toggled: () => {}, opsToggled: () => {}, themesToggled: () => {} };
+
+const run = (id: number, status: string, title: string): ActionRun => ({
+  id, title, status, active: true, url: `https://github.com/example/runs/actions/runs/${id}`, startedAt: "2026-10-09T13:30:00Z",
+  createdAt: "2026-10-09T13:30:00Z", attempt: 1, jobs: [], metrics: { tokens: null, cost: null },
+});
+
+describe("the summary", () => {
+  const runs: RunsData = { state: "ok", at: NOW, partial: false, warnings: [], runs: [run(1, "in_progress", "Agent: implement example/work#3"), run(2, "queued", "Agent: review example/work#4")] };
+  const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-pools.json"))}\n\`\`\``)!;
+  usage.mistral!.budget = { limitUsd: 300, since: "2026-10-01T00:00:00.000Z", resetsAt: "2026-11-01T00:00:00.000Z" };
+  const state = pageState({ active: { warnings: [], at: NOW, usage: { state: "ok", usage } }, runs }, NOW);
+
+  it("comes first, and says agents, queued runs and each pool in a line, with held marked", () => {
+    const home = homeSkeleton(noHooks);
+    win.document.body.replaceChildren(home.el);
+    fillSummary(home, state, undefined, NOW);
+    assert.equal(home.el.firstElementChild, home.slots.summary);
+    const lines = [...home.slots.summary.querySelectorAll("li")].map(text);
+    assert.match(lines[0]!, /^Agents \d+ running/);
+    assert.match(lines[1]!, /^Queued 1 run · Agent: review example\/work#4$/);
+    assert.equal(lines[2], "Scheduler open the ops detail to read it");
+    assert.deepEqual(lines.slice(3), [
+      "Claude 42% used · 52% of week gone · ~81% at reset",
+      "OpenAI 80% used · 32% of week gone · ~253% at reset · held",
+      "Mistral spend not published · $300 a month, 28% gone",
+    ]);
+    assert.ok(home.slots.summary.querySelectorAll("li")[4]!.classList.contains("hot"));
+    assert.equal(home.slots.summary.querySelector<HTMLAnchorElement>("li:nth-child(2) a:not(.sum-jump)")?.href, "https://github.com/example/runs/actions/runs/2");
+  });
+
+  it("keeps its lines while what they say is unchanged, and says when usage can't be read", () => {
+    const home = homeSkeleton(noHooks);
+    fillSummary(home, state, undefined, NOW);
+    const first = home.slots.summary.firstElementChild;
+    fillSummary(home, state, undefined, NOW);
+    assert.equal(home.slots.summary.firstElementChild, first);
+    fillSummary(home, pageState({ active: { warnings: [], at: NOW, usage: { state: "unreadable" } }, runs }, NOW), undefined, NOW);
+    assert.equal(text(home.slots.summary.querySelectorAll("li")[3]), "Resources unreadable with this token");
+  });
+
+  it("links open the section they point at without changing the route", () => {
+    const home = homeSkeleton(noHooks);
+    win.document.body.replaceChildren(home.el);
+    Object.assign(win.HTMLElement.prototype, { scrollIntoView() {} });
+    fillSummary(home, state, undefined, NOW);
+    const hash = win.location.hash;
+    assert.equal(home.sections.agents.details.open, false);
+    home.slots.summary.querySelector<HTMLAnchorElement>('a[href="#sec-agents"]')!.click();
+    assert.equal(home.sections.agents.details.open, true);
+    home.slots.summary.querySelector<HTMLAnchorElement>('a[href="#ops"]')!.click();
+    assert.equal(home.slots.opsBox.open, true);
+    assert.equal(win.location.hash, hash);
+  });
+
+  it("reads the scheduler's mode and the passes from the controller, once the ops detail has read it", () => {
+    const home = homeSkeleton(noHooks);
+    const piece = (label: string) => ({ label, what: "x", repo: "example/tracker", workflow: "poll.yml" });
+    const controller: ControllerData = { pieces: [
+      { piece: piece("Board scheduler"), state: "ok", scheduler: { mode: "preview" }, last: { url: "https://github.com/x", at: "2026-10-09T13:50:00Z", conclusion: "success" } },
+      { piece: piece("Coordinator"), state: "ok", last: { url: "https://github.com/x", at: "2026-10-09T12:00:00Z", conclusion: "failure" } },
+      { piece: piece("Poll"), state: "ok", last: { url: "https://github.com/x", at: "2026-10-09T13:55:00Z", conclusion: "success" } },
+    ] };
+    fillSummary(home, state, controller, NOW);
+    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run) · coordinator failure 2h 00m ago · poll ok 5m ago");
+  });
+});

@@ -57,11 +57,18 @@ describe("operator dashboard", () => {
     const home = homeSkeleton(hooks());
     const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-pools.json"))}\n\`\`\``)!;
     fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-09T14:00:00Z"));
-    assert.match(text(home.slots.weekly), /Claude.*42\.0% used \/ 49\.2% allowed/);
-    assert.match(text(home.slots.weekly), /OpenAI.*80\.0% used \/ 30\.1% allowed.*over pace.*held/);
+    assert.match(text(home.slots.weekly), /Claude.*42\.0% used with 51\.5% of the week gone, so ~81% by its end at this rate\. The tick is what the scheduler allows by now: 49\.2%\./);
+    assert.match(text(home.slots.weekly), /OpenAI.*80\.0% used with 31\.7% of the week gone.*allows by now: 30\.1% · over pace · held/);
     assert.match(text(home.slots.weekly), /Publication time unknown/);
     assert.match(text(home.slots.weekly.querySelector(".pool-sum.mistral")), /^Mistral 2,500 requests · 1,234,567 tokens since the broker started$/);
     assert.equal(home.slots.weekly.querySelector(".mistral [role=progressbar]"), null, "counters have no bar");
+    const budget = { limitUsd: 300, since: "2026-10-01T00:00:00.000Z", resetsAt: "2026-11-01T00:00:00.000Z", url: "https://github.com/example/tracker/blob/main/pools.json" };
+    fillUsage(home, { state: "ok", usage: { ...usage, mistral: { ...usage.mistral!, budget } } }, undefined, Date.parse("2026-10-16T12:00:00Z"));
+    const allowed = home.slots.weekly.querySelector<HTMLDetailsElement>('details.mistral[data-pool="mistral"]')!;
+    assert.equal(text(allowed.querySelector("summary")), "Mistral spend ? / $300 · 50% of month gone");
+    assert.equal(allowed.querySelector(".fill"), null, "no spend is made up from the broker's counters");
+    assert.equal(allowed.querySelector(".tick")?.getAttribute("x"), String((100 * 15.5) / 31 - 0.5));
+    assert.match(text(allowed.querySelector(".pool-detail")), /\$300\.00 a calendar month, 50% of it gone · resets in 15 days, on Nov 1 UTC\. Allowance ↗.*no spend.*2,500 requests/);
     fillUsage(home, { state: "ok", usage: Object.fromEntries(Object.entries(usage).filter(([k]) => k !== "mistral")) as typeof usage }, undefined, Date.parse("2026-10-09T14:00:00Z"));
     assert.equal(home.slots.weekly.querySelector(".mistral"), null, "an older broker's snapshot shows no Mistral row");
     const withAllowance = (allowance: MistralAllowance) => ({ ...usage, mistral: { ...usage.mistral!, allowance } });
@@ -99,8 +106,8 @@ describe("operator dashboard", () => {
     at("2026-10-09T13:50:00Z");
     // pool, its label, over pace or held, [valuenow, valuetext], the fill's width and the tick's x
     const cases = [
-      ["claude", "42% · pace 49%", false, ["42", "42.0% used, 49.2% allowed by pace"], "42", "48.7129230406746"],
-      ["openai", "80% · pace 30% · held", true, ["80", "80.0% used, 30.1% allowed by pace, over pace, held"], "80", "29.60736748511905"],
+      ["claude", "42% used · 52% of week gone · ~81% at reset", false, ["42", "42.0% used, 49.2% allowed by pace"], "42", "48.7129230406746"],
+      ["openai", "80% used · 32% of week gone · ~253% at reset · held", true, ["80", "80.0% used, 30.1% allowed by pace, over pace, held"], "80", "29.60736748511905"],
     ] as const;
     for (const [name, label, over, aria, fill, tick] of cases) {
       const d = pool(name);
@@ -110,7 +117,7 @@ describe("operator dashboard", () => {
       const bar = d.querySelector("summary [role=progressbar]");
       assert.deepEqual(attrs(bar, "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"), ["0", "100", ...aria]);
       assert.deepEqual([attrs(bar!.querySelector(".fill"), "width")[0], attrs(bar!.querySelector(".tick"), "x")[0]], [fill, tick]);
-      assert.match(text(d.querySelector(".pool-detail")), /allowed by pace · resets .*Observed .*\.$/);
+      assert.match(text(d.querySelector(".pool-detail")), /scheduler allows by now: .*resets .*Observed [^·]*\.$/);
       assert.doesNotMatch(text(d.querySelector(".pool-detail")), /stale/);
     }
     assert.equal(home.slots.weekly.querySelector(".warn"), null, "no warning boxes");
@@ -118,19 +125,25 @@ describe("operator dashboard", () => {
     pool("openai").open = true;
     at("2026-10-10T14:00:00Z");
     assert.deepEqual([pool("claude").open, pool("openai").open], [false, true], "a redraw keeps his expander open");
-    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% · pace 49% · stale");
+    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% used · 52% of week gone · ~81% at reset · stale");
     assert.match(pool("claude").querySelector("[role=progressbar]")!.getAttribute("aria-valuetext")!, /, stale$/);
-    assert.match(text(pool("claude").querySelector(".pool-detail")), /Observed .* · stale\.$/);
+    assert.match(text(pool("claude").querySelector(".pool-detail")), /Observed .*, 24h 23m ago · stale: the usage publisher has not reported since\.$/);
 
     fillUsage(home, { state: "ok", usage: { ...usage, pools: { claude: { ...usage.pools!.claude!, usedPercent: 130, allowedPercent: 100 } } } }, undefined, Date.parse("2026-10-09T13:50:00Z"));
     const full = pool("claude").querySelector("[role=progressbar]")!;
     assert.deepEqual([attrs(full, "aria-valuenow")[0], attrs(full.querySelector(".fill"), "width")[0], attrs(full.querySelector(".tick"), "x")[0]], ["100", "100", "99"]);
     assert.match(text(home.slots.weekly.querySelector(".pool-sum.none")), /OpenAI Weekly usage not reported/);
+
+    // Two hours into a week: the share gone, but too early to project.
+    fillUsage(home, { state: "ok", usage: { ...usage, pools: { openai: { ...usage.pools!.openai!, observedAt: "2026-10-07T10:47:12.000Z", usedPercent: 3 } } } }, undefined, Date.parse("2026-10-07T10:50:00Z"));
+    assert.equal(text(pool("openai").querySelector(".pool-label")), "3% used · 1% of week gone · held");
+    assert.match(text(pool("openai").querySelector(".pool-detail")), /too early to project/);
   });
 
-  it("puts weekly usage first and human requests behind an opt-in disclosure after Decisions", () => {
+  it("puts weekly usage first after the summary, and human requests behind an opt-in disclosure after Decisions", () => {
     const home = homeSkeleton(hooks());
-    assert.equal(home.el.firstElementChild, home.slots.weekly);
+    assert.equal(home.el.firstElementChild, home.slots.summary);
+    assert.equal(home.slots.summary.nextElementSibling, home.slots.weekly);
     const people = home.el.querySelector<HTMLDetailsElement>("#sec-people")!;
     assert.equal(people.open, false);
     assert.equal(people.previousElementSibling, home.slots.status);

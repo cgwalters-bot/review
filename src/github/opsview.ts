@@ -23,7 +23,7 @@ import {
   workGroups,
   type WorkGroup,
 } from "./ops.ts";
-import { type MistralUsage, type Tokens, tokenTotal, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
+import { type MistralBudget, type MistralUsage, poolPace, type Tokens, tokenTotal, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
 import { age, pill, time } from "./view.ts";
 
 const SECOND = 1000;
@@ -384,9 +384,20 @@ export const POOL_ATTR = "data-pool";
 /** The pool bar's box: a 6-unit track with the pace tick standing 2 units proud of it on each side. */
 const POOL_BAR = { width: 100, height: 10, track: 6, tick: 1 };
 
+/** A pool's label and sentence: the percent used, the share of the window gone, and the projection to its end. */
+export function poolWords(pool: UsagePool): { short: string; long: string } {
+  const pace = poolPace(pool);
+  const projected = pace.projectedPercent === undefined ? "" : ` · ~${Math.round(pace.projectedPercent)}% at reset`;
+  return {
+    short: `${Math.round(pool.usedPercent)}% used · ${Math.round(pace.gonePercent)}% of ${pace.unit} gone${projected}`,
+    long: `${pool.usedPercent.toFixed(1)}% used with ${pace.gonePercent.toFixed(1)}% of the ${pace.unit} gone${pace.projectedPercent === undefined ? " (too early to project)" : `, so ~${pace.projectedPercent.toFixed(0)}% by its end at this rate`}`,
+  };
+}
+
 /**
  * One pool as a compact row: its name, a thin bar of the percent used
- * with a tick where the pace allows, and a short label. The sentence it
+ * with a tick at what the scheduler allows by now, and a short label of
+ * the percent used against the share of the window gone. The sentence it
  * replaces (exact percents, reset, observation time) is in its expander.
  */
 function poolRow(name: string, label: string, pool: UsagePool | undefined, now: number): HTMLElement {
@@ -396,6 +407,7 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
   const over = pool.usedPercent > pool.allowedPercent;
   const stale = now - Date.parse(pool.observedAt) > HEARTBEAT_STALE_MS;
   const flags = `${over ? " · over pace" : ""}${pool.hold ? " · held" : ""}`;
+  const words = poolWords(pool);
   const clamp = (n: number, max: number) => String(Math.max(0, Math.min(max, n)));
   const y = String((POOL_BAR.height - POOL_BAR.track) / 2);
   const track = { x: "0", y, height: String(POOL_BAR.track), rx: String(POOL_BAR.track / 2) };
@@ -425,13 +437,15 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
       h("span", { class: "pool-name" }, label),
       " ",
       bar,
-      h("span", { class: "pool-label" }, `${Math.round(pool.usedPercent)}% · pace ${Math.round(pool.allowedPercent)}%`, pool.hold ? " · held" : "", stale && h("span", { class: "pool-stale" }, " · stale")),
+      h("span", { class: "pool-label" }, words.short, pool.hold ? " · held" : "", stale && h("span", { class: "pool-stale" }, " · stale")),
     ),
     h(
       "div",
       { class: "pool-detail" },
-      h("p", {}, `${used}% used / ${allowed}% allowed by pace · ${resetText(pool.resetsAt, now)}`, ` (${time(pool.resetsAt)})`, flags),
-      h("p", {}, `Observed ${time(pool.observedAt)}${stale ? " · stale" : ""}.`),
+      h("p", {}, `${words.long}. The tick is what the scheduler allows by now: ${allowed}%${flags}.`),
+      h("p", {}, `${resetText(pool.resetsAt, now)} (${time(pool.resetsAt)}).`),
+      // The snapshot is the Usage workflow's (see the controller panel): stale means it has not published since.
+      h("p", {}, `Observed ${time(pool.observedAt)}${stale ? `, ${duration(now - Date.parse(pool.observedAt), false)} ago · stale: the usage publisher has not reported since` : ""}.`),
     ),
   );
 }
@@ -461,7 +475,8 @@ function mistralRow(m: MistralUsage, now: number): HTMLElement {
   const n = (v: number) => v.toLocaleString("en-US");
   const counters = `${n(m.requests)} requests · ${n(m.tokens)} tokens since the broker started`;
   const a = m.allowance;
-  if (!a) return h("div", { class: "pool-sum mistral" }, h("span", { class: "pool-name" }, "Mistral"), " ", h("span", { class: "pool-label" }, counters));
+  if (!a && m.budget) return budgetRow(m, m.budget, counters, now);
+  if (!a) return h("div", { class: "pool-sum mistral none" }, h("span", { class: "pool-name" }, "Mistral"), " ", h("span", { class: "pool-label" }, counters));
   const pct = (100 * a.spentUsd) / a.limitUsd;
   // An estimate that left models out is a lower bound.
   const spent = `${a.estimated ? (a.lowerBound ? "≥ ~" : "~") : ""}${usd(a.spentUsd)}`;
@@ -495,6 +510,43 @@ function mistralRow(m: MistralUsage, now: number): HTMLElement {
       { class: "pool-detail" },
       h("p", {}, `${spent} of the ${usd(a.limitUsd)} monthly allowance${est} · ${monthResetText(a.resetsAt, now)} (${time(a.resetsAt)})`),
       a.estimated && h("p", {}, `Estimated from this month's tokens and the published prices, not Mistral's own figure.${a.unpriced.length ? ` No price for ${a.unpriced.join(", ")}.` : ""}${a.lowerBound ? " Some models were left out, so the spend is at least this." : ""}`),
+      h("p", {}, `${counters}.`),
+    ),
+  );
+}
+
+/** The share of a calendar month gone. */
+export function monthGone(budget: MistralBudget, now: number): number {
+  const since = Date.parse(budget.since);
+  return Math.max(0, Math.min(100, (100 * (now - since)) / (Date.parse(budget.resetsAt) - since)));
+}
+
+/**
+ * Mistral against the allowance in the pools file, when the snapshot
+ * has none: the allowance and the share of the month gone, as a tick on
+ * an empty bar. The broker publishes no spend, and its counters run from
+ * its own start, not the month's, so no spend is made up from them.
+ */
+function budgetRow(m: MistralUsage, b: MistralBudget, counters: string, now: number): HTMLElement {
+  const gone = monthGone(b, now);
+  const limit = usd(b.limitUsd).replace(/\.00$/, "");
+  const y = String((POOL_BAR.height - POOL_BAR.track) / 2);
+  const track = { x: "0", y, height: String(POOL_BAR.track), rx: String(POOL_BAR.track / 2) };
+  const bar = svg(
+    "svg",
+    { class: "bar", viewBox: `0 0 ${POOL_BAR.width} ${POOL_BAR.height}`, preserveAspectRatio: "none", role: "img", "aria-label": `Mistral: ${limit} a month, spend not published, ${Math.round(gone)}% of the month gone` },
+    svg("rect", { class: "track", ...track, width: String(POOL_BAR.width) }),
+    svg("rect", { class: "tick", x: String(Math.max(0, Math.min(POOL_BAR.width - POOL_BAR.tick, gone - POOL_BAR.tick / 2))), y: "0", width: String(POOL_BAR.tick), height: String(POOL_BAR.height) }),
+  );
+  return h(
+    "details",
+    { class: "pool mistral", [POOL_ATTR]: "mistral" },
+    h("summary", { class: "pool-sum" }, h("span", { class: "pool-name" }, "Mistral"), " ", bar, h("span", { class: "pool-label" }, `spend ? / ${limit} · ${Math.round(gone)}% of month gone`)),
+    h(
+      "div",
+      { class: "pool-detail" },
+      h("p", {}, `${usd(b.limitUsd)} a calendar month, ${Math.round(gone)}% of it gone · ${monthResetText(b.resetsAt, now)}. `, b.url ? link(b.url, "Allowance ↗") : ""),
+      h("p", {}, "The snapshot has no spend: it needs mistral.allowance with spent_usd, or this month's models and prices, from the publisher."),
       h("p", {}, `${counters}.`),
     ),
   );
