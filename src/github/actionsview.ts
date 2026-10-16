@@ -1,6 +1,6 @@
 import { h, link } from "../dom.ts";
 import type { GitHub } from "./api.ts";
-import { execute, loadProposals, prepare, type ActionConfig, type Offered } from "./actions.ts";
+import { execute, loadProposals, plan, type ActionConfig, type Offered, type Plan } from "./actions.ts";
 
 /** Explicit reads only; mounting the page never discovers or executes proposals. */
 export function actionsPanel(gh: GitHub, config: ActionConfig): HTMLElement {
@@ -25,23 +25,23 @@ export function actionsPanel(gh: GitHub, config: ActionConfig): HTMLElement {
 async function proposalCard(gh: GitHub, config: ActionConfig, o: Offered, isBusy: () => boolean, setBusy: (v: boolean) => void): Promise<HTMLElement> {
   const rows = h("ol");
   const results: HTMLElement[] = [];
-  let stale = false;
-  for (const action of o.proposal.actions) {
-    const current = h("p", { class: "note" });
-    try { current.textContent = (await prepare(gh, config, action)).state; }
-    catch (e) { stale = true; current.textContent = `Refused: ${String(e)}`; }
-    const result = h("p", { role: "status" }); results.push(result);
-    // Literal JSON is the exact typed mutation, including every precondition.
-    rows.append(h("li", {}, link(`https://github.com/${action.repo}/issues/${action.number}`, `${action.repo}#${action.number}`), h("pre", {}, JSON.stringify(action, null, 2)), current, result));
-  }
   const status = h("p", { role: "status" });
+  // The live facts shown here are the ones execution requires to still hold.
+  let shown: Plan | undefined;
+  try { shown = await plan(gh, config, o.proposal.actions); }
+  catch (e) { status.textContent = `Refused: ${String(e)}`; }
+  for (const [i, action] of o.proposal.actions.entries()) {
+    const result = h("p", { role: "status" }); results.push(result);
+    // Literal JSON is the exact typed mutation.
+    rows.append(h("li", {}, link(`https://github.com/${action.repo}/issues/${action.number}`, `${action.repo}#${action.number}`), h("pre", {}, JSON.stringify(action, null, 2)), h("p", { class: "note" }, shown?.states[i] ?? ""), result));
+  }
   const button = h("button", { type: "button" }, "Execute proposal as yourself");
-  button.disabled = stale;
+  button.disabled = !shown;
   button.addEventListener("click", () => {
     if (button.disabled || isBusy()) return;
     if (!window.confirm(`Execute ${o.proposal.actions.length} actions as ${config.operator}? Stops at the first failure. This proposal cannot be retried after reservation.`)) return;
     setBusy(true); button.disabled = true; status.textContent = "Executing…";
-    void execute(gh, config, o, (i, result) => { results[i]!.textContent = result; })
+    void execute(gh, config, o, shown!.expected, (i, result) => { results[i]!.textContent = result; })
       .then(() => { status.textContent = "Executed; result recorded on the proposal issue."; })
       .catch((e: unknown) => { status.textContent = `${String(e)}. Check the proposal issue and targets; do not retry an uncertain action.`; })
       .finally(() => { setBusy(false); });
