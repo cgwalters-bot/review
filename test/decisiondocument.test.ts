@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { DECISIONS_CONFIG, answerDocument, documentView, parseDocument, refreshDocument, sendDocumentAnswer } from "../src/github/decisiondocument.ts";
+import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
 
 const win = installDom();
+const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
 const body = "### D12 Enable scheduler? (P0, blocks example/work#3)\nContext.\n- [ ] A) Yes ← recommended: ready\n- [ ] B) Wait\n\nReply:\n\n### D13 Another?\n- [ ] A) Yes\n- [ ] B) No\nReply:\n\n## Done\n### D1 Old\nOutcome: kept\n";
 const path = "/repos/example/private/issues/8";
 
@@ -25,7 +27,7 @@ test("render document and submit tick and reply through viewer client", async ()
     return new Response(JSON.stringify({ body }), { status: 200 });
   });
   const slot = document.createElement("div");
-  await refreshDocument(gh, slot, { repo: "example/private", number: 8 });
+  await refreshDocument(gh, slot, render, { repo: "example/private", number: 8 });
   assert.equal(calls.length, 1);
   assert.match(slot.textContent!, /recommended: ready/);
   assert.equal(slot.querySelector("details")?.open, false);
@@ -53,7 +55,7 @@ test("concurrent edit refuses PATCH", async () => {
 test("404 explains private repository access", async () => {
   const gh = new GitHub(async () => "token", async () => new Response("{}", { status: 404 }));
   const slot = document.createElement("div");
-  await refreshDocument(gh, slot, { repo: "example/private", number: 8 });
+  await refreshDocument(gh, slot, render, { repo: "example/private", number: 8 });
   assert.match(slot.textContent!, /private.*viewer.*no access/);
 });
 
@@ -63,7 +65,7 @@ test("reject ambiguous ids, answered entries, done edits and multiline replies",
   assert.throws(() => answerDocument(body, "D12", "C", ""));
   assert.throws(() => answerDocument(body, "D12", "A", "x\n### D9 Inject"));
   assert.throws(() => answerDocument(body.replace("[ ]", "[x]"), "D12", "A", ""));
-  assert.equal(documentView(body, async () => {}).querySelectorAll("form").length, 2);
+  assert.equal(documentView(body, async () => {}, render).querySelectorAll("form").length, 2);
 });
 
 test("fenced examples stay untouched and duplicate option letters are refused", () => {
@@ -84,28 +86,28 @@ test("sequential answers share the latest baseline and refresh preserves only un
   });
   const slot = document.createElement("div");
   const target = { repo: "example/private", number: 8 };
-  await refreshDocument(gh, slot, target);
+  await refreshDocument(gh, slot, render, target);
   for (const form of slot.querySelectorAll("form")) {
     form.querySelector<HTMLInputElement>('input[type="radio"]')!.checked = true;
     form.dispatchEvent(new win.Event("submit", { cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.match(form.textContent!, /Answered/);
   }
-  await refreshDocument(gh, slot, target);
+  await refreshDocument(gh, slot, render, target);
   assert.equal(slot.querySelectorAll("form").length, 0);
   fail = true;
-  await refreshDocument(gh, slot, target);
+  await refreshDocument(gh, slot, render, target);
   assert.match(slot.textContent!, /500/);
   fail = false;
-  await refreshDocument(gh, slot, target);
+  await refreshDocument(gh, slot, render, target);
   assert.doesNotMatch(slot.textContent!, /500/);
   server = body;
-  await refreshDocument(gh, slot, target);
+  await refreshDocument(gh, slot, render, target);
   slot.querySelector<HTMLInputElement>('input[type="text"]')!.value = "draft";
   server = body.replace("Context.", "Changed context.");
-  await refreshDocument(gh, slot, target);
+  await refreshDocument(gh, slot, render, target);
   assert.doesNotMatch(slot.textContent!, /Changed context/);
-  await refreshDocument(gh, slot, target, true);
+  await refreshDocument(gh, slot, render, target, true);
   assert.match(slot.textContent!, /Changed context/);
 });
 
@@ -120,7 +122,7 @@ test("overlapping answers from different forms are serialized and both kept", as
     return new Response(JSON.stringify({ body: server }));
   });
   const slot = document.createElement("div");
-  await refreshDocument(gh, slot, { repo: "example/private", number: 8 });
+  await refreshDocument(gh, slot, render, { repo: "example/private", number: 8 });
   const forms = [...slot.querySelectorAll("form")];
   for (const form of forms) {
     form.querySelector<HTMLInputElement>('input[type="radio"]')!.checked = true;
@@ -132,4 +134,15 @@ test("overlapping answers from different forms are serialized and both kept", as
   await new Promise((resolve) => setTimeout(resolve, 20));
   for (const form of forms) assert.match(form.textContent!, /Answered/);
   assert.equal(parseDocument(server).filter((e) => e.options.some((o) => o.checked)).length, 2);
+});
+
+test("an entry's text renders as GitHub-flavored markdown: a task list right after a paragraph line, and inline code", () => {
+  // The shape of cgwalters-forge/operator#1 that came out as one run-on paragraph.
+  const source = "### D2 Ruleset\nThe check allows no ignore for it.\n- [x] A) An org ruleset on `main`\n- [ ] B) Per-repository <script>alert(1)</script>\n\nReply:\n";
+  const view = documentView(source, async () => {}, render, "example/private");
+  const md = view.querySelector("section .md")!;
+  assert.equal(md.querySelector("p")!.textContent, "The check allows no ignore for it.");
+  assert.deepEqual([...md.querySelectorAll("ul > li")].map((li) => li.textContent), ["☑ A) An org ruleset on main", "☐ B) Per-repository <script>alert(1)</script>"]);
+  assert.equal(md.querySelector("li code")!.textContent, "main");
+  assert.equal(md.querySelectorAll("script, input").length, 0);
 });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import type { RawComment } from "../src/github/heartbeat.ts";
-import { findUsage, loadUsage, parseUsage, tokenTotal, USAGE_MARKER, usagePath } from "../src/github/usage.ts";
+import { findUsage, loadUsage, parseBudget, parseUsage, poolPace, tokenTotal, USAGE_CONFIG, USAGE_MARKER, usagePath } from "../src/github/usage.ts";
 import { fixture, scriptedFetch } from "./helpers.ts";
 
 // The fixture's second comment is what bin/bot-heartbeat publish
@@ -129,4 +129,63 @@ describe("loadUsage", () => {
   it("says when none is published", async () => assert.deepEqual((await load(200, [])).data, { state: "none" }));
   for (const status of [403, 404]) it(`a ${status} is unreadable, not an error`, async () => assert.deepEqual((await load(status)).data, { state: "unreadable" }));
   it("any other failure is an error", async () => assert.ok((await load(500)).data instanceof Error));
+});
+
+describe("poolPace", () => {
+  const pool = { usedPercent: 50, allowedPercent: 7.5, hold: true, windowMinutes: 10080, observedAt: "2026-10-16T01:05:00Z", resetsAt: "2026-10-22T11:52:00Z" };
+  it("measures the share gone from the pool's own reset, and projects to its end", () => {
+    // The panel of 16 Oct: OpenAI's week reset at 11:52 on 15 Oct, so 13 hours of 168 were gone.
+    const pace = poolPace(pool);
+    assert.equal(pace.unit, "week");
+    assert.equal(pace.gonePercent.toFixed(1), "7.9");
+    assert.equal(Math.round(pace.projectedPercent!), 636);
+  });
+  it("makes no projection early in a window, and names a window that isn't a week", () => {
+    assert.equal(poolPace({ ...pool, observedAt: "2026-10-15T15:00:00Z" }).projectedPercent, undefined);
+    assert.equal(poolPace({ ...pool, windowMinutes: 300, resetsAt: "2026-10-16T03:35:00Z" }).unit, "5h window");
+    assert.equal(poolPace({ ...pool, windowMinutes: 300, resetsAt: "2026-10-16T03:35:00Z" }).gonePercent, 50);
+  });
+  it("reads window_minutes, a week when absent or nonsense", () => {
+    const raw = fixture<{ pools: Record<string, Record<string, unknown>> }>("usage-pools.json");
+    const minutes = (v: unknown) => parseUsage(body({ ...raw, pools: { claude: { ...raw.pools.claude, window_minutes: v } } }))?.pools?.claude?.windowMinutes;
+    assert.deepEqual([minutes(300), minutes(undefined), minutes(0), minutes(-5), minutes("300"), minutes(1e9)], [300, 10080, 10080, 10080, 10080, 10080]);
+  });
+});
+
+describe("Mistral's allowance from the pools file", () => {
+  const pools = { claude: { budget: "3000" }, mistral: { budget: "1000", allowance: { amount: 300, currency: "USD", period: "calendar-month" } } };
+  const now = Date.parse("2026-10-16T12:00:00Z");
+  it("reads a USD calendar-month allowance, and nothing else", () => {
+    assert.deepEqual(parseBudget(JSON.stringify(pools), now), { limitUsd: 300, since: "2026-10-01T00:00:00.000Z", resetsAt: "2026-11-01T00:00:00.000Z" });
+    assert.equal(parseBudget(JSON.stringify(pools), Date.parse("2026-12-31T23:59:00Z"))?.resetsAt, "2027-01-01T00:00:00.000Z");
+    for (const allowance of [undefined, { amount: 300, currency: "EUR", period: "calendar-month" }, { amount: 300, currency: "USD", period: "rolling" }, { amount: -1, currency: "USD", period: "calendar-month" }, { amount: "300", currency: "USD", period: "calendar-month" }]) {
+      assert.equal(parseBudget(JSON.stringify({ mistral: { allowance } }), now), undefined, JSON.stringify(allowance));
+    }
+    assert.equal(parseBudget("not json", now), undefined);
+  });
+  it("reads it after the snapshot, one conditional GET, only for a Mistral row without an allowance of its own", async () => {
+    assert.deepEqual(USAGE_CONFIG.mistralAllowance, { repo: "cgwalters-forge/tracker", path: ".github/agentic-job/pools.json" });
+    const snapshot = (mistral: unknown) => [{ user: { login: "cgwalters-bot" }, body: body({ ...fixture<object>("usage-pools.json"), mistral }) }];
+    const run = async (mistral: unknown, target: { repo: string; path: string } | null = { repo: "example/tracker", path: ".github/agentic-job/pools.json" }) => {
+      const { fetchImpl, calls } = scriptedFetch((_m, url) => url.endsWith(usagePath) ? { body: snapshot(mistral) }
+        : url.endsWith("/repos/example/tracker/contents/.github/agentic-job/pools.json") ? { body: { encoding: "base64", size: 200, content: Buffer.from(JSON.stringify(pools)).toString("base64"), html_url: "https://github.com/example/tracker/blob/main/.github/agentic-job/pools.json" } } : undefined);
+      const data = await loadUsage(new GitHub(async () => "t", fetchImpl), now, target);
+      return { mistral: data.state === "ok" ? data.usage.mistral : undefined, paths: calls.map((c) => new URL(c.url).pathname) };
+    };
+    const read = await run({ requests: 1, tokens: 2 });
+    assert.deepEqual(read.paths, [new URL(usagePath, "https://x").pathname, "/repos/example/tracker/contents/.github/agentic-job/pools.json"]);
+    assert.equal(read.mistral?.budget?.limitUsd, 300);
+    assert.equal(read.mistral?.budget?.url, "https://github.com/example/tracker/blob/main/.github/agentic-job/pools.json");
+    assert.equal((await run({ requests: 1, tokens: 2, allowance: { limit_usd: 300, resets_at: "2026-11-01T00:00:00Z", spent_usd: 4 } })).paths.length, 1);
+    assert.equal((await run(undefined)).paths.length, 1);
+    assert.equal((await run({ requests: 1, tokens: 2 }, null)).paths.length, 1);
+    assert.equal((await run({ requests: 1, tokens: 2 }, { repo: "example/tracker", path: "../../x.json" })).paths.length, 1);
+    assert.equal((await run({ requests: 1, tokens: 2 }, { repo: "../..", path: "x.json" })).paths.length, 1);
+    const missing = await run({ requests: 1, tokens: 2 }, { repo: "example/other", path: "pools.json" });
+    assert.deepEqual(missing.mistral, { requests: 1, tokens: 2 }, "an unreadable pools file leaves the counters");
+    const { fetchImpl, calls } = scriptedFetch((_m, url) => url.endsWith(usagePath) ? { body: snapshot({ requests: 1, tokens: 2 }) } : { status: 404, body: { message: "Not Found" } });
+    const gh = new GitHub(async () => "t", fetchImpl);
+    for (let i = 0; i < 2; i++) assert.equal((await loadUsage(gh, now, { repo: "example/private", path: "pools.json" })).state, "ok");
+    assert.equal(calls.filter((c) => c.url.includes("/contents/")).length, 1, "a 404 is not asked for again");
+  });
 });

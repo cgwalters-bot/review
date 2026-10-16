@@ -406,19 +406,20 @@ details.history summary { cursor: pointer; color: var(--accent); }
 .uw.past-reset .pct { opacity: 0.5; }
 /* Weekly pools: one thin bar each, the pace as a tick, the sentence behind the expander. */
 .pools { display: grid; gap: 2px; }
-.pool-sum { display: grid; grid-template-columns: 1em 4.5em minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; min-height: 32px; font-size: 14px; --fill: var(--accent); }
+.pool-sum { display: grid; grid-template-columns: 1em 4.5em minmax(6em, 1fr) minmax(0, max-content); gap: 2px 10px; align-items: center; min-height: 32px; font-size: 14px; --fill: var(--accent); }
 summary.pool-sum { cursor: pointer; list-style: none; }
 summary.pool-sum::-webkit-details-marker { display: none; }
 .pool-sum::before { content: ""; color: var(--muted); }
 summary.pool-sum::before { content: "▸"; }
 .pool[open] > summary.pool-sum::before { content: "▾"; }
 .pool.over > .pool-sum { --fill: var(--p1); }
-.pool-name { font-weight: 600; }
+.pool-name { font-weight: 600; white-space: nowrap; }
 .pool-sum .bar { display: block; width: 100%; height: 10px; }
 .pool-sum .bar .track { fill: var(--line); }
 .pool-sum .bar .fill { fill: var(--fill); }
 .pool-sum .bar .tick { fill: var(--ink); }
-.pool-label { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+/* The label wraps rather than pushing into the name: neither may overlap the other on a phone. */
+.pool-label { min-width: 0; overflow-wrap: anywhere; font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
 .pool.over .pool-label { color: var(--fill); }
 .pool-sum.none .pool-label { grid-column: 3 / -1; }
 .pool-label .pool-stale { color: var(--muted); }
@@ -461,7 +462,7 @@ summary.pool-sum::before { content: "▸"; }
   .ctl .detail, .ctl .ctl-output { grid-column: 2; }
   .uw { grid-template-columns: 4.5em minmax(0, 1fr); }
   .uw .reset, .uw .tok { grid-column: 2; }
-  .pool-sum { grid-template-columns: 1em minmax(0, 1fr) auto; }
+  .pool-sum { grid-template-columns: 1em max-content minmax(0, 1fr); }
   .pool-sum .bar { grid-row: 2; grid-column: 1 / -1; }
   .uc { grid-template-columns: minmax(0, 1fr) 4em 4.5em; }
   .lw .ds { grid-column: 2; }
@@ -687,3 +688,8 @@ details.sub-fold > div { padding-top: 8px; }
 .operator-proposal pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .operator-proposal ol { padding-left: 1.5rem; }
 .operator-proposal button { max-width: 100%; white-space: normal; min-height: 44px; }
+/* The summary at the top: a line each, wrapping, so it fits a phone. */
+.dashboard-summary ul { list-style: none; margin: 0 0 8px; padding: 0; font-size: 13px; }
+.dashboard-summary li { padding: 1px 0; overflow-wrap: anywhere; }
+.dashboard-summary .sum-jump { font-weight: 600; }
+.dashboard-summary li.hot { color: var(--p1); }

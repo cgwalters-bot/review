@@ -130,3 +130,10 @@ describe("rendering", () => {
     assert.ok((root.textContent ?? "").length < MAX_SOURCE_CHARS + 100);
   });
 });
+
+it("shows task list items as ☑/☐, also when the list interrupts a paragraph, with no checkbox element", () => {
+  const root = dom("allows no ignore for it.\n- [x] A) An org ruleset `x`\n- [ ] B) Not a [ ] box\n\n[x] not in a list");
+  assert.deepEqual([...root.querySelectorAll("li")].map((li) => li.textContent), ["☑ A) An org ruleset x", "☐ B) Not a [ ] box"]);
+  assert.equal(root.querySelector("p:last-child")!.textContent, "[x] not in a list");
+  assertSafe(root);
+});

@@ -1,6 +1,7 @@
 import config from "./decisions-config.json" with { type: "json" };
 import { h } from "../dom.ts";
 import { GitHub, GitHubError } from "./api.ts";
+import type { Renderer } from "../markdown.ts";
 
 export const DECISIONS_CONFIG = config as { document: { repo: string; number: number } | null; legacyQuestions: boolean };
 
@@ -91,11 +92,12 @@ export async function sendDocumentAnswer(gh: GitHub, path: string, shown: string
   return body;
 }
 
-export function documentView(body: string, send: (id: string, letter: string, reply: string) => Promise<void>): HTMLElement {
+/** The document, with each entry's text as GitHub-flavored markdown (sanitized by `render`), and a form for each one still open. */
+export function documentView(body: string, send: (id: string, letter: string, reply: string) => Promise<void>, render: Renderer, repository?: string): HTMLElement {
   const root = h("div", { class: "decision-document" });
   const done = h("details", {}, h("summary", {}, "Done"));
   for (const entry of parseDocument(body)) {
-    const row = h("section", {}, h("h3", {}, `${entry.id} ${entry.title}`), h("p", {}, entry.text));
+    const row = h("section", {}, h("h3", {}, `${entry.id} ${entry.title}`), h("div", { class: "md" }, render(entry.text, repository)));
     if (!entry.done && !entry.options.some((o) => o.checked)) {
       const form = h("form", {});
       for (const option of entry.options) {
@@ -130,7 +132,7 @@ export function documentView(body: string, send: (id: string, letter: string, re
 
 const readers = new WeakMap<HTMLElement, { running: boolean; body?: string }>();
 
-export async function refreshDocument(gh: GitHub, slot: HTMLElement, target = DECISIONS_CONFIG.document, force = false): Promise<void> {
+export async function refreshDocument(gh: GitHub, slot: HTMLElement, render: Renderer, target = DECISIONS_CONFIG.document, force = false): Promise<void> {
   if (!target) return;
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(target.repo) || !Number.isSafeInteger(target.number) || target.number < 1) throw new Error("Invalid decisions configuration");
   const state = readers.get(slot) ?? { running: false };
@@ -154,7 +156,7 @@ export async function refreshDocument(gh: GitHub, slot: HTMLElement, target = DE
       });
       queue = run.catch(() => {});
       return run;
-    }));
+    }, render, target.repo));
     state.body = data.body;
   } catch (e) {
     const note = h("p", { role: "status" }, e instanceof GitHubError && e.status === 404 ? "Cannot read the decisions issue: it may be private and this viewer's token has no access, or the issue does not exist." : String(e));

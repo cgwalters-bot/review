@@ -34,6 +34,8 @@ import { refKey, VERDICT_LABEL } from "./forge.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 import type { TriageFilter } from "./triage.ts";
 import type { UsageData } from "./usage.ts";
+import { summaryView } from "./summaryview.ts";
+import type { ControllerData } from "./controller.ts";
 import { triageView, type TriageHooks } from "./triageview.ts";
 import { CAUGHT_UP_CLASS, type ListExtras, priorityList, ROW_CLASS, type RowLabel, rowText } from "./view.ts";
 
@@ -63,6 +65,8 @@ export interface SectionEls {
 
 /** The places the sections' data goes. */
 export interface Slots {
+  /** The summary above everything else. */
+  summary: HTMLElement;
   people: HTMLElement;
   peopleCount: HTMLElement;
   runs: HTMLElement;
@@ -144,12 +148,13 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const peopleCount = h("span", { class: COUNT_CLASS }, "…");
   const peopleSection = h("details", { class: `${SECTION_CLASS} sec-people`, id: "sec-people" }, h("summary", {}, h("span", { class: "sec-title" }, "From people (opt in)"), peopleCount), people);
   peopleSection.addEventListener("toggle", () => hooks.peopleToggled?.(peopleSection.open));
-  const weekly = h("section", { class: "usage-body weekly-usage", "aria-label": "Weekly subscription usage" }, h("h2", {}, "Weekly subscription usage"), h("p", { class: "note" }, "Reading usage…"));
+  const summary = h("div", { class: "summary-slot" });
+  const weekly = h("section", { class: "usage-body weekly-usage", id: "weekly-usage", "aria-label": "Weekly subscription usage" }, h("h2", {}, "Weekly subscription usage"), h("p", { class: "note" }, "Reading usage…"));
   const needs = h("div", { class: "needs-slot" });
   const decisionDocument = h("div", { class: "decision-document-slot" });
   const status = h("section", { class: "dashboard-status", "aria-label": "Status" }, h("h2", {}, "Status"));
   const focus = h("section", { class: "dashboard-focus", "aria-label": "Focus" }, h("h2", {}, "Focus"));
-  const runs = h("div", { class: "runs-slot" });
+  const runs = h("div", { class: "runs-slot", id: "live-runs" });
   const freshness = h("p", { class: "source-freshness note", "aria-label": "Source freshness" });
   const agents = h("div", { class: "agents-slot" });
   const ops = fold("ops-fold", "Devspaces, agent runs and the bot's activity", hooks.opsToggled);
@@ -166,8 +171,8 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     priority: section("priority", ctx, hooks, priority, themes.box),
     usage: section("usage", ctx, hooks, usage),
   };
-  const el = h("div", { class: HOME_CLASS }, weekly, sections.needs.details, status, peopleSection, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
-  return { el, sections, slots: { people, peopleCount, runs, freshness, status, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
+  const el = h("div", { class: HOME_CLASS }, summary, weekly, sections.needs.details, status, peopleSection, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
+  return { el, sections, slots: { summary, people, peopleCount, runs, freshness, status, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
 }
 
 export function fillState(home: Home, state: PageState): void {
@@ -179,6 +184,26 @@ export function fillState(home: Home, state: PageState): void {
     for (const el of home.slots.runs.querySelectorAll<HTMLDetailsElement>("details")) el.open = open.has(el.dataset.runId);
   }
   home.slots.freshness.textContent = Object.entries(state.sources).map(([name, source]) => `${name}: ${source.state}${source.checkedAt ? ` (checked ${new Date(source.checkedAt).toLocaleTimeString()})` : source.fetchedAt ? ` (cached ${new Date(source.fetchedAt).toLocaleString()})` : ""}${source.publishedAt ? ` · published ${source.publishedAt}` : ""}${source.error ? ` — ${source.error}` : ""}`).join(" · ");
+}
+
+/**
+ * The summary at the top (summaryview.ts). Its links open what they
+ * point at: the section, and the ops detail for the scheduler, which
+ * opening reads (as if he had opened it).
+ */
+export function fillSummary(home: Home, state: PageState, controller: ControllerData | undefined, now: number): void {
+  // The page redraws every 15 s: keep the same lines (and focus on a link) unless what they say changed.
+  const view = summaryView(state, controller, now, { show: () => {} });
+  if (home.slots.summary.dataset.signature === view.textContent) return;
+  home.slots.summary.dataset.signature = view.textContent ?? "";
+  home.slots.summary.replaceChildren(summaryView(state, controller, now, {
+    show: (id) => {
+      const target = id === "ops" ? home.slots.opsBox : home.el.querySelector<HTMLElement>(`#${id}`);
+      if (!target) return;
+      for (let d = target.closest("details"); d; d = d.parentElement?.closest("details") ?? null) d.open = true;
+      target.scrollIntoView({ block: "start" });
+    },
+  }));
 }
 
 /** Open or close a section from code (a jump, or its default changing). With `remember`, as if he did. */
