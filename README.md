@@ -549,8 +549,9 @@ that.
 
 The off-by-default [operator action panel](docs/operator-actions.md) shows
 typed proposals with live target preconditions and executes them sequentially
-with the operator's own token. Its provisional schema must be reconciled with
-agent-board before enabling it in repository configuration.
+with the operator's own token. agent-board's
+[operator actions](https://github.com/cgwalters-forge/agent-board/blob/main/docs/operator-actions.md)
+document is the contract; its schema and fixtures are vendored at a pinned commit.
 
 Builds and tests need Node.js 22.18 or later (TypeScript runs directly
 through Node's type stripping):

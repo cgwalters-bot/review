@@ -1,16 +1,15 @@
-// Provisional tracker#582 contract; see docs/operator-actions.md. No proposal
-// supplies an API path, credential, trusted writer, repository allowlist or project.
+// agent-board's operator-action contract; see docs/operator-actions.md. No proposal
+// supplies an API path, credential, trusted writer, repository allowlist or project ID.
 import type { GitHub } from "./api.ts";
 import rawConfig from "./action-config.json" with { type: "json" };
 import { matchesActionSchema } from "./actionschema.ts";
 
 const REPO = /^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/;
 const LOGIN = /^[A-Za-z0-9-]+(?:\[bot\])?$/;
-const SHA = /^[a-f0-9]{40}$/;
-const STAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/;
+const PROJECT = /^https:\/\/github\.com\/(orgs|users)\/[A-Za-z0-9_][A-Za-z0-9_-]{0,38}\/projects\/[1-9][0-9]{0,14}$/;
 export const ACTION_SCHEMA = "agent-board/operator-action/v1";
-export const MAX_ACTIONS = 20;
 
+/** `project` is the one project URL proposals may write to, or empty to refuse project-field actions. */
 export interface ActionConfig { operator: string; planner: string; tracker: string; repositories: string[]; project: string }
 
 export function actionConfig(value: unknown): ActionConfig | undefined {
@@ -19,80 +18,48 @@ export function actionConfig(value: unknown): ActionConfig | undefined {
   if (!c || typeof c.operator !== "string" || !LOGIN.test(c.operator) || typeof c.planner !== "string" || !LOGIN.test(c.planner) || typeof c.tracker !== "string" || !REPO.test(c.tracker)
     || !Array.isArray(c.repositories) || !c.repositories.length || c.repositories.length > 100
     || c.repositories.some((r) => typeof r !== "string" || !REPO.test(r))
-    || typeof c.project !== "string" || (c.project !== "" && !/^PVT_[A-Za-z0-9_]+$/.test(c.project))) throw new Error("Invalid operator action configuration");
+    || typeof c.project !== "string" || (c.project !== "" && !PROJECT.test(c.project))) throw new Error("Invalid operator action configuration");
   return c;
 }
 
 export const ACTION_CONFIG = actionConfig(rawConfig);
-interface Target { repo: string; number: number; updatedAt: string }
+// agent-board's names. The proposal carries no timestamps or prior values:
+// staleness is judged against live state shown to the operator (see plan()).
+interface Target { repo: string; number: number }
 export type Action = Target & (
   | { type: "close_issue"; reason: string }
   | { type: "reopen_issue" }
   | { type: "add_label" | "remove_label"; label: string }
-  | { type: "approve_pr"; head: string }
-  | { type: "merge_pr"; head: string; method: "merge" | "squash" | "rebase" }
-  | { type: "set_project_field"; field: "Priority" | "Status"; from: string | null; value: string }
-  | { type: "add_sub_issue" | "move_sub_issue"; parent: Target; previousParent: string | null }
+  | { type: "approve_pull_request"; head_sha: string }
+  | { type: "merge_pull_request"; head_sha: string; method: "merge" | "squash" | "rebase" }
+  | { type: "set_project_field"; project: string; field: "Priority" | "Status"; value: string }
+  | { type: "add_sub_issue"; parent_repo: string; parent_number: number }
+  | { type: "move_sub_issue"; parent_repo: string; parent_number: number; previous_parent_repo: string; previous_parent_number: number }
 );
 export interface Proposal { schema: typeof ACTION_SCHEMA; title: string; why: string; actions: Action[] }
 
-function object(v: unknown): Record<string, unknown> {
-  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("Expected an object");
-  return v as Record<string, unknown>;
-}
-
-function keys(v: Record<string, unknown>, names: string[]): void {
-  if (Object.keys(v).length !== names.length || names.some((k) => !Object.hasOwn(v, k))) throw new Error("Missing or unknown action property");
-}
-
-function text(v: unknown, max: number): v is string { return typeof v === "string" && v.trim().length > 0 && v.length <= max; }
-
-function target(v: Record<string, unknown>, c: ActionConfig): void {
-  if (typeof v.repo !== "string" || !REPO.test(v.repo) || !c.repositories.some((r) => r.toLowerCase() === (v.repo as string).toLowerCase())
-    || !Number.isSafeInteger(v.number) || (v.number as number) < 1 || typeof v.updatedAt !== "string" || !STAMP.test(v.updatedAt) || !Number.isFinite(Date.parse(v.updatedAt))) throw new Error("Invalid or disallowed action target");
-}
+const ref = (repo: string, number: number): string => `${repo.toLowerCase()}#${number}`;
 
 export function validateProposal(value: unknown, c: ActionConfig): Proposal {
   if (!matchesActionSchema(value)) throw new Error("Proposal does not match the operator action schema");
-  const p = object(value);
-  keys(p, ["schema", "title", "why", "actions"]);
-  if (p.schema !== ACTION_SCHEMA || !text(p.title, 200) || /[\r\n]/.test(p.title) || !text(p.why, 2000)
-    || !Array.isArray(p.actions) || !p.actions.length || p.actions.length > MAX_ACTIONS) throw new Error("Invalid operator action proposal");
-  const seen = new Set<string>();
-  for (const value of p.actions) {
-    const a = object(value);
-    target(a, c);
-    // A second mutation of a target would invalidate its own updatedAt guard.
-    const id = `${(a.repo as string).toLowerCase()}#${a.number}`;
-    if (seen.has(id)) throw new Error("Only one action per target per proposal");
-    seen.add(id);
-    const base = ["type", "repo", "number", "updatedAt"];
+  const p = value as Proposal;
+  const allowed = (repo: string): boolean => c.repositories.some((r) => r.toLowerCase() === repo.toLowerCase());
+  for (const a of p.actions) {
+    if (!allowed(a.repo)) throw new Error(`Repository ${a.repo} is not allowed`);
     switch (a.type) {
-      case "close_issue": keys(a, [...base, "reason"]); if (!text(a.reason, 4000) || /^\s*\/(?:promote|draft|ready)\b/im.test(a.reason)) throw new Error("Invalid close reason"); break;
-      case "reopen_issue": keys(a, base); break;
+      case "close_issue": if (/^\s*\/(?:promote|draft|ready)\b/im.test(a.reason)) throw new Error("Invalid close reason"); break;
       // "." and ".." survive encodeURIComponent and URL parsing collapses them, so
       // DELETE …/labels/. would reach the remove-all-labels endpoint.
-      case "add_label": case "remove_label": keys(a, [...base, "label"]); if (!text(a.label, 50) || /[\r\n]/.test(a.label) || /^\.{1,2}$/.test(a.label)) throw new Error("Invalid label"); break;
-      case "approve_pr": case "merge_pr":
-        keys(a, [...base, "head", ...(a.type === "merge_pr" ? ["method"] : [])]);
-        if (typeof a.head !== "string" || !SHA.test(a.head) || (a.type === "merge_pr" && !["merge", "squash", "rebase"].includes(a.method as string))) throw new Error("Invalid PR action");
+      case "add_label": case "remove_label": if (/^\.{1,2}$/.test(a.label)) throw new Error("Invalid label"); break;
+      // Repository scope is not project write authority; only the configured project is.
+      case "set_project_field": if (!c.project || a.project.toLowerCase() !== c.project.toLowerCase()) throw new Error("Project is not allowed"); break;
+      case "add_sub_issue": case "move_sub_issue":
+        if (!allowed(a.parent_repo) || (a.type === "move_sub_issue" && !allowed(a.previous_parent_repo))) throw new Error("Parent repository is not allowed");
+        if (ref(a.parent_repo, a.parent_number) === ref(a.repo, a.number)) throw new Error("An issue cannot be its own parent");
         break;
-      case "set_project_field":
-        keys(a, [...base, "field", "from", "value"]);
-        if (!c.project || !["Priority", "Status"].includes(a.field as string) || !(a.from === null || text(a.from, 100)) || !text(a.value, 100)) throw new Error("Invalid project action");
-        break;
-      case "add_sub_issue": case "move_sub_issue": {
-        keys(a, [...base, "parent", "previousParent"]);
-        const parent = object(a.parent); keys(parent, ["repo", "number", "updatedAt"]); target(parent, c);
-        if (`${(parent.repo as string).toLowerCase()}#${parent.number}` === id
-          || (a.type === "add_sub_issue" ? a.previousParent !== null : typeof a.previousParent !== "string" || !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+#[1-9][0-9]*$/.test(a.previousParent))) throw new Error("Invalid parent precondition");
-        if (typeof a.previousParent === "string" && !c.repositories.some((r) => r.toLowerCase() === (a.previousParent as string).split("#")[0]!.toLowerCase())) throw new Error("Previous parent repository is not allowed");
-        break;
-      }
-      default: throw new Error("Unknown operator action type");
     }
   }
-  return p as unknown as Proposal;
+  return p;
 }
 
 export interface Comment { id: string; databaseId: number; body: string; updatedAt: string; author: { login: string } | null; editor: { login: string } | null; lastEditedAt: string | null }
@@ -126,13 +93,6 @@ function recorded(all: Comment[], o: Offered, c: ActionConfig): boolean {
   return all.some((v) => trusted(v, c) && v.body.split("\n")[0] === marker(o));
 }
 
-function checkContainingIssue(p: Proposal, issue: number, c: ActionConfig): void {
-  const contains = (t: Target): boolean => t.repo.toLowerCase() === c.tracker.toLowerCase() && t.number === issue;
-  // The reservation and receipt edit change this issue's timestamp. Refuse it
-  // before reserving rather than exempting our writes from the freshness guard.
-  if (p.actions.some((a) => contains(a) || ((a.type === "add_sub_issue" || a.type === "move_sub_issue") && contains(a.parent)))) throw new Error("An action cannot target or use its containing proposal issue as a parent; propose it on another issue");
-}
-
 export function proposals(all: Comment[], issue: number, c: ActionConfig): Offered[] {
   const out: Offered[] = [];
   for (const comment of all) {
@@ -141,7 +101,6 @@ export function proposals(all: Comment[], issue: number, c: ActionConfig): Offer
     if (!blocks.length) continue;
     if (blocks.length !== 1 || comment.body.length > 65536) throw new Error("Ambiguous or oversized operator action comment");
     const proposal = validateProposal(JSON.parse(blocks[0]![1]!), c);
-    checkContainingIssue(proposal, issue, c);
     const o = { issue, comment, proposal };
     if (!recorded(all, o, c)) out.push(o);
   }
@@ -160,78 +119,143 @@ export async function loadProposals(gh: GitHub, c: ActionConfig): Promise<Discov
   return { offers: out, warnings };
 }
 
-interface Issue { id: number; node_id: string; title: string; state: string; updated_at: string; pull_request?: unknown; labels: { name: string }[]; parent_issue_url?: string | null }
-interface Prepared { state: string; apply(): Promise<void> }
+interface Issue { id: number; node_id: string; title: string; state: string; pull_request?: unknown; labels: { name: string }[]; parent_issue_url?: string | null }
+/** The live fact an action depends on: issue state, label membership, PR state and head, parent, or field value. */
+export type Fact = string | boolean | null;
+interface Observed { title: string; fact: Fact; apply(): Promise<void> }
 
-async function readTarget(gh: GitHub, t: Target): Promise<Issue> {
-  const i = await gh.send<Issue>("GET", `/repos/${t.repo}/issues/${t.number}`);
-  if (i.updated_at !== t.updatedAt) throw new Error(`Stale ${t.repo}#${t.number}: ${i.title} is ${i.state}, updated ${i.updated_at}; expected ${t.updatedAt}`);
+async function issue(gh: GitHub, repo: string, number: number): Promise<Issue> {
+  const i = await gh.send<Issue>("GET", `/repos/${repo}/issues/${number}`);
+  // Labels apply to both; every other issue action must not land on a PR.
+  if (i.pull_request) throw new Error(`${repo}#${number} is a pull request`);
   return i;
 }
 
-export async function prepare(gh: GitHub, c: ActionConfig, a: Action): Promise<Prepared> {
-  const i = await readTarget(gh, a);
-  const path = `/repos/${a.repo}/issues/${a.number}`;
-  const state = `${i.title} · ${i.state} · updated ${i.updated_at} · labels: ${i.labels.map((l) => l.name).join(", ") || "none"}`;
-  const send = async (method: string, url: string, body?: unknown): Promise<void> => { await gh.send(method, url, body); };
-  if (a.type === "approve_pr" || a.type === "merge_pr") {
-    const prPath = `/repos/${a.repo}/pulls/${a.number}`;
-    const pr = await gh.send<{ state: string; merged: boolean; draft: boolean; head: { sha: string } }>("GET", prPath);
-    if (pr.state !== "open" || pr.merged || pr.draft || pr.head.sha !== a.head) throw new Error(`Stale PR: current head ${pr.head.sha}, state ${pr.state}${pr.draft ? " draft" : ""}`);
-    return { state: `${state} · head ${pr.head.sha}`, apply: async () => {
-      if (a.type === "approve_pr") await send("POST", `${prPath}/reviews`, { event: "APPROVE", commit_id: a.head });
-      else {
-        const result = await gh.send<{ merged: boolean; message: string }>("PUT", `${prPath}/merge`, { sha: a.head, merge_method: a.method });
-        if (!result.merged) throw new Error(`Not merged: ${result.message}`);
-      }
-    } };
-  }
-  if (a.type === "close_issue" || a.type === "reopen_issue") {
-    if (i.pull_request || i.state !== (a.type === "close_issue" ? "open" : "closed")) throw new Error("Stale issue state or target is a PR");
-    return { state, apply: async () => {
-      if (a.type === "close_issue") await send("POST", `${path}/comments`, { body: a.reason });
-      await send("PATCH", path, { state: a.type === "close_issue" ? "closed" : "open" });
-    } };
-  }
-  if (a.type === "add_label" || a.type === "remove_label") {
-    if (/^\.{1,2}$/.test(a.label)) throw new Error("Invalid label");
-    if (i.labels.some((l) => l.name.toLowerCase() === a.label.toLowerCase()) !== (a.type === "remove_label")) throw new Error("Stale label membership");
-    return { state, apply: () => a.type === "add_label" ? send("POST", `${path}/labels`, { labels: [a.label] }) : send("DELETE", `${path}/labels/${encodeURIComponent(a.label)}`) };
-  }
-  if (a.type === "add_sub_issue" || a.type === "move_sub_issue") {
-    const parent = await readTarget(gh, a.parent);
-    const previous = a.previousParent === null ? null : `https://api.github.com/repos/${a.previousParent.replace("#", "/issues/")}`;
-    if (i.pull_request || parent.pull_request || (i.parent_issue_url ?? null)?.toLowerCase() !== previous?.toLowerCase()) throw new Error("Stale parent relationship or PR target");
-    return { state: `${state} · parent ${a.previousParent ?? "none"} → ${a.parent.repo}#${a.parent.number}: ${parent.title}`, apply: () => send("POST", `/repos/${a.parent.repo}/issues/${a.parent.number}/sub_issues`, { sub_issue_id: i.id, replace_parent: a.type === "move_sub_issue" }) };
-  }
-  if (a.type !== "set_project_field") throw new Error("Unsupported operator action");
-  const data = await graphql<{ node: { projectItems: { nodes: { id: string; project: { id: string }; fieldValueByName: { name: string } | null }[]; pageInfo: { hasNextPage: boolean } } }; project: { fields: { nodes: { id: string; name: string; options?: { id: string; name: string }[] }[]; pageInfo: { hasNextPage: boolean } } } }>(gh,
-    `query($issue:ID!,$project:ID!,$field:String!){node(id:$issue){... on Issue{projectItems(first:100){nodes{id project{id} fieldValueByName(name:$field){... on ProjectV2ItemFieldSingleSelectValue{name}}} pageInfo{hasNextPage}}} ... on PullRequest{projectItems(first:100){nodes{id project{id} fieldValueByName(name:$field){... on ProjectV2ItemFieldSingleSelectValue{name}}} pageInfo{hasNextPage}}}} project:node(id:$project){... on ProjectV2{fields(first:100){nodes{... on ProjectV2SingleSelectField{id name options{id name}}} pageInfo{hasNextPage}}}}}`, { issue: i.node_id, project: c.project, field: a.field });
-  const items = data.node.projectItems;
-  const fields = data.project.fields;
-  const item = items.nodes.find((v) => v.project.id === c.project);
-  const field = fields.nodes.find((v) => v.name === a.field);
-  const option = field?.options?.find((v) => v.name === a.value);
-  if (items.pageInfo.hasNextPage || fields.pageInfo.hasNextPage || !item || !field || !option || (item.fieldValueByName?.name ?? null) !== a.from) throw new Error("Stale or unavailable project field");
-  return { state: `${state} · ${a.field}: ${a.from ?? "unset"} → ${a.value}`, apply: async () => {
-    await graphql(gh, `mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}`, { project: c.project, item: item.id, field: field.id, option: option.id });
-  } };
+function parentOf(i: Issue): Fact {
+  const m = /^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/.exec(i.parent_issue_url ?? "");
+  if (i.parent_issue_url && !m) throw new Error("Unrecognised parent issue URL");
+  return m ? ref(m[1]!, Number(m[2])) : null;
 }
 
+/** Reads the current fact for an action and binds its mutation to the live IDs just read. */
+async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed> {
+  const path = `/repos/${a.repo}/issues/${a.number}`;
+  const send = async (method: string, url: string, body?: unknown): Promise<void> => { await gh.send(method, url, body); };
+  switch (a.type) {
+    case "approve_pull_request": case "merge_pull_request": {
+      const prPath = `/repos/${a.repo}/pulls/${a.number}`;
+      const pr = await gh.send<{ title: string; state: string; merged: boolean; draft: boolean; head: { sha: string } }>("GET", prPath);
+      return { title: pr.title, fact: pr.merged ? "merged" : `${pr.state}${pr.draft ? " draft" : ""} ${pr.head.sha}`, apply: async () => {
+        if (a.type === "approve_pull_request") await send("POST", `${prPath}/reviews`, { event: "APPROVE", commit_id: a.head_sha });
+        else {
+          const result = await gh.send<{ merged: boolean; message: string }>("PUT", `${prPath}/merge`, { sha: a.head_sha, merge_method: a.method });
+          if (!result.merged) throw new Error(`Not merged: ${result.message}`);
+        }
+      } };
+    }
+    case "close_issue": case "reopen_issue": {
+      const i = await issue(gh, a.repo, a.number);
+      return { title: i.title, fact: i.state, apply: async () => {
+        if (a.type === "close_issue") await send("POST", `${path}/comments`, { body: a.reason });
+        await send("PATCH", path, { state: a.type === "close_issue" ? "closed" : "open" });
+      } };
+    }
+    case "add_label": case "remove_label": {
+      const i = await gh.send<Issue>("GET", path);
+      return { title: i.title, fact: i.labels.some((l) => l.name.toLowerCase() === a.label.toLowerCase()),
+        apply: () => a.type === "add_label" ? send("POST", `${path}/labels`, { labels: [a.label] }) : send("DELETE", `${path}/labels/${encodeURIComponent(a.label)}`) };
+    }
+    case "add_sub_issue": case "move_sub_issue": {
+      const i = await issue(gh, a.repo, a.number);
+      const parent = await issue(gh, a.parent_repo, a.parent_number);
+      return { title: `${i.title} → ${parent.title}`, fact: parentOf(i), apply: () => send("POST", `/repos/${a.parent_repo}/issues/${a.parent_number}/sub_issues`, { sub_issue_id: i.id, replace_parent: a.type === "move_sub_issue" }) };
+    }
+    case "set_project_field": {
+      if (!c.project || a.project.toLowerCase() !== c.project.toLowerCase()) throw new Error("Project is not allowed");
+      const i = await gh.send<Issue>("GET", path);
+      const items = `projectItems(first:100){nodes{id project{id url field(name:$field){... on ProjectV2SingleSelectField{id options{id name}}}} fieldValueByName(name:$field){... on ProjectV2ItemFieldSingleSelectValue{name}}} pageInfo{hasNextPage}}`;
+      const data = await graphql<{ node: { projectItems: { nodes: { id: string; project: { id: string; url: string; field: { id?: string; options?: { id: string; name: string }[] } | null }; fieldValueByName: { name?: string } | null }[]; pageInfo: { hasNextPage: boolean } } } | null }>(gh,
+        `query($issue:ID!,$field:String!){node(id:$issue){... on Issue{${items}} ... on PullRequest{${items}}}}`, { issue: i.node_id, field: a.field });
+      const list = data.node?.projectItems;
+      // Project, field, option and item IDs come from this read, never from the proposal.
+      const item = list?.nodes.find((v) => v.project.url.toLowerCase() === c.project.toLowerCase());
+      const field = item?.project.field;
+      const option = field?.options?.find((v) => v.name === a.value);
+      if (!list || list.pageInfo.hasNextPage || !item || !field?.id || !option) throw new Error("Project item, field or option is unavailable");
+      return { title: i.title, fact: item.fieldValueByName?.name ?? null, apply: async () => {
+        await graphql(gh, `mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}`, { project: item.project.id, item: item.id, field: field.id, option: option.id });
+      } };
+    }
+  }
+}
+
+// Which fact an action reads; actions sharing a key in one proposal see earlier ones' effects.
+function key(a: Action): string {
+  const t = ref(a.repo, a.number);
+  switch (a.type) {
+    case "close_issue": case "reopen_issue": return `${t} state`;
+    case "add_label": case "remove_label": return `${t} label ${a.label.toLowerCase()}`;
+    case "approve_pull_request": case "merge_pull_request": return `${t} pull`;
+    case "add_sub_issue": case "move_sub_issue": return `${t} parent`;
+    case "set_project_field": return `${t} ${a.project.toLowerCase()} ${a.field}`;
+  }
+}
+
+// Checks the action's precondition against the fact and returns the fact after it.
+function step(a: Action, fact: Fact): Fact {
+  const want = (ok: boolean, expected: string): void => { if (!ok) throw new Error(`Stale ${a.repo}#${a.number}: expected ${expected}, found ${JSON.stringify(fact)}`); };
+  switch (a.type) {
+    case "close_issue": want(fact === "open", "open"); return "closed";
+    case "reopen_issue": want(fact === "closed", "closed"); return "open";
+    case "add_label": want(fact === false, `no ${a.label} label`); return true;
+    case "remove_label": want(fact === true, `a ${a.label} label`); return false;
+    case "approve_pull_request": want(fact === `open ${a.head_sha}`, `an open, non-draft PR at ${a.head_sha}`); return fact;
+    case "merge_pull_request": want(fact === `open ${a.head_sha}`, `an open, non-draft PR at ${a.head_sha}`); return "merged";
+    case "add_sub_issue": want(fact === null, "no parent"); return ref(a.parent_repo, a.parent_number);
+    case "move_sub_issue": {
+      const previous = ref(a.previous_parent_repo, a.previous_parent_number);
+      want(fact === previous, `parent ${previous}`); return ref(a.parent_repo, a.parent_number);
+    }
+    case "set_project_field": return a.value;
+  }
+}
+
+/** What the operator is shown, and what execution later requires to still hold. */
+export interface Plan { states: string[]; expected: Fact[] }
+
+/** Reads every target and checks the whole batch in order; throws on the first stale or unavailable action. */
+export async function plan(gh: GitHub, c: ActionConfig, actions: Action[]): Promise<Plan> {
+  const model = new Map<string, Fact>();
+  const out: Plan = { states: [], expected: [] };
+  for (const [index, a] of actions.entries()) {
+    const live = await observe(gh, c, a);
+    const k = key(a);
+    const earlier = model.has(k);
+    if (!earlier) model.set(k, live.fact);
+    const fact = model.get(k)!;
+    try { model.set(k, step(a, fact)); } catch (e) { throw new Error(`Action ${index + 1}: ${(e as Error).message}`); }
+    out.expected.push(fact);
+    out.states.push(`${live.title} · now ${JSON.stringify(fact)}${earlier ? " after the earlier actions" : ""} → ${JSON.stringify(model.get(k))}`);
+  }
+  return out;
+}
 async function unchanged(gh: GitHub, c: ActionConfig, o: Offered): Promise<void> {
   const all = await comments(gh, c, o.issue);
   if (recorded(all, o, c) || !proposals(all, o.issue, c).some((v) => v.comment.id === o.comment.id && v.comment.updatedAt === o.comment.updatedAt && v.comment.body === o.comment.body)) throw new Error("Proposal changed or already has an execution record");
 }
 
-export async function execute(gh: GitHub, c: ActionConfig, o: Offered, progress: (index: number, result: string) => void): Promise<void> {
+/** `shown` is the plan's `expected` facts the operator saw; execution refuses if live state no longer matches them. */
+export async function execute(gh: GitHub, c: ActionConfig, o: Offered, shown: Fact[], progress: (index: number, result: string) => void): Promise<void> {
   // Revalidate even programmatic callers; never trust the object from a UI closure.
   const p = validateProposal(o.proposal, c);
-  checkContainingIssue(p, o.issue, c);
   if (JSON.stringify(p) !== JSON.stringify(proposals([o.comment], o.issue, c)[0]?.proposal)) throw new Error("Proposal does not match its comment");
   const viewer = await gh.send<{ login: string }>("GET", "/user");
   if (viewer.login.toLowerCase() !== c.operator.toLowerCase()) throw new Error(`Execution requires ${c.operator}'s own token`);
   await unchanged(gh, c, o);
-  for (const a of p.actions) await prepare(gh, c, a);
+  // Re-plan rather than trust `shown`: this checks every precondition again,
+  // and a mismatch means a target changed after it was displayed.
+  const { expected } = await plan(gh, c, p.actions);
+  if (JSON.stringify(expected) !== JSON.stringify(shown)) throw new Error("Stale: a target changed since the proposal was shown; reload it");
   // Record BEFORE mutations: a lost response, closed tab or partial failure must
   // never silently retry. GitHub comments are not a transactional lock; see docs.
   const receipt = await gh.send<{ id: number }>("POST", `/repos/${c.tracker}/issues/${o.issue}/comments`, { body: `${marker(o)}\nExecution reserved; an interrupted execution must be checked manually.` });
@@ -244,8 +268,11 @@ export async function execute(gh: GitHub, c: ActionConfig, o: Offered, progress:
     if (!current || !trusted(current, c) || current.body !== o.comment.body || current.updatedAt !== o.comment.updatedAt) throw new Error("Proposal changed after reservation");
     for (const [index, a] of p.actions.entries()) {
       try {
-        const next = await prepare(gh, c, a);
-        await next.apply();
+        // Just before each write, the live fact must be what the plan predicted
+        // after the earlier actions; anything else is a concurrent change.
+        const live = await observe(gh, c, a);
+        if (JSON.stringify(live.fact) !== JSON.stringify(expected[index])) throw new Error(`Stale ${a.repo}#${a.number}: changed during execution`);
+        await live.apply();
         results.push(`${index + 1}. done`); progress(index, "Done");
       } catch (e) {
         // API error text is untrusted; don't publish it as operator-authored

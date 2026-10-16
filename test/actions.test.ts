@@ -1,34 +1,47 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { it } from "node:test";
-import fixture from "./fixtures/operator-action.json" with { type: "json" };
+import shared from "./fixtures/operator-actions.json" with { type: "json" };
+import vendor from "../docs/operator-actions.vendor.json" with { type: "json" };
+import schema from "../docs/operator-actions.schema.json" with { type: "json" };
 import { GitHub } from "../src/github/api.ts";
-import { ACTION_CONFIG, actionConfig, comments, execute, loadProposals, marker, prepare, proposals, validateProposal, type Action, type Comment, type Offered, type Proposal } from "../src/github/actions.ts";
-import { matchesActionSchema } from "../src/github/actionschema.ts";
+import { ACTION_CONFIG, actionConfig, comments, execute, loadProposals, marker, plan, proposals, validateProposal, type Action, type Comment, type Offered, type Proposal } from "../src/github/actions.ts";
+import { KEYWORDS, matchesActionSchema } from "../src/github/actionschema.ts";
 import { actionsPanel } from "../src/github/actionsview.ts";
 import { installDom } from "./helpers.ts";
 
 const win = installDom();
-const c = { operator: "operator", planner: "planner", tracker: "example/tracker", repositories: ["example/tasks", "example/tracker"], project: "PVT_example" };
+const project = "https://github.com/orgs/example/projects/1";
+const c = { operator: "operator", planner: "planner", tracker: "example/tracker", repositories: ["example/tasks", "example/tracker"], project };
 const stamp = "2026-10-14T12:00:00Z";
-const base = { repo: "example/tasks", number: 1, updatedAt: stamp };
+const base = { repo: "example/tasks", number: 1 };
 const head = "a".repeat(40);
+const envelope = { schema: "agent-board/operator-action/v1", title: "Tidy up", why: "Superseded." };
+const close: Action = { ...base, type: "close_issue", reason: "Superseded" };
 
-function offer(actions: Action[] = fixture.actions as Action[]): Offered {
-  const p = { ...fixture, actions } as Proposal;
+function offer(actions: Action[] = [close]): Offered {
+  const p = { ...envelope, actions } as Proposal;
   const comment: Comment = { id: "IC_proposal", databaseId: 10, body: `\`\`\`agent-board-action\n${JSON.stringify(p)}\n\`\`\``, updatedAt: stamp, author: { login: c.planner }, editor: null, lastEditedAt: null };
   return { issue: 9, comment, proposal: p };
 }
 
+// A small stateful GitHub: writes change what later reads return, so
+// sequential actions on one target see each other's effects.
 function mock(o = offer()) {
   const all = [o.comment];
   const calls: { method: string; path: string; body: any }[] = [];
+  const issues = new Map<string, Record<string, any>>();
+  const issue = (path: string): Record<string, any> => {
+    if (!issues.has(path)) issues.set(path, { id: 101, node_id: "I_target", title: "<script>target</script>", state: "open", labels: [], parent_issue_url: null });
+    return issues.get(path)!;
+  };
+  const pr: Record<string, any> = { title: "<script>target</script>", state: "open", merged: false, draft: false, head: { sha: head } };
+  const field = { value: "P2" as string | null, more: false };
   let viewer = c.operator;
   let failPath = "";
   let more = false;
   let closed = false;
-  let issueOverride: Record<string, unknown> = {};
-  let prOverride: Record<string, unknown> = {};
-  let projectOverride: Record<string, unknown> = {};
   let intercept: (() => void) | undefined;
   const gh = new GitHub(async () => "viewer-secret", async (url, init) => {
     assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer viewer-secret");
@@ -40,38 +53,97 @@ function mock(o = offer()) {
     if (path === "/user") return Response.json({ login: viewer });
     if (path === "/graphql") {
       if (body.query.includes("comments(first")) return Response.json({ data: { repository: { issue: { state: closed ? "CLOSED" : "OPEN", comments: { nodes: all, pageInfo: { hasNextPage: more } } } } } });
-      if (body.query.includes("updateProject")) return Response.json({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "item" } } } });
-      return Response.json({ data: { node: { projectItems: { nodes: [{ id: "item", project: { id: c.project }, fieldValueByName: { name: "P2" } }], pageInfo: { hasNextPage: false }, ...projectOverride } }, project: { fields: { nodes: [{ id: "field", name: "Priority", options: [{ id: "option", name: "P1" }] }], pageInfo: { hasNextPage: false } } } } });
+      if (body.query.includes("updateProject")) { field.value = "P1"; return Response.json({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "item" } } } }); }
+      return Response.json({ data: { node: { projectItems: { nodes: [{ id: "item", project: { id: "PVT_1", url: project, field: { id: "field", options: [{ id: "option", name: "P1" }] } }, fieldValueByName: field.value === null ? null : { name: field.value } }], pageInfo: { hasNextPage: field.more } } } } });
     }
     if (path.includes("?state=open")) return Response.json([{ number: 9 }]);
     if (method === "POST" && path === `/repos/${c.tracker}/issues/9/comments`) {
       all.push({ id: "IC_receipt", databaseId: 20, body: body.body, updatedAt: stamp, author: { login: c.operator }, editor: null, lastEditedAt: null });
       return Response.json({ id: 20 });
     }
-    if (method === "GET" && /\/pulls\/\d+$/.test(path)) return Response.json({ state: "open", merged: false, draft: false, head: { sha: head }, ...prOverride });
-    if (method === "GET" && /\/issues\/\d+$/.test(path)) return Response.json({ id: 101, node_id: "I_target", title: "<script>target</script>", state: "open", updated_at: stamp, labels: [], ...issueOverride });
-    if (method === "PUT" && path.endsWith("/merge")) return Response.json({ merged: true });
+    if (method === "GET" && /\/pulls\/\d+$/.test(path)) return Response.json(pr);
+    if (method === "PUT" && path.endsWith("/merge")) { pr.merged = true; return Response.json({ merged: true }); }
+    if (method === "POST" && path.endsWith("/reviews")) return Response.json({});
+    const m = /^(\/repos\/[^/]+\/[^/]+\/issues\/\d+)(.*)$/.exec(path);
+    if (m && !m[1]!.startsWith(`/repos/${c.tracker}/issues/9`)) {
+      const i = issue(m[1]!);
+      if (method === "PATCH" && !m[2]) i.state = body.state;
+      if (method === "POST" && m[2] === "/labels") i.labels.push({ name: body.labels[0] });
+      if (method === "DELETE" && m[2]!.startsWith("/labels/")) i.labels = i.labels.filter((l: { name: string }) => l.name !== decodeURIComponent(m[2]!.slice(8)));
+      if (method === "POST" && m[2] === "/sub_issues") issue(`/repos/example/tasks/issues/1`).parent_issue_url = `https://api.github.com${m[1]}`;
+      return Response.json(method === "GET" ? i : {});
+    }
     return Response.json({});
   });
-  return { gh, all, calls, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, issue: (v: Record<string, unknown>) => { issueOverride = v; }, pr: (v: Record<string, unknown>) => { prOverride = v; }, project: (v: Record<string, unknown>) => { projectOverride = v; }, intercept: (v: () => void) => { intercept = v; } };
+  return { gh, all, calls, issue, pr, field, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
 }
 
-it("defaults off and requires repository-owned writer and target configuration", () => {
-  assert.equal(ACTION_CONFIG, undefined);
-  assert.deepEqual(actionConfig(c), c);
-  for (const value of [{ ...c, operator: "" }, { ...c, operator: undefined }, { ...c, planner: undefined }, { ...c, tracker: undefined }, { ...c, repositories: ["../tasks"] }, { ...c, tracker: "https://evil" }, { ...c, project: "any" }]) assert.throws(() => actionConfig(value));
+const writes = (m: ReturnType<typeof mock>) => m.calls.filter((v) => v.method !== "GET" && !(v.path === "/graphql" && !v.body.query.includes("mutation")));
+const targetWrites = (m: ReturnType<typeof mock>) => writes(m).filter((v) => !v.path.startsWith(`/repos/${c.tracker}/issues/9`) && !v.path.startsWith(`/repos/${c.tracker}/issues/comments`));
+
+async function run(actions: Action[], setup: (m: ReturnType<typeof mock>) => void = () => {}) {
+  const o = offer(actions); const m = mock(o); setup(m);
+  const shown = await plan(m.gh, c, actions);
+  await execute(m.gh, c, o, shown.expected, () => {});
+  return { m, shown };
+}
+
+it("vendors agent-board's schema and fixtures unmodified at the pinned commit", () => {
+  // Git blob IDs at the pinned commit; `gh api repos/cgwalters-forge/agent-board/contents/SOURCE?ref=COMMIT --jq .sha` prints them.
+  assert.match(vendor.commit, /^[0-9a-f]{40}$/);
+  for (const f of vendor.files) {
+    const bytes = readFileSync(new URL(`../${f.path}`, import.meta.url));
+    const blob = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    assert.equal(blob, f.blob, `${f.path} differs from ${vendor.repository}@${vendor.commit}:${f.source}`);
+  }
 });
 
-it("validates the vendored fixture, refuses malformed, oversized and unbounded actions", () => {
-  assert.ok(matchesActionSchema(fixture));
-  assert.deepEqual(validateProposal(fixture, c), fixture);
-  const invalid = [null, { ...fixture, extra: true }, { ...fixture, title: "two\nlines" }, { ...fixture, actions: [] }, { ...fixture, actions: Array(21).fill(fixture.actions[0]) },
-    ...[{ ...base, type: "request", path: "/evil" }, { ...base, type: "close_issue", reason: "\n/promote" }, { ...base, type: "close_issue", reason: " ", extra: true },
-      { ...base, type: "add_label", label: "x", repo: "outside/tasks" }, { ...base, type: "add_label", label: "x", number: 0 }, { ...base, type: "approve_pr", head: "wrong" },
-      { ...base, type: "remove_label", label: "." }, { ...base, type: "remove_label", label: ".." }, { ...base, type: "add_label", label: "." },
-      { ...base, type: "move_sub_issue", parent: { ...base, number: 2 }, previousParent: "outside/tasks#3" }].map((a) => ({ ...fixture, actions: [a] })),
-    { ...fixture, actions: [fixture.actions[0], fixture.actions[0]] }];
-  for (const p of invalid) assert.throws(() => validateProposal(p, c));
+it("uses only the JSON Schema keywords the validator implements", () => {
+  const walk = (rule: Record<string, unknown>): void => {
+    for (const [k, v] of Object.entries(rule)) {
+      assert.ok(KEYWORDS.includes(k), `unsupported keyword ${k}`);
+      if (k === "properties" || k === "$defs") Object.values(v as Record<string, Record<string, unknown>>).forEach(walk);
+      else if (k === "oneOf" || k === "allOf") (v as Record<string, unknown>[]).forEach(walk);
+      else if (k === "items") walk(v as Record<string, unknown>);
+    }
+  };
+  walk(schema);
+});
+
+it("gives agent-board's verdict on every shared fixture case", () => {
+  const cfg = { operator: shared.config.writers[0]!, planner: shared.config.writers[1]!, tracker: "example/work", repositories: shared.config.repositories, project: shared.valid.actions[4]!.project! };
+  // A case category this test does not know would otherwise be skipped silently after a vendor update.
+  assert.deepEqual(Object.keys(shared).sort(), ["config", "invalid_actions", "scope_rejections", "valid", "valid_actions"]);
+  const one = (a: unknown) => ({ ...shared.valid, actions: [a] });
+  assert.ok(matchesActionSchema(shared.valid));
+  assert.deepEqual(validateProposal(shared.valid, cfg), shared.valid);
+  // Review writes only to its one configured project, so each case configures the project it names.
+  for (const a of shared.valid_actions) { assert.ok(matchesActionSchema(one(a)), JSON.stringify(a)); validateProposal(one(a), { ...cfg, project: "project" in a ? a.project : "" }); }
+  for (const a of shared.invalid_actions) { assert.equal(matchesActionSchema(one(a)), false, JSON.stringify(a)); assert.throws(() => validateProposal(one(a), cfg)); }
+  // Repository scope is configuration, not schema.
+  for (const a of shared.scope_rejections) { assert.ok(matchesActionSchema(one(a))); assert.throws(() => validateProposal(one(a), cfg), /not allowed/); }
+});
+
+it("defaults off and requires repository-owned writer, target and project configuration", () => {
+  assert.equal(ACTION_CONFIG, undefined);
+  assert.deepEqual(actionConfig(c), c);
+  assert.deepEqual(actionConfig({ ...c, project: "" }), { ...c, project: "" });
+  for (const value of [{ ...c, operator: "" }, { ...c, operator: undefined }, { ...c, planner: undefined }, { ...c, tracker: undefined }, { ...c, repositories: ["../tasks"] }, { ...c, tracker: "https://evil" }, { ...c, project: "PVT_example" }, { ...c, project: `${project}\n` }]) assert.throws(() => actionConfig(value));
+});
+
+it("refuses actions outside configured scope and labels or reasons the API would misread", () => {
+  for (const a of [
+    { ...base, type: "close_issue", reason: "\n/promote" },
+    { ...base, type: "remove_label", label: "." }, { ...base, type: "remove_label", label: ".." }, { ...base, type: "add_label", label: "." },
+    { ...base, type: "set_project_field", project: "https://github.com/orgs/other/projects/1", field: "Status", value: "Done" },
+    { ...base, type: "add_sub_issue", parent_repo: "example/tasks", parent_number: 1 },
+    { ...base, type: "move_sub_issue", parent_repo: "example/tasks", parent_number: 2, previous_parent_repo: "outside/tasks", previous_parent_number: 3 },
+    { ...base, type: "approve_pull_request", head_sha: head, updatedAt: stamp },
+  ]) assert.throws(() => validateProposal({ ...envelope, actions: [a] }, c), JSON.stringify(a));
+  for (const p of [null, { ...envelope, actions: [close], extra: true }, { ...envelope, title: "two\nlines", actions: [close] }, { ...envelope, title: "line\n", actions: [close] },
+    { ...envelope, actions: [] }, { ...envelope, actions: Array(51).fill(close) }]) assert.throws(() => validateProposal(p, c));
+  validateProposal({ ...envelope, actions: Array(50).fill(close) }, c);
+  assert.throws(() => validateProposal({ ...envelope, actions: [{ ...base, type: "set_project_field", project, field: "Status", value: "Done" }] }, { ...c, project: "" }), /Project/);
 });
 
 it("accepts only named writers with trusted last editors and exactly one unquoted block", () => {
@@ -107,122 +179,148 @@ it("keeps valid offers when another issue has unreadable or invalid proposals", 
   assert.equal(result.warnings.length, 2);
 });
 
-it("rejects a self-target or containing parent before reserving an execution", async () => {
-  for (const action of [
-    { ...base, repo: c.tracker, number: 9, type: "close_issue", reason: "Done" } as Action,
-    { ...base, type: "add_sub_issue", parent: { repo: c.tracker, number: 9, updatedAt: stamp }, previousParent: null } as Action,
-  ]) {
-    const o = offer([action]); const m = mock(o);
-    assert.throws(() => proposals([o.comment], 9, c), /containing/);
-    await assert.rejects(execute(m.gh, c, o, () => {}), /containing/);
-    assert.equal(m.calls.length, 0);
-  }
-});
-
-it("prepares every action with its exact current state and typed mutation", async () => {
-  const cases: { action: Action; issue?: Record<string, unknown>; expected: { method: string; path: string; body?: unknown } }[] = [
-    { action: { ...base, type: "close_issue", reason: "Superseded" }, expected: { method: "PATCH", path: "/repos/example/tasks/issues/1", body: { state: "closed" } } },
-    { action: { ...base, type: "reopen_issue" }, issue: { state: "closed" }, expected: { method: "PATCH", path: "/repos/example/tasks/issues/1", body: { state: "open" } } },
+it("executes every action type as its exact typed mutation", async () => {
+  const parent = "https://api.github.com/repos/example/tasks/issues/3";
+  const cases: { action: Action; setup?: (m: ReturnType<typeof mock>) => void; expected: { method: string; path: string; body?: unknown } }[] = [
+    { action: close, expected: { method: "PATCH", path: "/repos/example/tasks/issues/1", body: { state: "closed" } } },
+    { action: { ...base, type: "reopen_issue" }, setup: (m) => { m.issue("/repos/example/tasks/issues/1").state = "closed"; }, expected: { method: "PATCH", path: "/repos/example/tasks/issues/1", body: { state: "open" } } },
     { action: { ...base, type: "add_label", label: "needs review" }, expected: { method: "POST", path: "/repos/example/tasks/issues/1/labels", body: { labels: ["needs review"] } } },
-    { action: { ...base, type: "remove_label", label: "a/b" }, issue: { labels: [{ name: "a/b" }] }, expected: { method: "DELETE", path: "/repos/example/tasks/issues/1/labels/a%2Fb" } },
-    { action: { ...base, type: "approve_pr", head }, expected: { method: "POST", path: "/repos/example/tasks/pulls/1/reviews", body: { event: "APPROVE", commit_id: head } } },
-    { action: { ...base, type: "merge_pr", head, method: "squash" }, expected: { method: "PUT", path: "/repos/example/tasks/pulls/1/merge", body: { sha: head, merge_method: "squash" } } },
-    { action: { ...base, type: "add_sub_issue", parent: { ...base, number: 2 }, previousParent: null }, expected: { method: "POST", path: "/repos/example/tasks/issues/2/sub_issues", body: { sub_issue_id: 101, replace_parent: false } } },
-    { action: { ...base, type: "move_sub_issue", parent: { ...base, number: 2 }, previousParent: "example/tasks#3" }, issue: { parent_issue_url: "https://api.github.com/repos/example/tasks/issues/3" }, expected: { method: "POST", path: "/repos/example/tasks/issues/2/sub_issues", body: { sub_issue_id: 101, replace_parent: true } } },
-    { action: { ...base, type: "set_project_field", field: "Priority", from: "P2", value: "P1" }, expected: { method: "POST", path: "/graphql" } },
+    { action: { ...base, type: "remove_label", label: "a/b" }, setup: (m) => { m.issue("/repos/example/tasks/issues/1").labels = [{ name: "a/b" }]; }, expected: { method: "DELETE", path: "/repos/example/tasks/issues/1/labels/a%2Fb" } },
+    { action: { ...base, type: "approve_pull_request", head_sha: head }, expected: { method: "POST", path: "/repos/example/tasks/pulls/1/reviews", body: { event: "APPROVE", commit_id: head } } },
+    { action: { ...base, type: "merge_pull_request", head_sha: head, method: "squash" }, expected: { method: "PUT", path: "/repos/example/tasks/pulls/1/merge", body: { sha: head, merge_method: "squash" } } },
+    { action: { ...base, type: "add_sub_issue", parent_repo: "example/tasks", parent_number: 2 }, expected: { method: "POST", path: "/repos/example/tasks/issues/2/sub_issues", body: { sub_issue_id: 101, replace_parent: false } } },
+    { action: { ...base, type: "move_sub_issue", parent_repo: "example/tasks", parent_number: 2, previous_parent_repo: "example/tasks", previous_parent_number: 3 }, setup: (m) => { m.issue("/repos/example/tasks/issues/1").parent_issue_url = parent; }, expected: { method: "POST", path: "/repos/example/tasks/issues/2/sub_issues", body: { sub_issue_id: 101, replace_parent: true } } },
+    { action: { ...base, type: "set_project_field", project, field: "Priority", value: "P1" }, expected: { method: "POST", path: "/graphql" } },
   ];
-  for (const { action, issue, expected } of cases) {
-    validateProposal({ ...fixture, actions: [action] }, c);
-    const m = mock(); if (issue) m.issue(issue);
-    const next = await prepare(m.gh, c, action);
-    assert.match(next.state, /target/);
-    await next.apply();
-    const call = m.calls.at(-1)!;
+  for (const { action, setup, expected } of cases) {
+    validateProposal({ ...envelope, actions: [action] }, c);
+    const { m, shown } = await run([action], setup);
+    assert.match(shown.states[0]!, /target/);
+    const done = targetWrites(m);
+    const call = done.at(-1)!;
     assert.equal(call.method, expected.method); assert.equal(call.path, expected.path);
     // Fetch normalizes dot segments, so check the path that would actually be requested.
     assert.equal(new URL(new Request(`https://api.github.com${call.path}`).url).pathname, expected.path);
     if (expected.body) assert.deepEqual(call.body, expected.body);
-    if (action.type === "set_project_field") assert.deepEqual(call.body.variables, { project: c.project, item: "item", field: "field", option: "option" });
+    if (action.type === "set_project_field") assert.deepEqual(call.body.variables, { project: "PVT_1", item: "item", field: "field", option: "option" });
   }
 });
 
-it("refuses stale timestamps, states, labels, heads, parents and fields before mutation", async () => {
-  const cases: { action: Action; issue?: Record<string, unknown>; pr?: Record<string, unknown>; project?: Record<string, unknown> }[] = [
-    { action: fixture.actions[0] as Action, issue: { updated_at: "2026-10-14T13:00:00Z" } },
-    { action: fixture.actions[0] as Action, issue: { state: "closed" } },
-    { action: fixture.actions[0] as Action, issue: { pull_request: {} } },
-    { action: { ...base, type: "add_label", label: "x" }, issue: { labels: [{ name: "x" }] } },
-    { action: { ...base, type: "remove_label", label: "x" } },
-    { action: { ...base, type: "remove_label", label: "." }, issue: { labels: [{ name: "." }, { name: "keep-me" }] } },
-    { action: { ...base, type: "approve_pr", head }, pr: { head: { sha: "b".repeat(40) } } },
-    { action: { ...base, type: "merge_pr", head, method: "merge" }, pr: { draft: true } },
-    { action: { ...base, type: "add_sub_issue", parent: { ...base, number: 2 }, previousParent: null }, issue: { parent_issue_url: "https://api.github.com/repos/example/tasks/issues/3" } },
-    { action: { ...base, type: "set_project_field", field: "Priority", from: "P0", value: "P1" } },
-    { action: { ...base, type: "set_project_field", field: "Priority", from: "P2", value: "P1" }, project: { pageInfo: { hasNextPage: true } } },
+it("plans actions on one target in order, each against the state the earlier ones leave", async () => {
+  const actions: Action[] = [
+    { ...base, type: "add_label", label: "ready" }, { ...base, type: "remove_label", label: "ready" },
+    { ...base, type: "add_sub_issue", parent_repo: "example/tasks", parent_number: 3 },
+    { ...base, type: "move_sub_issue", parent_repo: "example/tasks", parent_number: 4, previous_parent_repo: "example/tasks", previous_parent_number: 3 },
   ];
-  for (const { action, issue, pr, project } of cases) {
-    const m = mock(); if (issue) m.issue(issue); if (pr) m.pr(pr); if (project) m.project(project);
-    await assert.rejects(prepare(m.gh, c, action));
-    assert.ok(m.calls.every((v) => v.method === "GET" || v.path === "/graphql" && !v.body.query.includes("mutation")));
+  const { m, shown } = await run(actions);
+  assert.deepEqual(shown.expected, [false, true, null, "example/tasks#3"]);
+  assert.equal(targetWrites(m).length, 4);
+  // A repeated mutation is stale against the first one's effect.
+  await assert.rejects(plan(mock().gh, c, [close, close]), /Action 2: Stale/);
+});
+
+it("refuses stale states, labels, heads, parents, fields and PR/issue confusion before mutation", async () => {
+  const cases: { action: Action; setup: (m: ReturnType<typeof mock>) => void }[] = [
+    { action: close, setup: (m) => { m.issue("/repos/example/tasks/issues/1").state = "closed"; } },
+    { action: close, setup: (m) => { m.issue("/repos/example/tasks/issues/1").pull_request = {}; } },
+    { action: { ...base, type: "add_label", label: "x" }, setup: (m) => { m.issue("/repos/example/tasks/issues/1").labels = [{ name: "X" }]; } },
+    { action: { ...base, type: "remove_label", label: "x" }, setup: () => {} },
+    { action: { ...base, type: "approve_pull_request", head_sha: head }, setup: (m) => { m.pr.head = { sha: "b".repeat(40) }; } },
+    { action: { ...base, type: "merge_pull_request", head_sha: head, method: "merge" }, setup: (m) => { m.pr.draft = true; } },
+    { action: { ...base, type: "merge_pull_request", head_sha: head, method: "merge" }, setup: (m) => { m.pr.merged = true; } },
+    { action: { ...base, type: "add_sub_issue", parent_repo: "example/tasks", parent_number: 2 }, setup: (m) => { m.issue("/repos/example/tasks/issues/1").parent_issue_url = "https://api.github.com/repos/example/tasks/issues/3"; } },
+    { action: { ...base, type: "move_sub_issue", parent_repo: "example/tasks", parent_number: 2, previous_parent_repo: "example/tasks", previous_parent_number: 3 }, setup: () => {} },
+    { action: { ...base, type: "add_sub_issue", parent_repo: "example/tasks", parent_number: 2 }, setup: (m) => { m.issue("/repos/example/tasks/issues/2").pull_request = {}; } },
+    { action: { ...base, type: "set_project_field", project, field: "Priority", value: "P0" }, setup: () => {} },
+    { action: { ...base, type: "set_project_field", project, field: "Priority", value: "P1" }, setup: (m) => { m.field.more = true; } },
+  ];
+  for (const { action, setup } of cases) {
+    const m = mock(offer([action])); setup(m);
+    await assert.rejects(plan(m.gh, c, [action]), JSON.stringify(action));
+    assert.deepEqual(writes(m), []);
   }
+});
+
+it("refuses to execute when a target changed after it was shown, before reserving", async () => {
+  for (const [action, change] of [
+    [close, (m: ReturnType<typeof mock>) => { m.issue("/repos/example/tasks/issues/1").state = "closed"; }],
+    [{ ...base, type: "set_project_field", project, field: "Priority", value: "P1" }, (m: ReturnType<typeof mock>) => { m.field.value = null; }],
+    [{ ...base, type: "approve_pull_request", head_sha: head }, (m: ReturnType<typeof mock>) => { m.pr.draft = true; }],
+  ] as [Action, (m: ReturnType<typeof mock>) => void][]) {
+    const o = offer([action]); const m = mock(o);
+    const shown = await plan(m.gh, c, [action]);
+    change(m);
+    await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /Stale/);
+    assert.deepEqual(writes(m), []);
+  }
+  // A field changed to another valid value still passes the plan, but not the comparison with what was shown.
+  const o = offer([{ ...base, type: "set_project_field", project, field: "Priority", value: "P1" }]); const m = mock(o);
+  const shown = await plan(m.gh, c, o.proposal.actions); m.field.value = "P3";
+  await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /since the proposal was shown/);
+  assert.deepEqual(writes(m), []);
 });
 
 it("reserves before execution, rechecks targets, records results and refuses replay", async () => {
   const o = offer(); const m = mock(o); const progress: string[] = [];
-  await execute(m.gh, c, o, (_, v) => progress.push(v));
+  const shown = await plan(m.gh, c, o.proposal.actions);
+  await execute(m.gh, c, o, shown.expected, (_, v) => progress.push(v));
   assert.deepEqual(progress, ["Done"]);
-  const writes = m.calls.filter((v) => v.method !== "GET" && v.path !== "/graphql");
-  assert.equal(writes[0]!.path, "/repos/example/tracker/issues/9/comments");
-  assert.equal(writes[0]!.body.body.split("\n")[0], marker(o));
-  assert.equal(m.calls.filter((v) => v.method === "GET" && v.path === "/repos/example/tasks/issues/1").length, 2);
-  assert.match(writes.at(-1)!.body.body, /1\. done/);
-  const before = writes.length;
-  await assert.rejects(execute(m.gh, c, o, () => {}), /already/);
-  assert.equal(m.calls.filter((v) => v.method !== "GET" && v.path !== "/graphql").length, before);
+  const w = writes(m);
+  assert.equal(w[0]!.path, "/repos/example/tracker/issues/9/comments");
+  assert.equal(w[0]!.body.body.split("\n")[0], marker(o));
+  // Shown, execution preflight, and just before the write.
+  assert.equal(m.calls.filter((v) => v.method === "GET" && v.path === "/repos/example/tasks/issues/1").length, 3);
+  assert.match(w.at(-1)!.body.body, /1\. done/);
+  const before = w.length;
+  await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /already/);
+  assert.equal(writes(m).length, before);
 });
 
 it("stops at first failure, retains the executed marker and never posts API text as intent", async () => {
-  const o = offer([{ ...base, type: "add_label", label: "x" }, { ...base, number: 2, type: "add_label", label: "y" }]);
-  const m = mock(o); m.fail("/repos/example/tasks/issues/1/labels");
-  await assert.rejects(execute(m.gh, c, o, () => {}));
+  const actions: Action[] = [{ ...base, type: "add_label", label: "x" }, { ...base, number: 2, type: "add_label", label: "y" }];
+  const o = offer(actions); const m = mock(o); m.fail("/repos/example/tasks/issues/1/labels");
+  await assert.rejects(execute(m.gh, c, o, (await plan(m.gh, c, actions)).expected, () => {}));
   assert.ok(!m.calls.some((v) => v.method === "POST" && v.path === "/repos/example/tasks/issues/2/labels"));
   const receipt = m.calls.at(-1)!;
   assert.equal(receipt.method, "PATCH"); assert.ok(receipt.body.body.startsWith(marker(o)));
   assert.match(receipt.body.body, /1\. failed or uncertain/); assert.ok(!receipt.body.body.includes("/promote"));
 });
 
-it("refuses another viewer, changed proposal, forged UI object and stale execution preflight", async () => {
-  const o = offer();
-  const m = mock(o); m.setViewer("visitor"); await assert.rejects(execute(m.gh, c, o, () => {}), /own token/);
-  const changed = mock(o); changed.all[0] = { ...o.comment, updatedAt: "2026-10-14T13:00:00Z" }; await assert.rejects(execute(changed.gh, c, o, () => {}), /changed/);
-  const forged = { ...o, proposal: { ...o.proposal, why: "forged" } }; await assert.rejects(execute(mock(o).gh, c, forged, () => {}), /match/);
-  const stale = mock(o); stale.issue({ updated_at: "2026-10-14T13:00:00Z" }); await assert.rejects(execute(stale.gh, c, o, () => {}), /Stale/);
-  for (const v of [m, changed, stale]) assert.ok(!v.calls.some((v) => v.path.endsWith("/comments") && v.method === "POST"));
+it("refuses another viewer, changed proposal and forged UI object", async () => {
+  const o = offer(); const shown = [ "open" ];
+  const m = mock(o); m.setViewer("visitor"); await assert.rejects(execute(m.gh, c, o, shown, () => {}), /own token/);
+  const changed = mock(o); changed.all[0] = { ...o.comment, updatedAt: "2026-10-14T13:00:00Z" }; await assert.rejects(execute(changed.gh, c, o, shown, () => {}), /changed/);
+  const forged = { ...o, proposal: { ...o.proposal, why: "forged" } }; await assert.rejects(execute(mock(o).gh, c, forged, shown, () => {}), /match/);
+  for (const v of [m, changed]) assert.deepEqual(writes(v), []);
 });
 
-it("does not mutate after a competing earlier receipt or changed target after reservation", async () => {
+it("does not mutate after a competing earlier receipt or a target change after reservation", async () => {
   for (const competing of [true, false]) {
     const o = offer(); const m = mock(o);
+    const shown = await plan(m.gh, c, o.proposal.actions);
     m.intercept(() => {
       if (m.calls.at(-1)?.path === "/repos/example/tracker/issues/9/comments") {
         if (competing) m.all.push({ ...o.comment, id: "IC_other", databaseId: 19, author: { login: c.operator }, body: marker(o) });
-        else m.issue({ updated_at: "2026-10-14T13:00:00Z" });
+        else m.issue("/repos/example/tasks/issues/1").state = "closed";
       }
     });
-    await assert.rejects(execute(m.gh, c, o, () => {}));
-    assert.ok(!m.calls.some((v) => v.method === "PATCH" && v.path === "/repos/example/tasks/issues/1"));
+    await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}));
+    assert.deepEqual(targetWrites(m), []);
   }
 });
 
 it("keeps discovery opt-in, renders plain text and disables stale proposals", async () => {
-  const o = offer(); o.proposal.title = "<img src=x onerror=evil()>"; o.comment.body = `\`\`\`agent-board-action\n${JSON.stringify(o.proposal)}\n\`\`\``;
-  const m = mock(o); m.issue({ updated_at: "2026-10-14T13:00:00Z" });
-  const panel = actionsPanel(m.gh, c); document.body.replaceChildren(panel);
-  assert.equal(m.calls.length, 0); assert.equal((panel as HTMLDetailsElement).open, false);
-  panel.querySelector<HTMLButtonElement>("button")!.click();
-  for (let i = 0; i < 100 && !panel.querySelector(".operator-proposal"); i++) await new Promise((r) => setTimeout(r, 1));
-  assert.ok(panel.textContent?.includes(o.proposal.title)); assert.equal(panel.querySelector("img"), null);
-  assert.equal(panel.querySelectorAll<HTMLButtonElement>("button")[1]!.disabled, true);
-  assert.ok(panel.querySelector("pre")?.textContent?.includes("updatedAt"));
-  assert.equal(win.document.querySelector("script"), null);
+  for (const stale of [true, false]) {
+    const o = offer(); o.proposal.title = "<img src=x onerror=evil()>"; o.comment.body = `\`\`\`agent-board-action\n${JSON.stringify(o.proposal)}\n\`\`\``;
+    const m = mock(o); if (stale) m.issue("/repos/example/tasks/issues/1").state = "closed";
+    const panel = actionsPanel(m.gh, c); document.body.replaceChildren(panel);
+    assert.equal(m.calls.length, 0); assert.equal((panel as HTMLDetailsElement).open, false);
+    panel.querySelector<HTMLButtonElement>("button")!.click();
+    for (let i = 0; i < 100 && !panel.querySelector(".operator-proposal"); i++) await new Promise((r) => setTimeout(r, 1));
+    assert.ok(panel.textContent?.includes(o.proposal.title)); assert.equal(panel.querySelector("img"), null);
+    assert.equal(panel.querySelectorAll<HTMLButtonElement>("button")[1]!.disabled, stale);
+    assert.equal(panel.textContent?.includes("Refused: Error: Action 1: Stale"), stale);
+    assert.ok(panel.querySelector("pre")?.textContent?.includes("close_issue"));
+    assert.equal(win.document.querySelector("script"), null);
+  }
 });

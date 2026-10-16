@@ -3,49 +3,49 @@
 The action panel is disabled by default. Enable it only by editing
 `src/github/action-config.json` on the repository's default branch: set
 `operator`, `planner`, `tracker` (`OWNER/REPO`), and an explicit
-`repositories` allowlist. `project` is a ProjectV2 node ID, or empty to
-disable project-field actions. No dispatcher or proposal can widen this
+`repositories` allowlist. `project` is the one GitHub project URL proposals may
+change, or empty to refuse project-field actions. No dispatcher or proposal can widen this
 configuration. The allowlist should start with the forge-native repositories;
 upstreams require an operator-reviewed configuration change.
 
 This prevents a proposal from borrowing the viewer's token to write outside
-the approved repositories. Only the configured operator can execute, using
+the approved repositories or project. Only the configured operator can execute, using
 the existing browser GitHub client and their own token. Only comments by the
 operator or planner count; edited comments require a named, trusted last
 editor, matching agent-board's job-plan rule.
 
-## Provisional contract
+## Contract
 
-As of 2026-10-14, agent-board#71 has not published its schema or fixtures on
-the default branch. `operator-action.schema.json` and the synthetic fixture
-in `test/fixtures/operator-action.json` are provisional, based on tracker#582.
-Reconcile the contract with agent-board before enabling the panel. The shared
-schema is vendored here so the parser has a versioned contract, not an
-undocumented collection of API calls.
+agent-board's [operator actions](https://github.com/cgwalters-forge/agent-board/blob/main/docs/operator-actions.md)
+document is the contract: the fence, field names, action types and limits are
+defined there, not here. `operator-actions.schema.json` and
+`test/fixtures/operator-actions.json` are byte-for-byte copies of agent-board's
+`docs/operator-actions.schema.json` and `fixtures/operator-actions.json` at the
+commit recorded in `operator-actions.vendor.json`, with their git blob IDs.
+`npm test` fails if either file differs from those blobs, and runs every shared
+fixture case through this site's validator. To update, copy both files from a
+newer agent-board commit and record its commit and blob IDs.
 
-A comment holds exactly one unquoted, column-zero fenced block with the info
-string `agent-board-action`. Its object has `schema` equal to
-`agent-board/operator-action/v1`, a one-line `title`, `why`, and 1–20 `actions`.
-Every action has `type`, `repo`, `number` and `updatedAt` (the target issue API's
-UTC timestamp). Unknown properties are refused, and a target may occur only
-once.
+Beyond the schema, this site refuses actions on repositories outside the
+allowlist (including parents), a project other than the configured one, an
+issue as its own parent, a `.` or `..` label (`DELETE …/labels/.` would reach
+the remove-all-labels endpoint), and a close reason that starts with a slash
+command. `move_sub_issue` uses GitHub's single replace-parent operation.
 
-An action may not target its containing proposal issue or use it as the
-destination parent: reservation changes that issue's timestamp. Put such a
-proposal on a different issue instead; rejection happens before reservation.
+## Stale checks
 
-Mutation-specific fields are defined in the schema:
+Proposals carry no timestamps or prior values. Instead, rendering a proposal
+reads every target and shows the fact each action depends on: issue state for
+close and reopen, label membership, a PR's state, draft flag and head (which
+must be open, non-draft and at `head_sha`), the current parent, or the
+project field's current value. Actions run in order, so an action on a target
+an earlier action changed is checked against that earlier action's result.
+Any failed or unavailable check disables the batch.
 
-- `close_issue` takes a `reason` comment; `reopen_issue` takes no extra fields.
-- `add_label` and `remove_label` take `label` and require it absent/present.
-- `approve_pr` and `merge_pr` take the exact `head` SHA. Merge also takes
-  `method` (`merge`, `squash`, `rebase`). Only open, non-draft PRs qualify.
-- `set_project_field` takes `field` (`Priority` or `Status`), `from` (option
-  name or null), and `value` (option name). The project comes from config;
-  field, option and item IDs are resolved live, never from the proposal.
-- `add_sub_issue` and `move_sub_issue` take the destination `parent` target
-  including its `updatedAt`, and `previousParent` (null for add, `OWNER/REPO#N`
-  for move). Moving uses GitHub's single replace-parent operation.
+Execution reads every target again and refuses unless each fact still equals
+what was shown, then checks each one again just before its write. A target
+that changed in a way these facts do not cover (its title, body or comments)
+does not make an action stale.
 
 ## Reads, execution and failure
 
@@ -55,11 +55,10 @@ Older proposals are outside this window; an issue with more comments is
 refused rather than executed with unread receipts, with a warning that does
 not hide valid proposals from other issues. There is no background
 polling. Targets and exact mutation payloads are shown as plain text, wrapping
-at phone width. Any failed or stale target check disables the batch.
+at phone width.
 
 Execution re-reads the authenticated viewer, proposal and every target before
-reserving the batch, then checks each target again just before its action.
-The result comment starts with
+reserving the batch. The result comment starts with
 `<!-- agent-board-action-executed: COMMENT-ID@UPDATED-AT -->`.
 It is posted **before** mutations and updated with numbered results afterward.
 All later actions are skipped at the first failure. A reservation counts as
@@ -75,7 +74,8 @@ receipts. Do not execute the same proposal from multiple tabs/devices. Deleting
 a receipt can permit replay. Editing a proposal creates a new version.
 
 GitHub offers no compare-and-swap for issue, label, project-field or sub-issue
-writes, so a change racing the final read remains possible. PR merge uses the
+writes, so a change racing the final read remains possible. A read that lags
+an earlier write in the same batch stops the batch as stale. PR merge uses the
 server-side SHA guard; approval is explicitly bound to the reviewed SHA.
 Closing has two writes (reason comment then state); if the second fails, the
 reason may already exist and the receipt says failed or uncertain. This panel
