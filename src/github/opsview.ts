@@ -701,17 +701,21 @@ function pieceRow(p: PieceState, now: number): HTMLElement {
     const detail = h("div", { class: "detail" });
     const show = (pass: ReturnType<typeof schedulerPass>) => {
       detail.replaceChildren();
-      detail.append(h("span", {}, pass.mode === "unknown" ? "unknown · see the job's log " : `${pass.mode} · ${pass.liveEpics} live epics · ${pass.candidates} candidates · ${pass.mode === "preview" ? "would start" : "started"} ${pass.starts}`));
+      detail.append(h("span", {}, pass.mode === "unknown" ? "unknown · see the job's log " : `${pass.mode} · ${pass.liveEpics} live epics · ${pass.candidates} candidates · ${pass.mode === "preview" ? "would start" : "started"} ${pass.partial ? `at least ${pass.starts} (only ${pass.items!.length} of ${pass.candidates} items published)` : pass.starts}`));
       if (pass.mode === "unknown" && p.last) detail.append(link(p.last.url, "↗"));
       if (pass.raw) detail.append(h("pre", {}, pass.raw));
       for (const line of [...(pass.items ?? []), ...(pass.census ?? [])]) detail.append(h("div", {}, line));
     };
     show(p.scheduler ?? { mode: "unknown" });
-    // Do not set maxlength: browsers truncate an oversized paste before
-    // input, which could turn a partial log into a false "started 0".
-    const input = h("textarea", { "aria-label": "Scheduler and census output", rows: "4" }) as HTMLTextAreaElement;
-    input.addEventListener("input", () => show(schedulerPass(input.value)));
-    li.append(h("div", { class: "ctl-output", "data-run": p.last ? `${piece.repo}/${piece.workflow}/${piece.job}/${p.last.url}/${p.last.at}` : "" }, detail, h("details", {}, h("summary", {}, "Read pasted job output"), h("p", {}, `Paste up to ${MAX_CONTROLLER_OUTPUT / 1024} KiB of the linked job's scheduler and epic census output. This stays in this panel; GitHub summaries have no API and log redirects are blocked by this app's token boundary.`), input)));
+    // Read whole from the job's notices: nothing to paste.
+    if (p.scheduler && p.scheduler.mode !== "unknown" && !p.scheduler.partial) li.append(detail);
+    else {
+      // Do not set maxlength: browsers truncate an oversized paste before
+      // input, which could turn a partial log into a false "started 0".
+      const input = h("textarea", { "aria-label": "Scheduler and census output", rows: "4" }) as HTMLTextAreaElement;
+      input.addEventListener("input", () => show(schedulerPass(input.value)));
+      li.append(h("div", { class: "ctl-output", "data-run": p.last ? `${piece.repo}/${piece.workflow}/${piece.job}/${p.last.url}/${p.last.at}` : "" }, detail, h("details", {}, h("summary", {}, "Read pasted job output"), h("p", {}, `Paste up to ${MAX_CONTROLLER_OUTPUT / 1024} KiB of the linked job's scheduler and epic census output. This stays in this panel; GitHub summaries have no API and log redirects are blocked by this app's token boundary.`), input)));
+    }
   }
   if (p.inFlight) {
     li.append(

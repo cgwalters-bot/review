@@ -8,10 +8,14 @@
 // sets the mode may not be readable with the viewer's token, the job
 // summary has no API, and the log redirects to blob storage, which the
 // page's connect-src (api.github.com only, the token's second fence)
-// refuses. The row accepts an optional pasted log/summary instead of
-// assuming that tracker publishes check annotations (it does not).
+// refuses. So the pass is read from the job's check-run annotations,
+// which are on api.github.com: notices titled "Board scheduler", one per
+// pass line. Until tracker publishes them, or where the token can't read
+// them, the mode is unknown and the row takes a pasted log instead.
 
-import { CacheMiss, GitHubError, type GitHub } from "./api.ts";
+import { CacheMiss, GitHubError, RateLimited, type GitHub } from "./api.ts";
+import type { ResponseCache } from "./cache.ts";
+import { API_ROOT } from "./config.ts";
 import config from "./controller.json" with { type: "json" };
 import { isStale, type Heartbeat } from "./heartbeat.ts";
 import { isActiveRun, type RawRun } from "./ops.ts";
@@ -87,9 +91,30 @@ const RUNS_READ = 30;
 const IN_FLIGHT_STATUSES = ["in_progress", "queued", "waiting", "pending", "requested"] as const;
 /** Runs whose jobs are read looking for a piece's job: a few, since a dispatched run may skip it. */
 const JOB_RUNS_READ = 5;
+/** One page of a job's annotations: the most GitHub returns at once. */
+const ANNOTATIONS_READ = 100;
+/** The title of the notices that carry a scheduler pass, one per line. */
+export const SCHEDULER_NOTICE_TITLE = "Board scheduler";
+/**
+ * Check runs whose annotations the token was refused (403/404), so
+ * refreshes don't ask again: a finished job's answer doesn't change. Kept
+ * per response cache, which each sign-in opens anew, and by login, so
+ * another token asks again. A pass read is kept by the response cache
+ * itself. Bounded, since each poll run is a new job.
+ */
+const unreadable = new WeakMap<ResponseCache, Set<string>>();
+const UNREADABLE_KEPT = 32;
+
+export interface RawAnnotation {
+  message?: string;
+  title?: string | null;
+  annotation_level?: string;
+}
 
 export interface RawJobRun {
   id: number;
+  /** The job's check run, whose id is not the job's. */
+  check_run_url?: string;
   name?: string;
   html_url?: string;
   status?: string;
@@ -115,6 +140,8 @@ export interface SchedulerPass {
   liveEpics?: number;
   candidates?: number;
   items?: string[];
+  /** Fewer item lines than candidates: some were cut (Actions keeps 10 notices a step), so `starts` is a lower bound. */
+  partial?: boolean;
   census?: string[];
   raw?: string;
 }
@@ -200,6 +227,50 @@ interface Reads {
   jobs: (repo: string, run: RawRun) => Promise<RawJobRun[]>;
 }
 
+/**
+ * The pass a finished board job published as notices. One request, and
+ * none once read: the response cache keeps a finished job's annotations
+ * (getSettled), and refusals are remembered above. Anything else that
+ * fails (a rate limit, a 5xx, a cache-only render) is unknown for now and
+ * asked again next refresh; the row still shows the run.
+ */
+async function readPass(gh: GitHub, repo: string, job: RawJobRun): Promise<SchedulerPass> {
+  const checkRun = checkRunOf(repo, job);
+  if (checkRun === undefined) return { mode: "unknown" };
+  let refused = unreadable.get(gh.cache);
+  const key = `${gh.cache.login ?? ""} ${repo}/${checkRun}`;
+  if (refused?.has(key)) return { mode: "unknown" };
+  try {
+    const path = `/repos/${repo}/check-runs/${checkRun}/annotations?per_page=${ANNOTATIONS_READ}`;
+    const notes = (await gh.getSettled<RawAnnotation[]>(path, () => true)).data;
+    const lines = (Array.isArray(notes) ? notes : []).filter((n) => n.annotation_level === "notice" && n.title === SCHEDULER_NOTICE_TITLE).map((n) => n.message ?? "");
+    // No such notice: tracker doesn't publish them (yet). Not "started 0".
+    if (!lines.length) return { mode: "unknown" };
+    const pass = schedulerPass(lines.join("\n"));
+    // Each candidate gets an item line; fewer means the notices were cut short.
+    return pass.mode !== "unknown" && pass.items!.length < pass.candidates! ? { ...pass, partial: true } : pass;
+  } catch (e) {
+    if (e instanceof GitHubError && !(e instanceof RateLimited) && (e.status === 403 || e.status === 404)) {
+      if (!refused) unreadable.set(gh.cache, (refused = new Set()));
+      if (refused.size >= UNREADABLE_KEPT) refused.delete(refused.values().next().value!);
+      refused.add(key);
+    }
+    return { mode: "unknown" };
+  }
+}
+
+/**
+ * A job's check run id, from its check_run_url, used only if that is this
+ * repository's check run on the API: the job's own id is not it.
+ */
+function checkRunOf(repo: string, job: RawJobRun): string | undefined {
+  const url = job.check_run_url;
+  const prefix = `${API_ROOT}/repos/${repo}/check-runs/`.toLowerCase();
+  if (typeof url !== "string" || !url.toLowerCase().startsWith(prefix)) return undefined;
+  const id = url.slice(prefix.length);
+  return /^\d+$/.test(id) ? id : undefined;
+}
+
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 async function loadPiece(gh: GitHub, piece: HostedPiece, reads: Reads): Promise<PieceState> {
@@ -250,9 +321,7 @@ async function loadPiece(gh: GitHub, piece: HostedPiece, reads: Reads): Promise<
     }
     const last = ranOf(url, job.completed_at, job.conclusion);
     if (last) out.last = last;
-    if (piece.read === "scheduler") {
-      out.scheduler = { mode: "unknown" };
-    }
+    if (piece.read === "scheduler") out.scheduler = await readPass(gh, piece.repo, job);
     break;
   }
   if (!seen) out.state = "unseen";
