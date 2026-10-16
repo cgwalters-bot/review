@@ -50,19 +50,19 @@ it("checks shipped config and refuses paths that could redirect API reads", () =
   for (const override of [{ repo: "../../user" }, { workflow: "../poll.yml" }, { read: "logs" }]) assert.throws(() => parseControllerConfig({ hosted: [{ ...piece, ...override }] }));
 });
 
-it("loads the board run without requesting annotations tracker never publishes", async () => {
+it("loads the board run and falls back to pasted output when the job has no pass notices", async () => {
   const calls: string[] = [];
   const cfg = { hosted: [{ label: "Board", what: "schedules", repo, workflow: "poll.yml", job: "board", read: "scheduler" }] };
   const gh = new GitHub(async () => "token", async url => {
     calls.push(url);
-    const body = url.includes("/jobs?") ? { jobs: [{ id: 12, name: "board", status: "completed", conclusion: "success", completed_at: "2026-10-14T19:11:00Z" }] } : { workflow_runs: [{ id: 1, html_url: `https://github.com/${repo}/actions/runs/1`, status: "completed", conclusion: "success", created_at: "2026-10-14T19:10:00Z" }] };
+    const body = url.includes("/annotations?") ? [] : url.includes("/jobs?") ? { jobs: [{ id: 12, check_run_url: `https://api.github.com/repos/${repo}/check-runs/34`, name: "board", status: "completed", conclusion: "success", completed_at: "2026-10-14T19:11:00Z" }] } : { workflow_runs: [{ id: 1, html_url: `https://github.com/${repo}/actions/runs/1`, status: "completed", conclusion: "success", created_at: "2026-10-14T19:10:00Z" }] };
     return new Response(JSON.stringify(body));
   });
   const data = await loadController(gh, cfg);
   assert.deepEqual(data.pieces[0]?.scheduler, { mode: "unknown" });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   await loadController(gh.cacheOnly(), cfg);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   const panel = opsDetail({ at: Date.now(), warnings: [], controller: data, local: null }, Date.now());
   assert.match(panel.textContent!, /unknown/);
   assert.equal(panel.querySelector("details")?.hasAttribute("open"), false);

@@ -32,6 +32,10 @@ const PREVIEW_LOG = [
 const ACTING_LOG = [
   "2026-10-14T19:11:30Z no live epics; nothing started",
 ].join("\n");
+// A pass as tracker would publish it: one `::notice title=Board scheduler::` per line.
+const HEADER = "3 open sub-issue(s) of 2 live epic(s), taken by their epic's order; 0 of 4 run(s) in flight; at most 2 triage run(s) a pass; items of 5 followed repositories only";
+const passNotes = (prefix: string) => [HEADER, "example-org/a#1 (epic example-org/e#9) dispatch: plan", "example-org/a#2 (epic example-org/e#9) skip: blocked", "example-org/a#3 (epic example-org/e#9) triage: new"]
+  .map((l) => ({ message: `${prefix}${l}`, title: "Board scheduler", annotation_level: "notice" }));
 
 describe("parseControllerConfig", () => {
   it("accepts the shipped controller.json", () => {
@@ -74,11 +78,15 @@ describe("schedulerPass", () => {
 const run = (id: number, status: string, conclusion: string | null, created: string, title = "poll") => ({
   id, html_url: `https://github.com/${REPO}/actions/runs/${id}`, display_title: title, status, conclusion, created_at: created, run_started_at: created, updated_at: created,
 });
-const job = (id: number, runId: number, name: string, status: string, conclusion: string | null, completed: string | null) => ({
-  id, name, status, conclusion, started_at: "2026-10-14T19:00:00Z", completed_at: completed, html_url: `https://github.com/${REPO}/actions/runs/${runId}/job/${id}`,
+// A job's check run id is not its own id, as on GitHub.
+const checkRunOf = (jobId: number) => jobId + 9000;
+const job = (id: number, runId: number, name: string, status: string, conclusion: string | null, completed: string | null, checkRunUrl = `${API}/repos/${REPO}/check-runs/${checkRunOf(id)}`) => ({
+  id, name, status, conclusion, started_at: "2026-10-14T19:00:00Z", completed_at: completed, html_url: `https://github.com/${REPO}/actions/runs/${runId}/job/${id}`, check_run_url: checkRunUrl,
 });
 
-function script(opts: { notesStatus?: number; notes?: string[]; boardSkipped?: boolean } = {}) {
+type Note = { message?: string; title?: string; annotation_level?: string };
+function script(opts: { notesStatus?: number | (() => number | undefined); notes?: Note[]; boardSkipped?: boolean; boardJob?: number; checkRunUrl?: string } = {}) {
+  const board = opts.boardJob ?? 12;
   const calls: string[] = [];
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetchImpl = async (url: string): Promise<Response> => {
@@ -87,9 +95,10 @@ function script(opts: { notesStatus?: number; notes?: string[]; boardSkipped?: b
     const p = u.pathname;
     if (p === `/repos/${REPO}/actions/workflows/poll.yml/runs`) return json({ workflow_runs: [run(2, "in_progress", null, "2026-10-14T19:14:00Z"), run(1, "completed", "success", "2026-10-14T19:10:00Z")] });
     if (p === `/repos/${REPO}/actions/runs/2/jobs`) return json({ jobs: [job(21, 2, "poll", "in_progress", null, null), opts.boardSkipped ? job(22, 2, "board", "completed", "skipped", "2026-10-14T19:14:01Z") : job(22, 2, "board", "in_progress", null, null)] });
-    if (p === `/repos/${REPO}/actions/runs/1/jobs`) return json({ jobs: [job(11, 1, "poll", "completed", "failure", "2026-10-14T19:12:00Z"), job(12, 1, "board", "completed", "success", "2026-10-14T19:11:32Z")] });
-    // The pass as a notice would carry it: its lines, one annotation (or more).
-    if (p === `/repos/${REPO}/check-runs/12/annotations`) return opts.notesStatus ? json({ message: "Gone" }, opts.notesStatus) : json((opts.notes ?? [PREVIEW_LOG]).map((message) => ({ message, annotation_level: "notice" })));
+    if (p === `/repos/${REPO}/actions/runs/1/jobs`) return json({ jobs: [job(11, 1, "poll", "completed", "failure", "2026-10-14T19:12:00Z"), job(board, 1, "board", "completed", "success", "2026-10-14T19:11:32Z", opts.checkRunUrl)] });
+    // By default the job publishes no pass, as tracker today: a deprecation warning only.
+    const notesStatus = typeof opts.notesStatus === "function" ? opts.notesStatus() : opts.notesStatus;
+    if (p === `/repos/${REPO}/check-runs/${checkRunOf(board)}/annotations`) return notesStatus ? json({ message: "Resource not accessible by integration" }, notesStatus) : json(opts.notes ?? [{ message: "Node.js 20 actions are deprecated", title: "", annotation_level: "warning" }]);
     if (p === `/repos/${REPO}/actions/workflows/usage.yml/runs`) return json({ workflow_runs: [run(5, "completed", "success", "2026-10-14T19:07:00Z", "usage")] });
     if (p === `/repos/${REPO}/actions/workflows/coordinator.yml/runs`) return json({ message: "Not Found" }, 404);
     if (p === `/repos/${REPO}`) return json({ full_name: REPO });
@@ -151,27 +160,94 @@ describe("loadController", () => {
     // poll.yml's runs and jobs are shared by its pieces: each read once.
     assert.equal(calls.filter((c) => c.includes("/poll.yml/runs")).length, 1);
     assert.equal(calls.filter((c) => c.includes("/runs/1/jobs")).length, 1);
-    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 0);
-    // Tracker does not publish annotations: do not request them on refresh either.
+    // The finished board job's annotations: one read, kept for refreshes.
+    assert.deepEqual(calls.filter((c) => c.includes("/annotations")), [`${API}/repos/${REPO}/check-runs/${checkRunOf(12)}/annotations?per_page=100`]);
     await loadController(gh, cfg);
-    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 0);
+    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 1);
   });
 
-  it("says the mode isn't published when no annotation has a pass", async () => {
-    const { fetchImpl } = script({ notes: ["Node.js 20 actions are deprecated"] });
-    const board = (await loadController(new GitHub(async () => "t", fetchImpl), cfg)).pieces[1];
-    assert.deepEqual(board?.scheduler, { mode: "unknown" });
+  it("reads a previewed pass from the job's notices, and only theirs", async () => {
+    // Another notice, and a warning with the title, aren't the pass's lines.
+    const notes = [{ message: "unrelated", title: "Other", annotation_level: "notice" }, ...passNotes("[dry-run] "), { message: "[dry-run] example-org/a#4 (epic example-org/e#9) dispatch: x", title: "Board scheduler", annotation_level: "warning" }];
+    const { fetchImpl } = script({ notes, boardJob: 30 });
+    const data = await loadController(new GitHub(async () => "t", fetchImpl), cfg);
+    assert.deepEqual(data.pieces[1]?.scheduler, { mode: "preview", starts: 2, liveEpics: 2, candidates: 3, items: passNotes("[dry-run] ").slice(1).map((n) => n.message) });
+    const row = opsDetail({ at: NOW, warnings: [], controller: data, local: null }, NOW).querySelectorAll(".ctl-list > .ctl")[1]!;
+    assert.match(row.querySelector(".detail")?.textContent ?? "", /^preview · 2 live epics · 3 candidates · would start 2/);
+    // Read, so no paste box.
+    assert.equal(row.querySelector("textarea"), null);
   });
 
-  it("keeps the scheduler's run without attempting annotation reads", async () => {
-    const { fetchImpl, calls } = script({ notesStatus: 410 });
+  it("reads an acting pass from the job's notices", async () => {
+    const { fetchImpl } = script({ notes: passNotes(""), boardJob: 31 });
+    const data = await loadController(new GitHub(async () => "t", fetchImpl), cfg);
+    assert.equal(data.pieces[1]?.scheduler?.mode, "acting");
+    const row = opsDetail({ at: NOW, warnings: [], controller: data, local: null }, NOW).querySelectorAll(".ctl-list > .ctl")[1]!;
+    assert.match(row.querySelector(".detail")?.textContent ?? "", /^acting · 2 live epics · 3 candidates · started 2/);
+  });
+
+  it("says unknown, with the job's link and the paste box, when no notice has a pass", async () => {
+    const { fetchImpl } = script({ boardJob: 32 });
+    const data = await loadController(new GitHub(async () => "t", fetchImpl), cfg);
+    assert.deepEqual(data.pieces[1]?.scheduler, { mode: "unknown" });
+    const row = opsDetail({ at: NOW, warnings: [], controller: data, local: null }, NOW).querySelectorAll(".ctl-list > .ctl")[1]!;
+    assert.equal(row.querySelector(".detail")?.textContent, "unknown · see the job's log ↗");
+    assert.equal(row.querySelector(".detail a")?.getAttribute("href"), `https://github.com/${REPO}/actions/runs/1/job/32`);
+    assert.ok(row.querySelector("textarea"));
+  });
+
+  for (const [status, boardJob] of [[403, 33], [404, 34]] as const) {
+    it(`takes unreadable annotations (${status}) as unknown, not an error, and doesn't ask again`, async () => {
+      const { fetchImpl, calls } = script({ notesStatus: status, boardJob });
+      const gh = new GitHub(async () => "t", fetchImpl);
+      const board = (await loadController(gh, cfg)).pieces[1];
+      assert.equal(board?.state, "ok");
+      assert.equal(board?.error, undefined);
+      assert.equal(board?.last?.conclusion, "success");
+      assert.deepEqual(board?.scheduler, { mode: "unknown" });
+      await loadController(gh, cfg);
+      assert.equal(calls.filter((c) => c.includes("/annotations")).length, 1);
+      const row = opsDetail({ at: NOW, warnings: [], controller: { pieces: [board!] }, local: null }, NOW).querySelector(".ctl")!;
+      assert.equal(row.querySelector(".st")?.textContent, "ok");
+      assert.ok(row.querySelector("textarea"));
+    });
+  }
+
+  it("asks again next refresh after a failure that isn't a refusal", async () => {
+    const { fetchImpl, calls } = script({ notesStatus: 500, boardJob: 35 });
     const gh = new GitHub(async () => "t", fetchImpl);
-    const board = (await loadController(gh, cfg)).pieces[1];
-    assert.equal(board?.state, "ok");
-    assert.equal(board?.last?.conclusion, "success");
-    assert.deepEqual(board?.scheduler, { mode: "unknown" });
+    assert.deepEqual((await loadController(gh, cfg)).pieces[1]?.scheduler, { mode: "unknown" });
     await loadController(gh, cfg);
-    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 0);
+    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 2);
+  });
+
+  it("says a pass cut short is partial, a lower bound, and keeps the paste box", async () => {
+    // The header counts 3 candidates; only 1 item notice made it.
+    const { fetchImpl } = script({ notes: passNotes("").slice(0, 2), boardJob: 36 });
+    const data = await loadController(new GitHub(async () => "t", fetchImpl), cfg);
+    assert.equal(data.pieces[1]?.scheduler?.partial, true);
+    const row = opsDetail({ at: NOW, warnings: [], controller: data, local: null }, NOW).querySelectorAll(".ctl-list > .ctl")[1]!;
+    assert.match(row.querySelector(".detail")?.textContent ?? "", /^acting · 2 live epics · 3 candidates · started at least 1 \(only 1 of 3 items published\)/);
+    assert.ok(row.querySelector("textarea"));
+  });
+
+  for (const url of [undefined, `${API}/repos/other-org/tracker/check-runs/9012`, `https://example.com/repos/${REPO}/check-runs/9012`, `${API}/repos/${REPO}/check-runs/9012/../1`]) {
+    it(`reads no annotations for a job whose check_run_url is ${url ?? "missing"}`, async () => {
+      const { fetchImpl, calls } = script({ notes: passNotes(""), checkRunUrl: url ?? "" });
+      const data = await loadController(new GitHub(async () => "t", fetchImpl), cfg);
+      assert.deepEqual(data.pieces[1]?.scheduler, { mode: "unknown" });
+      assert.equal(calls.filter((c) => c.includes("/annotations")).length, 0);
+    });
+  }
+
+  it("asks again with another sign-in after a refusal", async () => {
+    let status: number | undefined = 403;
+    const { fetchImpl, calls } = script({ notes: passNotes(""), notesStatus: () => status, boardJob: 37 });
+    assert.deepEqual((await loadController(new GitHub(async () => "t1", fetchImpl), cfg)).pieces[1]?.scheduler, { mode: "unknown" });
+    // A new token opens a new response cache: the refusal isn't its.
+    status = undefined;
+    assert.equal((await loadController(new GitHub(async () => "t2", fetchImpl), cfg)).pieces[1]?.scheduler?.mode, "acting");
+    assert.equal(calls.filter((c) => c.includes("/annotations")).length, 2);
   });
 
   it("looks past a skipped job to the last run of it, and says unseen when none ran", async () => {

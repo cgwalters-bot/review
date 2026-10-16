@@ -407,11 +407,10 @@ job or implement the broader agent-run/usage migration in tracker#422.
 A workflow with no runs yet shows as not built; a job missing from its
 last few runs, as not seen. The board scheduler's mode (preview or
 acting) and how many items its last pass would start or started are read
-from that job's annotations: its pass's lines, published as a notice
-(`[dry-run]` before each line of a preview). The log has them too, but
-it redirects to blob storage, which the page's `connect-src` refuses;
-until the job publishes the notice, the row says so and links to the
-job. `read: "in-flight"` lists every run in flight with its title. The interactive session (the controller chat)
+from that job's annotations (see Controller output below). The log has
+them too, but it redirects to blob storage, which the page's
+`connect-src` refuses; until the job publishes them, the row says
+unknown and links to the job. `read: "in-flight"` lists every run in flight with its title. The interactive session (the controller chat)
 counts as present only while its heartbeat is fresh, as Local agents
 judges it (15 minutes, or asleep until a wake time it gave); otherwise
 the panel says new work starts only from the board scheduler.
@@ -604,12 +603,27 @@ The answers and reviews it posts are real, so test against throwaway
 items.
 ## Controller output
 
-The board row reads pasted scheduler/census output from the linked job. This
-optional input stays in the panel and is limited to 128 KiB; it makes no network
-request and is not persisted. Automatic log retrieval remains unavailable:
-GitHub's summaries have no API, and Actions logs redirect outside the app's
-API-only token boundary. Tracker does not publish the assumed annotations.
-Until output is supplied, the row says **unknown**, not zero.
+The board row reads the scheduler's last pass from the board job's check-run
+annotations, the one place on api.github.com that carries it (summaries have
+no API; logs redirect outside the app's API-only token boundary). The
+contract, for tracker's `schedule.cjs`: one
+`::notice title=Board scheduler::LINE` per line of the pass, in order, each
+line exactly as printed (`[dry-run] ` before each line of a preview). The
+panel takes the notices with that title, joins their messages and parses
+them with the formats below. Actions keeps at most 10 notices a step and 50
+a job, so a pass longer than that is cut short: with fewer item lines than the
+header's candidates, the row says "at least" and keeps the paste box. The panel
+reads one page of 100. For the latest finished board job that is one GET of
+`/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations`, the id taken
+from the job's `check_run_url` (not the job's id), kept in the response cache
+(a finished job's annotations don't change), so refreshes don't repeat it; a
+403 or 404 is remembered for that check run until the next sign-in and shown
+as unknown, not an error.
+
+Without such a notice (tracker doesn't emit them yet), the row says
+**unknown**, not zero, links to the job and offers a box for pasted
+scheduler/census output from its log. That input stays in the panel, is
+limited to 128 KiB, makes no network request and is not persisted.
 
 The current scheduler and census formats live in `src/github/controller.json`
 and are covered by `test/controller-output.test.ts`. Unknown scheduler wording keeps
