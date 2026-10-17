@@ -378,6 +378,9 @@ homegit); a new line shows highlighted under the item.
 The empty configuration disables chat and leaves the CSP unchanged. Enabling
 it adds only `wss://*.TAILNET.ts.net` to the built page's CSP; the operator
 must approve that change. No tailnet infrastructure is changed here.
+The shipped configuration enables it for cgwalters-forge/tracker's
+`session.yml` sessions, published by github-actions[bot] on tracker#728, so the
+deployed CSP allows `wss://*.tailf2eb8.ts.net`.
 
 Find sessions reads at most 100 in-progress runs and the final page of up to 100 publication comments
 per source, without polling. A publisher's comment must contain the exact
