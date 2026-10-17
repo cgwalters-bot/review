@@ -1,12 +1,22 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { AcpClient, chatPanel, findSessions } from "../src/github/chat.ts";
-import { CHAT_CONFIG, chatEndpoint, parseChatConfig } from "../src/github/chatconfig.ts";
+import { AcpClient, chatPanel, derivedEndpoint, findLiveRuns, type ChatTiming } from "../src/github/chat.ts";
+import { CHAT_CONFIG, chatEndpoint, parseChatConfig, type ChatConfig } from "../src/github/chatconfig.ts";
 import { GitHub } from "../src/github/api.ts";
-import { installDom } from "./helpers.ts";
+import { installDom, scriptedFetch } from "./helpers.ts";
 
 const win = installDom();
 const config = { tailnetDomain: "example.ts.net", sources: [{ repo: "owner/repo", workflow: "session.yml", issue: 1, publisher: "publisher" }] };
+// The shipped configuration's shape, with the session wrapper's real status comment.
+const live: ChatConfig = { tailnetDomain: "tailf2eb8.ts.net", sources: [{ repo: "cgwalters-forge/tracker", workflow: "session.yml", issue: 728, publisher: "github-actions[bot]" }] };
+const RUN = 39062677132;
+const statusComment = (id: number) => ({
+  user: { login: "github-actions[bot]" },
+  body: `⏳ [session](https://github.com/cgwalters-forge/tracker/actions/runs/${id}) is running. Session: after the task's turn the operator attaches at \`wss://agentic-job-${id}-1.tailf2eb8.ts.net/\`, once the agent job's summary shows it served.\n\n<!-- agentic-job-run: ${id} -->\n\n<!-- agentic-job-status -->`,
+});
+const published = `wss://agentic-job-${RUN}-1.tailf2eb8.ts.net/`;
+const ATTACH_TIMEOUT = 300;
+const FAST: Partial<ChatTiming> = { pollMs: 1, pollMaxMs: 2, retryMs: 1, startLimitMs: 5_000, appearLimitMs: 5_000, waitLimitMs: 5_000, openTimeoutMs: 1_000, attachTimeoutMs: ATTACH_TIMEOUT };
 
 class MockServer extends EventTarget {
   onmessage: ((e: { data: string }) => void) | null = null;
@@ -21,29 +31,130 @@ class MockServer extends EventTarget {
   emit(m: unknown) { this.onmessage?.({ data: JSON.stringify(m) }); }
 }
 
+/**
+ * ok: opens and answers ACP like the bridge. fail: never opens. hang: opens
+ * and never answers. drop: opens, then the bridge closes it unanswered (as
+ * when another client is attached).
+ */
+type Mode = "ok" | "fail" | "hang" | "drop";
+
+class MockSocket extends MockServer {
+  onopen: (() => Promise<void>) | null = null;
+  onerror: (() => void) | null = null;
+  closed = false;
+  /** Refuse prompts, as the bridge does while a turn runs. */
+  busy = false;
+  readonly url: string;
+  readonly mode: Mode;
+  constructor(url: string, mode: Mode) {
+    super();
+    this.url = url;
+    this.mode = mode;
+    queueMicrotask(() => {
+      if (mode === "fail") { this.onerror?.(); this.close(); return; }
+      void this.onopen?.();
+      if (mode === "drop") queueMicrotask(() => this.close());
+    });
+  }
+  override close() { if (this.closed) return; this.closed = true; super.close(); }
+  override send(text: string) {
+    const m = JSON.parse(text);
+    if (this.mode === "hang") { this.sent.push(m); return; }
+    if (this.busy && m.method === "session/prompt") { this.sent.push(m); queueMicrotask(() => this.emit({ jsonrpc: "2.0", id: m.id, error: { code: -32000, message: "a turn is running" } })); return; }
+    super.send(text);
+  }
+}
+
+interface Run { id: number; run_attempt: number; status: string; display_title: string }
+const run = (status: string, id = RUN, run_attempt = 1): Run => ({ id, run_attempt, status, display_title: "Operator session (claude)" });
+
+type Answer = { status: number; body?: unknown };
+
+/** GitHub with a mutable tracker: its session runs, #728's comments, and the dispatch answers in turn. */
+function tracker(runs: Run[] = [], comments: { user: { login: string } | null; body: string }[] = [], dispatch: Answer[] = [{ status: 204 }]) {
+  const world = { runs, comments, dispatch, onDispatch: () => {}, failRuns: 0 };
+  let posts = 0;
+  const { fetchImpl, calls } = scriptedFetch((method, url) => {
+    if (method === "POST" && url.endsWith("/actions/workflows/session.yml/dispatches")) {
+      const answer = world.dispatch[Math.min(posts++, world.dispatch.length - 1)]!;
+      if (answer.status < 300) world.onDispatch();
+      return answer;
+    }
+    if (method !== "GET") return undefined;
+    if (url.includes("/actions/workflows/session.yml/runs?") && world.failRuns > 0) { world.failRuns--; return { status: 500, body: { message: "Server Error" } }; }
+    if (url.includes("/actions/workflows/session.yml/runs?")) return { body: { workflow_runs: world.runs } };
+    if (url.endsWith("/issues/728")) return { body: { comments: world.comments.length } };
+    if (url.includes("/issues/728/comments?")) return { body: world.comments };
+    return undefined;
+  });
+  const gh = new GitHub(async () => "secret-token", fetchImpl);
+  return { world, calls, gh, dispatches: () => calls.filter((c) => c.method === "POST") };
+}
+
+function mount(gh: GitHub, modes: Mode[] = []) {
+  const sockets: MockSocket[] = [];
+  const socketFactory = (url: string) => { const s = new MockSocket(url, modes[sockets.length] ?? "ok"); sockets.push(s); return s as unknown as WebSocket; };
+  const panel = chatPanel(gh, { config: live, socketFactory, timing: FAST })!;
+  const slot = document.createElement("div");
+  document.body.append(slot);
+  panel.mount(slot);
+  const pane = () => slot.querySelector<HTMLElement>(".chat-panel")!;
+  const button = (name: RegExp) => [...slot.querySelectorAll("button")].find((b) => name.test(b.textContent ?? ""))!;
+  const status = () => slot.querySelector(".chat-status")?.textContent ?? "";
+  return { slot, panel, sockets, pane, button, status, state: () => pane().dataset.state };
+}
+
+async function until(what: string, ok: () => boolean, ms = 3_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!ok()) {
+    if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
 it("is off with an empty configuration and confines endpoints to the configured tailnet", () => {
   assert.equal(parseChatConfig({ tailnetDomain: "", sources: [] }), undefined);
+  assert.equal(chatPanel(new GitHub(async () => "token"), { config: parseChatConfig({ tailnetDomain: "", sources: [] }) }), undefined);
   assert.equal(CHAT_CONFIG?.tailnetDomain, "tailf2eb8.ts.net");
   assert.deepEqual(CHAT_CONFIG?.sources.map((s) => s.repo), ["cgwalters-forge/tracker"]);
   assert.deepEqual(parseChatConfig(config), config);
   for (const url of ["ws://runner.example.ts.net/", "wss://example.ts.net/", "wss://runner.example.ts.net.evil/", "wss://u@runner.example.ts.net/", "wss://runner.example.ts.net:444/", "wss://runner.example.ts.net/?token=x"]) assert.equal(chatEndpoint(url, config.tailnetDomain), undefined);
   assert.equal(chatEndpoint("wss://runner.example.ts.net/acp", config.tailnetDomain), "wss://runner.example.ts.net/acp");
   assert.throws(() => parseChatConfig({ ...config, tailnetDomain: "x; connect-src *" }));
+  assert.equal(parseChatConfig({ ...config, sources: [{ ...config.sources[0], ref: "release/1" }] })?.sources[0]?.ref, "release/1");
+  assert.throws(() => parseChatConfig({ ...config, sources: [{ ...config.sources[0], ref: "../x y" }] }));
+  assert.equal(derivedEndpoint(7, 2, "example.ts.net"), "wss://agentic-job-7-2.example.ts.net/");
 });
 
-it("discovers only live runs with matching publisher, run URL and safe endpoint", async () => {
-  const paths: string[] = [];
-  const gh = new GitHub(async () => "token", async (url) => {
-    paths.push(url);
-    return Response.json(url.endsWith("/issues/1") ? { comments: 201 } : url.includes("/runs?") ? { workflow_runs: [{ id: 42, display_title: "Live" }] } : [
-      { user: null, body: "unattributable" },
-      { user: { login: "other" }, body: "https://github.com/owner/repo/actions/runs/42 wss://evil.example.ts.net/" },
-      { user: { login: "publisher" }, body: "https://github.com/owner/repo/actions/runs/420 wss://wrong.example.ts.net/" },
-      { user: { login: "publisher" }, body: "https://github.com/owner/repo/actions/runs/42 wss://runner.example.ts.net/" },
-    ]);
-  });
-  assert.deepEqual(await findSessions(gh, config), [{ title: "Live", endpoint: "wss://runner.example.ts.net/" }]);
-  assert.ok(paths.some((p) => p.endsWith("comments?per_page=100&page=3")));
+it("finds live runs and their endpoints from the publisher, or the agent job's name once running", async () => {
+  const cases: { name: string; runs: Run[]; comments?: { user: { login: string } | null; body: string }[]; want: { id: number; endpoint?: string }[] }[] = [
+    { name: "no runs", runs: [], want: [] },
+    { name: "only completed runs", runs: [run("completed")], want: [] },
+    { name: "the wrapper's status comment", runs: [run("in_progress")], comments: [statusComment(RUN)], want: [{ id: RUN, endpoint: published }] },
+    { name: "queued, nothing published", runs: [run("queued")], want: [{ id: RUN }] },
+    { name: "starting statuses count as live", runs: ["waiting", "pending", "requested"].map((s, i) => run(s, i + 1)), want: [{ id: 1 }, { id: 2 }, { id: 3 }] },
+    { name: "in progress, nothing published: derived from the attempt", runs: [run("in_progress", RUN, 2)], want: [{ id: RUN, endpoint: `wss://agentic-job-${RUN}-2.tailf2eb8.ts.net/` }] },
+    {
+      name: "other publishers, other runs and outside endpoints are ignored",
+      runs: [run("queued")],
+      comments: [
+        { user: null, body: statusComment(RUN).body },
+        { user: { login: "someone" }, body: statusComment(RUN).body },
+        { ...statusComment(RUN), body: statusComment(RUN).body.replaceAll("tailf2eb8.ts.net", "evil.example") },
+        statusComment(RUN + 1),
+      ],
+      want: [{ id: RUN }],
+    },
+  ];
+  for (const c of cases) {
+    const { gh } = tracker(c.runs, c.comments ?? []);
+    const found = await findLiveRuns(gh, live);
+    assert.deepEqual(found.map((r) => ({ id: r.id, ...(r.endpoint ? { endpoint: r.endpoint } : {}) })), c.want, c.name);
+  }
+  // Only the last page of publications is read.
+  const { gh, calls } = tracker([run("queued")], Array.from({ length: 201 }, () => ({ user: null, body: "" })));
+  await findLiveRuns(gh, live);
+  assert.ok(calls.some((c) => c.url.endsWith("/issues/728/comments?per_page=100&page=3")));
 });
 
 it("speaks ACP initialize/new/prompt/cancel and filters notifications", async () => {
@@ -62,15 +173,243 @@ it("speaks ACP initialize/new/prompt/cancel and filters notifications", async ()
   server.close();
 });
 
+it("shows no session when nothing runs, without connecting", async () => {
+  const t = tracker([run("completed")]);
+  const m = mount(t.gh);
+  await until("the first look", () => !m.button(/Start session/).disabled);
+  assert.equal(m.state(), "none");
+  assert.equal(m.sockets.length, 0);
+  assert.equal(t.dispatches().length, 0);
+  m.panel.dispose();
+});
+
+const details = { ref: "main", return_run_details: true };
+for (const c of [
+  { answers: [{ status: 204 }], bodies: [details] },
+  { answers: [{ status: 200, body: { workflow_run_id: RUN } }], bodies: [details] },
+  { answers: [{ status: 422, body: { message: "Invalid request: return_run_details is not a permitted key" } }, { status: 204 }], bodies: [details, { ref: "main" }] },
+]) {
+  it(`Start dispatches once (HTTP ${c.answers.map((a) => a.status).join(" then ")}), waits for the run, then attaches`, async () => {
+    const t = tracker([], [], c.answers);
+    t.world.onDispatch = () => { t.world.runs = [run("queued")]; };
+    const m = mount(t.gh);
+    await until("the first look", () => !m.button(/Start session/).disabled);
+    m.button(/Start session/).click();
+    await until("starting", () => m.state() === "starting");
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 3));
+    // Even if the button were enabled, a second Start while starting does nothing.
+    m.button(/Start|Attach/).disabled = false;
+    m.button(/Start|Attach/).click();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 3));
+    assert.equal(m.state(), "starting");
+    assert.equal(m.sockets.length, 0);
+    assert.deepEqual(t.dispatches().map((d) => d.url), c.bodies.map(() => "https://api.github.com/repos/cgwalters-forge/tracker/actions/workflows/session.yml/dispatches"));
+    assert.deepEqual(t.dispatches().map((d) => d.body), c.bodies);
+    t.world.runs = [run("in_progress")];
+    t.world.comments = [statusComment(RUN)];
+    await until("connected", () => m.state() === "connected");
+    assert.deepEqual(m.sockets.map((s) => s.url), [published]);
+    assert.deepEqual(m.sockets[0]!.sent.map((s) => s.method), ["initialize", "session/new"]);
+    assert.equal(t.dispatches().length, c.bodies.length);
+    assert.equal(m.panel.attached(), true);
+    m.panel.dispose();
+    assert.equal(m.panel.attached(), false);
+  });
+}
+
+it("never closes or retries a socket that opened while attach is slow, until the ACP timeout", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh, ["hang"]);
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  const attachedAt = Date.now();
+  m.button(/Attach/).click();
+  await until("initialize sent", () => m.sockets[0]?.sent.length === 1);
+  await new Promise((r) => setTimeout(r, ATTACH_TIMEOUT / 2));
+  assert.equal(m.sockets.length, 1);
+  assert.equal(m.sockets[0]!.closed, false);
+  assert.equal(m.state(), "waiting");
+  await until("ended", () => m.state() === "ended");
+  assert.ok(Date.now() - attachedAt >= ATTACH_TIMEOUT);
+  assert.equal(m.sockets[0]!.closed, true);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(m.sockets.length, 1, "no retry");
+  m.panel.dispose();
+});
+
+it("doesn't retry when the bridge closes an opened socket unanswered", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh, ["drop"]);
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("ended", () => m.state() === "ended");
+  assert.match(m.status(), /another client may be attached/);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(m.sockets.length, 1);
+  m.panel.dispose();
+});
+
+it("keeps polling a starting run through a failed GitHub read", async () => {
+  const t = tracker([run("queued")]);
+  const m = mount(t.gh);
+  await until("the queued run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("starting", () => m.state() === "starting" && /waiting for its session endpoint/.test(m.status()));
+  t.world.failRuns = 1;
+  await until("the failed read", () => t.world.failRuns === 0 && /retrying/.test(m.status()));
+  t.world.runs = [run("in_progress")];
+  t.world.comments = [statusComment(RUN)];
+  await until("connected", () => m.state() === "connected");
+  m.panel.dispose();
+});
+
+it("attaches to a live run instead of starting another, by its publication or its job's name", async () => {
+  for (const c of [{ comments: [statusComment(RUN)], attempt: 1 }, { comments: [], attempt: 3 }]) {
+    const t = tracker([run("in_progress", RUN, c.attempt)], c.comments);
+    const m = mount(t.gh);
+    await until("the live run", () => m.state() === "waiting" && m.button(/Attach/)?.disabled === false);
+    assert.equal(m.sockets.length, 0, "never connects on page load");
+    assert.match(m.pane().querySelector(".chat-state")!.textContent!, /not attached/);
+    m.button(/Attach/).click();
+    await until("connected", () => m.state() === "connected");
+    assert.deepEqual(m.sockets.map((s) => s.url), [`wss://agentic-job-${RUN}-${c.attempt}.tailf2eb8.ts.net/`]);
+    assert.equal(t.dispatches().length, 0);
+    assert.ok(m.sockets[0]!.sent.every((s) => !JSON.stringify(s).includes("secret-token")));
+    m.panel.dispose();
+  }
+});
+
+it("retries a connection that fails until the bridge answers", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh, ["fail", "fail", "ok"]);
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("a failed attempt", () => m.sockets.length >= 1 && m.state() === "waiting" && /retrying/.test(m.status()));
+  await until("connected", () => m.state() === "connected");
+  assert.equal(m.sockets.length, 3);
+  m.panel.dispose();
+});
+
+it("attaches to the running session, not one queued behind it", async () => {
+  const t = tracker([run("queued", RUN + 1), run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh);
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("connected", () => m.state() === "connected");
+  assert.deepEqual(m.sockets.map((s) => s.url), [published]);
+  m.panel.dispose();
+});
+
+it("ends when the run finishes before it could be reached", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh, Array(1000).fill("fail"));
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("a failed attempt", () => m.sockets.length >= 2);
+  t.world.runs = [run("completed")];
+  await until("ended", () => m.state() === "ended");
+  assert.match(m.status(), /finished before/);
+  m.panel.dispose();
+});
+
+it("ends when the attached socket closes, and offers to start again", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh);
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("connected", () => m.state() === "connected");
+  m.sockets[0]!.close();
+  assert.equal(m.state(), "ended");
+  assert.equal(m.button(/Start again/).disabled, false);
+  // The ending run is still in progress for a while; Start must not attach to it again.
+  t.world.onDispatch = () => {};
+  m.button(/Start again/).click();
+  await until("a new dispatch", () => t.dispatches().length === 1);
+  assert.equal(m.sockets.length, 1);
+  m.panel.dispose();
+});
+
+it("confirms before disconnecting", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh);
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("connected", () => m.state() === "connected");
+  for (const answer of [false, true]) {
+    Object.assign(globalThis, { confirm: () => answer });
+    m.button(/Disconnect/).click();
+    assert.equal(m.sockets[0]!.closed, answer);
+  }
+  assert.equal(m.state(), "ended");
+  m.panel.dispose();
+});
+
+it("says why Start failed when the token can't dispatch", async () => {
+  const t = tracker([], [], [{ status: 403, body: { message: "Resource not accessible by personal access token" } }]);
+  const m = mount(t.gh);
+  await until("the first look", () => !m.button(/Start session/).disabled);
+  m.button(/Start session/).click();
+  await until("the error", () => /Actions read and write/.test(m.status()));
+  assert.equal(m.state(), "none");
+  assert.equal(m.button(/Start session/).disabled, false);
+  m.panel.dispose();
+});
+
+it("shows a refused prompt and keeps Cancel turn available", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const m = mount(t.gh);
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("connected", () => m.state() === "connected");
+  assert.equal(m.button(/Cancel turn/).disabled, true, "no turn to cancel yet");
+  m.sockets[0]!.busy = true;
+  const input = m.slot.querySelector("textarea")!; input.value = "Hello";
+  m.slot.querySelector("form")!.dispatchEvent(new win.Event("submit", { cancelable: true }));
+  await until("the refusal", () => /Prompt refused: a turn is running/.test(m.status()));
+  assert.equal(input.value, "Hello");
+  assert.equal(m.button(/Cancel turn/).disabled, false);
+  m.button(/Cancel turn/).click();
+  assert.equal(m.sockets[0]!.sent.at(-1).method, "session/cancel");
+  assert.equal(m.button(/Cancel turn/).disabled, true);
+  m.panel.dispose();
+});
+
+it("goes full screen, keeps the page's keys off the hidden page, and leaves on Esc", async () => {
+  const m = mount(tracker().gh);
+  // Stands for main.ts's shortcuts (installKeys), a document listener.
+  const page: string[] = [];
+  const pageKeys = (ev: KeyboardEvent) => page.push(ev.key);
+  document.addEventListener("keydown", pageKeys);
+  const press = (key: string, target: Element = document.body, isComposing = false) => {
+    const ev = new win.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, isComposing });
+    target.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  };
+  assert.equal(press("Escape"), false);
+  press("a", m.button(/Full screen/));
+  assert.deepEqual(page, ["Escape", "a"]);
+  page.length = 0;
+  m.button(/Full screen/).click();
+  assert.ok(m.pane().classList.contains("chat-full"));
+  assert.equal(m.slot.querySelector<HTMLElement>(".chat-body")!.hidden, false);
+  press("a", m.button(/Exit full screen/));
+  press("Escape", m.slot.querySelector("textarea")!, true);
+  assert.ok(m.pane().classList.contains("chat-full"), "Esc while composing stays");
+  assert.equal(press("Escape"), true);
+  assert.equal(m.pane().classList.contains("chat-full"), false);
+  assert.deepEqual(page, []);
+  assert.equal(press("Escape"), false);
+  assert.deepEqual(page, ["Escape"]);
+  document.removeEventListener("keydown", pageKeys);
+  m.panel.dispose();
+});
+
 it("renders malicious message/tool/plan text without HTML and disables duplicate prompts", async () => {
-  const server = new MockServer() as MockServer & { onopen?: () => Promise<void>; onerror?: () => void };
-  const gh = new GitHub(async () => "secret", async (url) => Response.json(url.endsWith("/issues/1") ? { comments: 1 } : url.includes("/runs?") ? { workflow_runs: [{ id: 42, display_title: "Live" }] } : [{ user: { login: "publisher" }, body: "https://github.com/owner/repo/actions/runs/42 wss://runner.example.ts.net/" }]));
-  const slot = document.createElement("div");
-  const panel = chatPanel(gh, config, () => server as unknown as WebSocket)!;
-  panel.mount(slot);
-  const buttons = [...slot.querySelectorAll("button")];
-  buttons[0]!.click(); await new Promise((r) => setTimeout(r, 0));
-  buttons[1]!.click(); await server.onopen?.();
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const { slot, panel, sockets, button, state } = mount(t.gh);
+  await until("the live run", () => button(/Attach/)?.disabled === false);
+  button(/Attach/).click();
+  await until("connected", () => state() === "connected");
+  const server = sockets[0]!;
   const evil = "<img src=x onerror=alert(1)>";
   for (const update of [
     { sessionUpdate: "agent_message_chunk", content: { type: "text", text: evil } },
@@ -87,8 +426,9 @@ it("renders malicious message/tool/plan text without HTML and disables duplicate
   const input = slot.querySelector("textarea")!; input.value = "Hello";
   slot.querySelector("form")!.dispatchEvent(new win.Event("submit", { cancelable: true }));
   assert.equal(slot.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled, true);
-  await new Promise((r) => setTimeout(r, 0));
-  assert.equal(input.value, ""); panel.dispose();
+  await until("the turn", () => input.value === "");
+  panel.dispose();
+  assert.ok(server.closed);
   assert.equal(slot.childElementCount, 0);
   assert.equal(slot.hidden, true);
 });

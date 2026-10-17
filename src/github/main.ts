@@ -267,6 +267,13 @@ function frozenSince(state: State): number | undefined {
 /** Set once GitHub rejected the token: late loads mustn't draw over the sign-in page. */
 let viewClosed = false;
 
+/**
+ * A chat still attached when GitHub rejected the token. It doesn't use the
+ * token, and closing it would end the session run, so it stays up and the
+ * next sign-in takes it over.
+ */
+let keptChat: ChatPanel | undefined;
+
 function showMain(node: Node): void {
   if (viewClosed) return;
   byId("view").replaceChildren(node);
@@ -1825,7 +1832,8 @@ type SignInReason = "none" | "rejected";
 function rejected(state: State): Promise<void> {
   if (!state.rejecting) {
     state.closed = true;
-    state.chat?.dispose();
+    if (state.chat?.attached()) keptChat = state.chat;
+    else state.chat?.dispose();
     viewClosed = true;
     state.poller.close();
     clearInterval(state.metaTicker);
@@ -2024,14 +2032,21 @@ function showCapture(state: State): void {
   slot.replaceChildren(state.capture.el);
   slot.hidden = false;
   state.capture.mounted();
-  const chat = chatPanel(state.gh);
   state.chat?.dispose();
-  state.chat = chat;
-  if (chat) {
-    const chatSlot = byId("chat");
-    chat.mount(chatSlot);
-    chatSlot.hidden = false;
+  if (keptChat?.attached()) {
+    keptChat.useGitHub(state.gh);
+    state.chat = keptChat;
+  } else {
+    keptChat?.dispose();
+    const chat = chatPanel(state.gh);
+    state.chat = chat;
+    if (chat) {
+      const chatSlot = byId("chat");
+      chat.mount(chatSlot);
+      chatSlot.hidden = false;
+    }
   }
+  keptChat = undefined;
 }
 
 function scopeList(): HTMLElement {

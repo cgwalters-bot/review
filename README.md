@@ -370,11 +370,12 @@ whole board as read now (a Done item leaving the board is not news). The first v
 something notable happens to an item (`bot-board set --news` in
 homegit); a new line shows highlighted under the item.
 
-**The "Ask anything" box** atop the page files a note onto the board
-(below). Its `#chat` slot offers an opt-in ACP session chat. Configure
+**Session chat**, first under the header, is an opt-in ACP chat with a
+session run. Configure
 `src/github/chat-config.json` on the default branch with `tailnetDomain`
 (a DNS name ending in `.ts.net`) and `sources`: each has `repo`, `workflow`,
-`issue` (the endpoint publication issue), and `publisher` (the trusted login).
+`issue` (the endpoint publication issue), `publisher` (the trusted login),
+and optionally `ref` (the branch Start dispatches on, default `main`).
 The empty configuration disables chat and leaves the CSP unchanged. Enabling
 it adds only `wss://*.TAILNET.ts.net` to the built page's CSP; the operator
 must approve that change. No tailnet infrastructure is changed here.
@@ -382,15 +383,32 @@ The shipped configuration enables it for cgwalters-forge/tracker's
 `session.yml` sessions, published by github-actions[bot] on tracker#728, so the
 deployed CSP allows `wss://*.tailf2eb8.ts.net`.
 
-Find sessions reads at most 100 in-progress runs and the final page of up to 100 publication comments
-per source, without polling. A publisher's comment must contain the exact
-Actions run URL and a `wss` endpoint in the configured tailnet. Older
-publications outside that window are not shown. Connect is explicit and uses
-the device's tailnet identity, never the GitHub token. The bridge must allow
-the page's origin. Disconnecting ends the run; there is no reconnect or
-session-start operation. Messages are plain text, tools start collapsed,
-and the transcript display is bounded. Live runner/browser testing and
-session writes are not part of this pane.
+On load the pane only looks: it reads the workflow's 10 newest runs and,
+when one is live (queued, in progress, waiting, pending or requested), the
+final page of up to 100 publication comments. A publisher's comment must
+contain the exact Actions run URL and a `wss` endpoint in the configured
+tailnet; until one does, an in-progress run's endpoint is taken from its
+agent job's tailnet name, `agentic-job-RUN-ATTEMPT.TAILNET`. Start
+dispatches the workflow (`POST .../dispatches`; the token needs Actions read
+and write on that repository), unless a run is already live: then it
+attaches to that one, as Attach does. The pane shows its state: starting
+(polling the run with backoff, up to 20 minutes), connecting (retrying every
+5 s for up to 5 minutes while the bridge and its certificate come up),
+connected, or ended. Only a socket that never opened is retried: once one
+opens, the bridge has seen the client, so a close means the run ended or
+another client holds it, and attaching waits up to 2 minutes per request
+rather than closing early. Connecting uses the device's tailnet identity, never
+the GitHub token, and the bridge must allow the page's origin. A session
+serves one client: disconnecting (confirmed) or leaving the page ends the
+run, and the pane never attaches to an ended run again. If GitHub rejects
+the token while a session is attached, the chat stays up (it doesn't use
+the token) and the next sign-in takes it over; signing out ends it. A prompt sent while
+a turn runs is refused; Cancel turn stops the turn. Full screen covers the
+page, keeps the page's keyboard shortcuts from acting behind it, and Esc
+leaves it. Messages are plain text, tools start collapsed, and
+the transcript display is bounded.
+
+**The "Ask anything" box** under it files a note onto the board (below).
 
 **Controller**, first in the ops detail, says whether shutting the
 interactive session down would stop anything. Its hosted pieces are the

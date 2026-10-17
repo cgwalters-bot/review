@@ -1,9 +1,21 @@
 import raw from "./chat-config.json" with { type: "json" };
 
+/** A workflow whose runs serve sessions, and where their endpoints are published. */
+export interface ChatSource {
+  repo: string;
+  workflow: string;
+  issue: number;
+  publisher: string;
+  /** The branch Start dispatches the workflow on; the default branch, "main", if unset. */
+  ref?: string;
+}
+
 export interface ChatConfig {
   tailnetDomain: string;
-  sources: { repo: string; workflow: string; issue: number; publisher: string }[];
+  sources: ChatSource[];
 }
+
+export const DEFAULT_REF = "main";
 
 export function parseChatConfig(value: unknown): ChatConfig | undefined {
   const c = value as ChatConfig | null;
@@ -12,7 +24,8 @@ export function parseChatConfig(value: unknown): ChatConfig | undefined {
     || !Array.isArray(c.sources) || !c.sources.length || c.sources.length > 8
     || c.sources.some((s) => !s || !/^[\w.-]+\/[\w.-]+$/.test(s.repo)
       || !/^[\w.-]+\.ya?ml$/.test(s.workflow) || !Number.isSafeInteger(s.issue) || s.issue < 1
-      || !/^[\w-]+(?:\[bot\])?$/.test(s.publisher))) throw new Error("Invalid repository chat configuration");
+      || !/^[\w-]+(?:\[bot\])?$/.test(s.publisher)
+      || (s.ref !== undefined && (typeof s.ref !== "string" || !/^[\w.-]+(?:\/[\w.-]+)*$/.test(s.ref))))) throw new Error("Invalid repository chat configuration");
   return c;
 }
 
