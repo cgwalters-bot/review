@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { AcpClient, chatPanel, findSessions } from "../src/github/chat.ts";
-import { chatEndpoint, parseChatConfig } from "../src/github/chatconfig.ts";
+import { CHAT_CONFIG, chatEndpoint, parseChatConfig } from "../src/github/chatconfig.ts";
 import { GitHub } from "../src/github/api.ts";
 import { installDom } from "./helpers.ts";
 
@@ -21,9 +21,10 @@ class MockServer extends EventTarget {
   emit(m: unknown) { this.onmessage?.({ data: JSON.stringify(m) }); }
 }
 
-it("is off by default and confines endpoints to the configured tailnet", () => {
+it("is off with an empty configuration and confines endpoints to the configured tailnet", () => {
   assert.equal(parseChatConfig({ tailnetDomain: "", sources: [] }), undefined);
-  assert.equal(chatPanel(new GitHub(async () => "token")), undefined);
+  assert.equal(CHAT_CONFIG?.tailnetDomain, "tailf2eb8.ts.net");
+  assert.deepEqual(CHAT_CONFIG?.sources.map((s) => s.repo), ["cgwalters-forge/tracker"]);
   assert.deepEqual(parseChatConfig(config), config);
   for (const url of ["ws://runner.example.ts.net/", "wss://example.ts.net/", "wss://runner.example.ts.net.evil/", "wss://u@runner.example.ts.net/", "wss://runner.example.ts.net:444/", "wss://runner.example.ts.net/?token=x"]) assert.equal(chatEndpoint(url, config.tailnetDomain), undefined);
   assert.equal(chatEndpoint("wss://runner.example.ts.net/acp", config.tailnetDomain), "wss://runner.example.ts.net/acp");
