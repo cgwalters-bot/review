@@ -106,9 +106,34 @@ function publishedEndpoint(comments: readonly { body: string; user: { login: str
 }
 
 /**
+ * The step of the agentic-job agent job after which its tailnet name
+ * resolves. A run is in progress, and its endpoint published, a minute or
+ * more before then; dialing the name meanwhile only gets NXDOMAIN, which a
+ * resolver may keep answering after the node arrives (an iPhone that started
+ * a session this way never reached its bridge).
+ */
+export const TAILNET_STEP = "Join the tailnet";
+
+/**
+ * Whether a run's agent job is on the tailnet: yes once the step has
+ * succeeded and until the job finishes, no before then (or if it failed) or
+ * after, and unknown when no job lists the step, as before its job starts
+ * or if the step is renamed.
+ */
+async function joinedTailnet(gh: GitHub, base: string, id: number): Promise<boolean | undefined> {
+  const res = await gh.get<{ jobs?: { status: string; steps?: { name: string; status: string; conclusion: string | null }[] }[] }>(
+    `${base}/actions/runs/${id}/jobs?per_page=100`);
+  const jobs = (res.data.jobs ?? []).filter((j) => j.steps?.some((s) => s.name === TAILNET_STEP));
+  if (!jobs.length) return undefined;
+  return jobs.some((j) => j.status !== "completed"
+    && j.steps!.some((s) => s.name === TAILNET_STEP && s.status === "completed" && s.conclusion === "success"));
+}
+
+/**
  * The live runs of each source's workflow, newest first, each with its
- * endpoint: the one the publisher's comment gives, or, once the run is in
- * progress, the one its agent job's name implies.
+ * endpoint once its name resolves: after the agent job joined the tailnet,
+ * the one the publisher's comment gives, else the one the job's name
+ * implies. When the run's jobs don't say, only a published endpoint counts.
  */
 export async function findLiveRuns(gh: GitHub, config: ChatConfig, sources: readonly ChatSource[] = config.sources): Promise<LiveRun[]> {
   const live: LiveRun[] = [];
@@ -124,8 +149,10 @@ export async function findLiveRuns(gh: GitHub, config: ChatConfig, sources: read
     for (const run of found) {
       const url = `https://github.com/${source.repo}/actions/runs/${run.id}`;
       const attempt = Number.isSafeInteger(run.run_attempt) && run.run_attempt! > 0 ? run.run_attempt! : 1;
-      const endpoint = publishedEndpoint(comments.data, source, url, config.tailnetDomain)
-        ?? (run.status === "in_progress" ? derivedEndpoint(run.id, attempt, config.tailnetDomain) : undefined);
+      const joined = await joinedTailnet(gh, base, run.id);
+      const named = publishedEndpoint(comments.data, source, url, config.tailnetDomain);
+      const endpoint = joined === true ? named ?? derivedEndpoint(run.id, attempt, config.tailnetDomain)
+        : joined === undefined ? named : undefined;
       live.push({ source, id: run.id, attempt, status: run.status, title: String(run.display_title ?? ""), url, ...(endpoint ? { endpoint } : {}) });
     }
   }

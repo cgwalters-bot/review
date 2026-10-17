@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { AcpClient, chatPanel, derivedEndpoint, findLiveRuns, type ChatTiming } from "../src/github/chat.ts";
+import { AcpClient, TAILNET_STEP, chatPanel, derivedEndpoint, findLiveRuns, type ChatTiming } from "../src/github/chat.ts";
 import { CHAT_CONFIG, chatEndpoint, parseChatConfig, type ChatConfig } from "../src/github/chatconfig.ts";
 import { GitHub } from "../src/github/api.ts";
 import { installDom, scriptedFetch } from "./helpers.ts";
@@ -70,9 +70,28 @@ const run = (status: string, id = RUN, run_attempt = 1): Run => ({ id, run_attem
 
 type Answer = { status: number; body?: unknown };
 
-/** GitHub with a mutable tracker: its session runs, #728's comments, and the dispatch answers in turn. */
+/**
+ * The agent job's tailnet step: done, still running, failed, done but the
+ * job has since finished, or not listed (no job started yet, or renamed).
+ */
+type Joined = "yes" | "no" | "failed" | "left" | "unlisted";
+const jobsBody = (joined: Joined) => ({
+  jobs: [
+    { name: "profile", status: "completed", steps: [{ name: "Set up job", status: "completed", conclusion: "success" }] },
+    ...(joined === "unlisted" ? [] : [{
+      name: "run / agent",
+      status: joined === "left" ? "completed" : "in_progress",
+      steps: [{ name: TAILNET_STEP, status: joined === "no" ? "in_progress" : "completed", conclusion: joined === "no" ? null : joined === "failed" ? "failure" : "success" }],
+    }]),
+  ],
+});
+
+/**
+ * GitHub with a mutable tracker: its session runs, #728's comments, the
+ * dispatch answers in turn, and whether the runs' agent jobs joined the tailnet.
+ */
 function tracker(runs: Run[] = [], comments: { user: { login: string } | null; body: string }[] = [], dispatch: Answer[] = [{ status: 204 }]) {
-  const world = { runs, comments, dispatch, onDispatch: () => {}, failRuns: 0 };
+  const world = { runs, comments, dispatch, onDispatch: () => {}, failRuns: 0, joined: "yes" as Joined };
   let posts = 0;
   const { fetchImpl, calls } = scriptedFetch((method, url) => {
     if (method === "POST" && url.endsWith("/actions/workflows/session.yml/dispatches")) {
@@ -85,6 +104,9 @@ function tracker(runs: Run[] = [], comments: { user: { login: string } | null; b
     if (url.includes("/actions/workflows/session.yml/runs?")) return { body: { workflow_runs: world.runs } };
     if (url.endsWith("/issues/728")) return { body: { comments: world.comments.length } };
     if (url.includes("/issues/728/comments?")) return { body: world.comments };
+    const jobs = url.match(/\/actions\/runs\/(\d+)\/jobs\?/);
+    // A run that hasn't started has no agent job yet.
+    if (jobs) return { body: jobsBody(world.runs.find((r) => r.id === Number(jobs[1]))?.status === "in_progress" ? world.joined : "unlisted") };
     return undefined;
   });
   const gh = new GitHub(async () => "secret-token", fetchImpl);
@@ -126,14 +148,21 @@ it("is off with an empty configuration and confines endpoints to the configured 
   assert.equal(derivedEndpoint(7, 2, "example.ts.net"), "wss://agentic-job-7-2.example.ts.net/");
 });
 
-it("finds live runs and their endpoints from the publisher, or the agent job's name once running", async () => {
-  const cases: { name: string; runs: Run[]; comments?: { user: { login: string } | null; body: string }[]; want: { id: number; endpoint?: string }[] }[] = [
+it("finds live runs and their endpoints from the publisher, or the agent job's name, once it joined the tailnet", async () => {
+  const cases: { name: string; runs: Run[]; comments?: { user: { login: string } | null; body: string }[]; joined?: Joined; want: { id: number; endpoint?: string }[] }[] = [
     { name: "no runs", runs: [], want: [] },
     { name: "only completed runs", runs: [run("completed")], want: [] },
     { name: "the wrapper's status comment", runs: [run("in_progress")], comments: [statusComment(RUN)], want: [{ id: RUN, endpoint: published }] },
     { name: "queued, nothing published", runs: [run("queued")], want: [{ id: RUN }] },
     { name: "starting statuses count as live", runs: ["waiting", "pending", "requested"].map((s, i) => run(s, i + 1)), want: [{ id: 1 }, { id: 2 }, { id: 3 }] },
     { name: "in progress, nothing published: derived from the attempt", runs: [run("in_progress", RUN, 2)], want: [{ id: RUN, endpoint: `wss://agentic-job-${RUN}-2.tailf2eb8.ts.net/` }] },
+    // Its name doesn't resolve yet: dialing it would only teach resolvers that it doesn't exist.
+    { name: "published, still joining the tailnet", runs: [run("in_progress")], comments: [statusComment(RUN)], joined: "no", want: [{ id: RUN }] },
+    { name: "published, failed to join the tailnet", runs: [run("in_progress")], comments: [statusComment(RUN)], joined: "failed", want: [{ id: RUN }] },
+    // The run lingers (applying, concluding) after its agent job, and bridge, are gone.
+    { name: "published, the agent job has finished", runs: [run("in_progress")], comments: [statusComment(RUN)], joined: "left", want: [{ id: RUN }] },
+    { name: "published, the jobs don't say", runs: [run("in_progress")], comments: [statusComment(RUN)], joined: "unlisted", want: [{ id: RUN, endpoint: published }] },
+    { name: "nothing published, the jobs don't say: no guess", runs: [run("in_progress")], joined: "unlisted", want: [{ id: RUN }] },
     {
       name: "other publishers, other runs and outside endpoints are ignored",
       runs: [run("queued")],
@@ -147,7 +176,8 @@ it("finds live runs and their endpoints from the publisher, or the agent job's n
     },
   ];
   for (const c of cases) {
-    const { gh } = tracker(c.runs, c.comments ?? []);
+    const { gh, world } = tracker(c.runs, c.comments ?? []);
+    world.joined = c.joined ?? "yes";
     const found = await findLiveRuns(gh, live);
     assert.deepEqual(found.map((r) => ({ id: r.id, ...(r.endpoint ? { endpoint: r.endpoint } : {}) })), c.want, c.name);
   }
@@ -276,6 +306,21 @@ it("attaches to a live run instead of starting another, by its publication or it
     assert.ok(m.sockets[0]!.sent.every((s) => !JSON.stringify(s).includes("secret-token")));
     m.panel.dispose();
   }
+});
+
+it("doesn't dial a published endpoint until its agent job has joined the tailnet", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  t.world.joined = "no";
+  const m = mount(t.gh);
+  await until("the live run", () => m.state() === "starting" && m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("polling", () => /waiting for its session endpoint/.test(m.status()));
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 3));
+  assert.equal(m.sockets.length, 0);
+  t.world.joined = "yes";
+  await until("connected", () => m.state() === "connected");
+  assert.deepEqual(m.sockets.map((s) => s.url), [published]);
+  m.panel.dispose();
 });
 
 it("retries a connection that fails until the bridge answers", async () => {
