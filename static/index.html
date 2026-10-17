@@ -28,11 +28,11 @@
       <button type="button" id="signout" class="small" hidden>Sign out</button>
     </div>
   </header>
-  <!-- The "Ask anything" box: today it files a note onto the board (captureview.ts).
-       #chat is the slot for a future chat in the same box (see chat.ts); it stays hidden until one is mounted. -->
+  <!-- The session chat (chat.ts), first under the header; it stays hidden unless chat-config.json enables it. -->
+  <div id="chat" hidden></div>
+  <!-- The "Ask anything" box: it files a note onto the board (captureview.ts). -->
   <div class="ask-box" id="ask">
     <div id="capture" hidden></div>
-    <div id="chat" hidden></div>
   </div>
   <p class="notice" id="notice" role="alert" hidden></p>
   <p class="done" id="done" role="status" hidden></p>

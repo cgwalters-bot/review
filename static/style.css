@@ -182,7 +182,7 @@ pre.msg { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
 
 /* News */
 /* The "Ask anything" box atop the page: one line to file a note onto the board,
-   link and note behind a button. #chat is the slot for a future chat. */
+   link and note behind a button. */
 .ask-box { margin: 12px 0 0; display: grid; gap: 8px; }
 form.capture { display: grid; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 6px 8px 6px 16px; box-shadow: 0 1px 2px rgb(0 0 0 / .06); }
 form.capture:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -677,11 +677,31 @@ details.sub-fold > div { padding-top: 8px; }
 .focus-epic progress { width: min(100%, 24rem); }
 .watching { margin-top: 1rem; }
 .watching-item { opacity: .7; }
-/* Chat stays within the viewport, including long untrusted tool output. */
-.chat-panel { min-width: 0; max-width: 100%; }
-.chat-panel select, .chat-panel textarea { box-sizing: border-box; width: 100%; min-width: 0; }
+/* The session chat, first under the header. It stays within the viewport,
+   including long untrusted tool output; full screen covers the page. */
+.chat-panel { min-width: 0; max-width: 100%; display: grid; gap: 6px; margin: 12px 0 0; padding: 8px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.chat-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.chat-head h2 { margin: 0; font-size: 15px; }
+.chat-state { font: 11px var(--mono); padding: 2px 7px; border-radius: 4px; color: var(--p3); background: var(--p3-soft); }
+.chat-state[data-state=starting], .chat-state[data-state=waiting] { color: var(--p2); background: var(--p2-soft); }
+.chat-state[data-state=connected] { color: var(--ok); background: var(--ok-soft); }
+.chat-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chat-bar select { max-width: 100%; min-width: 0; }
+.chat-panel .note { margin: 0; font-size: 13px; }
+.chat-status:empty { display: none; }
+.chat-run { font: 12px var(--mono); overflow-wrap: anywhere; }
+.chat-body { display: grid; gap: 6px; min-height: 0; }
+.chat-form { display: grid; gap: 6px; }
+.chat-panel textarea { box-sizing: border-box; width: 100%; min-width: 0; }
 .chat-log { max-height: 50vh; overflow: auto; overflow-wrap: anywhere; }
+.chat-log:empty { display: none; }
 .chat-log p, .chat-log pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-log p.chat-user { color: var(--muted); border-left: 3px solid var(--line); padding-left: 8px; }
+.chat-panel.chat-full { position: fixed; inset: 0; z-index: 20; margin: 0; border: 0; border-radius: 0; display: flex; flex-direction: column;
+  padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+.chat-full .chat-body { flex: 1; grid-template-rows: minmax(0, 1fr) auto; }
+.chat-full .chat-log { max-height: none; display: block; }
+body:has(.chat-full) { overflow: hidden; }
 /* Proposal text and literal mutations must wrap without widening a phone. */
 .operator-actions { padding: .75rem; }
 .operator-proposal { min-width: 0; overflow-wrap: anywhere; }
