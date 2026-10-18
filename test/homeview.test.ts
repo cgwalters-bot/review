@@ -10,7 +10,9 @@ import { buildNeeds } from "../src/github/needs.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
 import { needsSignature } from "../src/github/needsview.ts";
 import { PREVIEW_ROWS, SECTION_TITLE, SECTIONS, type SectionId } from "../src/github/sections.ts";
-import { type MistralAllowance, parseUsage, USAGE_MARKER, type UsageData } from "../src/github/usage.ts";
+import type { RawComment } from "../src/github/heartbeat.ts";
+import { findUsage, type MistralAllowance, parseUsage, USAGE_MARKER, type UsageData } from "../src/github/usage.ts";
+import { time } from "../src/github/view.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { fixture, installDom } from "./helpers.ts";
 
@@ -53,6 +55,18 @@ const needsHooks = (sent: unknown[] = []) => ({
 afterEach(() => resetExpanded());
 
 describe("operator dashboard", () => {
+  it("shows tracker's current snapshot, not an older one left on the issue", () => {
+    const home = homeSkeleton(hooks());
+    const usage = findUsage(fixture<RawComment[]>("usage-snapshot.json"))!;
+    fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-18T14:44:00Z"));
+    const shown = text(home.slots.weekly);
+    assert.match(shown, /Claude.*73\.0% used.*allows by now: 73\.2%\./);
+    assert.match(shown, /OpenAI.*1\.0% used.*allows by now: 15\.4%\./);
+    assert.doesNotMatch(shown, /held|stale/);
+    assert.match(text(home.slots.weekly.querySelector(".mistral .pool-sum")), /\$41\.25 \/ \$300/);
+    assert.ok(shown.includes(`Published ${time("2026-10-18T14:42:00Z")}.`), shown);
+  });
+
   it("reads both published pools, marks held and over-pace usage, and keeps questions open", () => {
     const home = homeSkeleton(hooks());
     const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-pools.json"))}\n\`\`\``)!;

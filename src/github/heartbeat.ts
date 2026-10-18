@@ -51,6 +51,8 @@ export interface RawComment {
   html_url?: string;
   user?: { login?: string } | null;
   body?: string | null;
+  /** GitHub's: when the comment was last edited (its creation, if never). */
+  updated_at?: string;
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);

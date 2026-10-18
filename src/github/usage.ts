@@ -2,7 +2,8 @@
 // Claude Code's /usage: per window, the percent used and reset time its
 // status line last reported, and the tokens its transcripts spent; plus
 // tokens per worker and for the coordinator's own session.
-// bin/bot-heartbeat in homegit keeps it in one comment by the bot on
+// bin/bot-heartbeat in homegit kept it, and tracker's usage.yml now keeps
+// its pools (with windows: []), in one comment by the bot on
 // USAGE_REPO#USAGE_ISSUE, a private repository, so it is read with the
 // viewer's token, and a token that can't read it just gets no panel.
 // The comment is parsed strictly, like the heartbeat.
@@ -294,16 +295,29 @@ export function parseUsage(body: string | null | undefined): Usage | undefined {
   return usage;
 }
 
-/** The bot's usage comment among an issue's comments. */
+/**
+ * The bot's usage comment among an issue's comments: the one edited
+ * last. tracker's usage.yml edits one comment in place, but older
+ * snapshots stay on the issue, listed oldest first, so the first one
+ * that parses can be days stale. An edited comment is dated by GitHub's
+ * updated_at, which the publisher can't leave behind; the JSON's own
+ * updated_at only when the comment has none.
+ */
 export function findUsage(comments: readonly RawComment[]): Usage | undefined {
+  let found: Usage | undefined;
+  let foundAt = -Infinity;
   for (const c of comments) {
     if (c.user?.login !== BOT_LOGIN) continue;
     const usage = parseUsage(c.body);
     if (!usage) continue;
+    const edited = time(c.updated_at);
+    if (edited) usage.updatedAt = edited;
     if (c.html_url) usage.commentUrl = c.html_url;
-    return usage;
+    // Undated comes before any date; between equals, the later in the list.
+    const at = usage.updatedAt ? Date.parse(usage.updatedAt) : -Infinity;
+    if (!found || at >= foundAt) [found, foundAt] = [usage, at];
   }
-  return undefined;
+  return found;
 }
 
 export const usagePath = `/repos/${USAGE_REPO}/issues/${USAGE_ISSUE}/comments?per_page=100`;
