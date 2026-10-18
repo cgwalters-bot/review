@@ -32,6 +32,26 @@ describe("findUsage", () => {
     });
   });
   it("finds nothing among others' comments", () => assert.equal(findUsage(comments().slice(0, 1)), undefined));
+  // tracker's usage.yml snapshot, edited in place, after an older one still on the issue.
+  const snapshot = () => fixture<RawComment[]>("usage-snapshot.json");
+  it("reads the comment edited last, dated by its edit, whatever the order", () => {
+    for (const list of [snapshot(), snapshot().reverse()]) {
+      const u = findUsage(list);
+      assert.equal(u?.commentUrl, "https://github.com/cgwalters-forge/bot-ops/issues/1#issuecomment-11");
+      assert.equal(u?.updatedAt, "2026-10-18T14:42:00Z");
+      assert.deepEqual(u?.windows, []);
+      assert.deepEqual(u?.pools?.claude, { usedPercent: 73, allowedPercent: 73.2, resetsAt: "2026-10-19T23:00:00.000Z", observedAt: "2026-10-18T14:40:00.000Z", hold: false, windowMinutes: 10080 });
+      assert.deepEqual([u?.pools?.openai?.usedPercent, u?.pools?.openai?.hold], [1, false]);
+      assert.deepEqual(u?.mistral?.allowance, { limitUsd: 300, resetsAt: "2026-11-01T00:00:00Z", spentUsd: 41.25, estimated: false, unpriced: [], lowerBound: false });
+    }
+  });
+  it("prefers the comment's edit time to the JSON's updated_at, and the JSON's to none", () => {
+    const [old] = snapshot();
+    assert.equal(findUsage([{ ...old!, updated_at: "2026-10-18T15:00:00Z" }])?.updatedAt, "2026-10-18T15:00:00Z");
+    const { updated_at: _, ...undated } = old!;
+    assert.equal(findUsage([undated])?.updatedAt, "2026-10-15T17:42:00Z");
+    assert.equal(findUsage([{ ...old!, updated_at: "yesterday" }])?.updatedAt, "2026-10-15T17:42:00Z", "a malformed edit time is ignored");
+  });
 });
 
 describe("parseUsage", () => {
