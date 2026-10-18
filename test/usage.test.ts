@@ -55,6 +55,21 @@ describe("findUsage", () => {
 });
 
 describe("parseUsage", () => {
+  it("keeps null pools with counters or a valid snapshot timestamp", () => {
+    const raw = fixture<Record<string, unknown>>("usage-null-pools.json");
+    const parsed = parseUsage(body(raw));
+    assert.deepEqual(parsed?.pools, {});
+    assert.deepEqual(parsed?.windows, []);
+    assert.deepEqual(parsed?.mistral, { requests: 2500, tokens: 1234567 });
+    const empty = { ...raw, updated_at: undefined, observed_at: undefined, mistral: undefined };
+    for (const field of ["updated_at", "observed_at", "mistral"]) {
+      assert.ok(parseUsage(body({ ...empty, [field]: raw[field] })), field);
+    }
+    for (const edit of [{}, { updated_at: "now", observed_at: "soon", mistral: { requests: -1, tokens: 2 } }, { schema: "other" }]) {
+      assert.equal(parseUsage(body({ ...empty, ...edit })), undefined);
+    }
+  });
+
   it("accepts pool-only publications and drops malformed pools independently", () => {
     const raw = fixture<{ pools: Record<string, Record<string, unknown>> }>("usage-pools.json");
     assert.equal(parseUsage(body(raw))?.pools?.openai?.usedPercent, 80);
@@ -114,10 +129,10 @@ describe("parseUsage", () => {
     ["a percent without its reset is dropped", (j) => ({ ...j, windows: [{ ...win, resets_at: "soon" }] }), 1, false],
     ["an absurd percent is dropped", (j) => ({ ...j, windows: [{ ...win, used_percent: 5000 }] }), 1, false],
     ["a newer kind, shown as is", (j) => ({ ...j, windows: [{ ...win, kind: "seven_day_opus" }] }), 1, true],
-    ["markup in a kind", (j) => ({ ...j, windows: [{ ...win, kind: "<b>x</b>" }] }), undefined],
-    ["negative tokens", (j) => ({ ...j, windows: [{ ...win, tokens: { ...tokens, output: -1 } }] }), undefined],
-    ["tokens as text", (j) => ({ ...j, windows: [{ ...win, tokens: { ...tokens, input: "1" } }] }), undefined],
-    ["windows not a list", (j) => ({ ...j, windows: {} }), undefined],
+    ["markup in a kind", (j) => ({ ...j, windows: [{ ...win, kind: "<b>x</b>" }] }), 0],
+    ["negative tokens", (j) => ({ ...j, windows: [{ ...win, tokens: { ...tokens, output: -1 } }] }), 0],
+    ["tokens as text", (j) => ({ ...j, windows: [{ ...win, tokens: { ...tokens, input: "1" } }] }), 0],
+    ["windows not a list", (j) => ({ ...j, windows: {} }), 0],
     ["too many windows", (j) => ({ ...j, windows: Array.from({ length: 9 }, () => win) }), 4, true],
     ["markup in a worker's name", (j) => ({ ...j, workers: [{ name: "<img src=x>", tokens }] }), 1, true, 0],
     ["a worker's absurd tokens", (j) => ({ ...j, workers: [{ name: "w", tokens: { ...tokens, output: Number.MAX_VALUE } }] }), 1, true, 0],

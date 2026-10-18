@@ -186,7 +186,9 @@ named in `src/github/usage-config.json` (`mistralAllowance`: `repo` and `path`;
 `null` turns it off), one more conditional GET after the usage read: its
 `mistral.allowance` (`amount`, `currency: "USD"`, `period: "calendar-month"`)
 gives the row the allowance and the share of the month gone, with the spend
-shown as unknown. Older publications retain the Claude window display.
+shown as unknown. Snapshots with no subscription readings still show Mistral;
+each null pool says "No reading" with the snapshot's age (not a reading age).
+Older publications retain the Claude window display.
 **Decisions** comes right after usage, before Status, open on entry,
 The optional single checklist document is configured in
 `src/github/decisions-config.json`: set `document` to an object with `repo`

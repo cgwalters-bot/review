@@ -400,8 +400,8 @@ export function poolWords(pool: UsagePool): { short: string; long: string } {
  * the percent used against the share of the window gone. The sentence it
  * replaces (exact percents, reset, observation time) is in its expander.
  */
-function poolRow(name: string, label: string, pool: UsagePool | undefined, now: number): HTMLElement {
-  if (!pool) return h("div", { class: "pool-sum none" }, h("span", { class: "pool-name" }, label), " ", h("span", { class: "pool-label" }, "Weekly usage not reported."));
+function poolRow(name: string, label: string, pool: UsagePool | undefined, now: number, snapshotAt: string): HTMLElement {
+  if (!pool) return h("div", { class: "pool-sum none" }, h("span", { class: "pool-name" }, label), " ", h("span", { class: "pool-label" }, `No reading · ${snapshotAt ? `snapshot ${age(snapshotAt, now)} ago` : "snapshot age unknown"}.`));
   const used = pool.usedPercent.toFixed(1);
   const allowed = pool.allowedPercent.toFixed(1);
   const over = pool.usedPercent > pool.allowedPercent;
@@ -565,7 +565,7 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
       h(
         "div",
         { class: "pools" },
-        ...POOLS.map(([name, label]) => poolRow(name, label, usage.pools?.[name], now)),
+        ...POOLS.map(([name, label]) => poolRow(name, label, usage.pools?.[name], now, usage.updatedAt || usage.observedAt || "")),
         ...(usage.mistral ? [mistralRow(usage.mistral, now)] : []),
         h("p", { class: "fine" }, usage.updatedAt ? `Published ${time(usage.updatedAt)}. ` : "Publication time unknown. ", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""),
       ),
