@@ -146,12 +146,23 @@ describe("operator dashboard", () => {
     fillUsage(home, { state: "ok", usage: { ...usage, pools: { claude: { ...usage.pools!.claude!, usedPercent: 130, allowedPercent: 100 } } } }, undefined, Date.parse("2026-10-09T13:50:00Z"));
     const full = pool("claude").querySelector("[role=progressbar]")!;
     assert.deepEqual([attrs(full, "aria-valuenow")[0], attrs(full.querySelector(".fill"), "width")[0], attrs(full.querySelector(".tick"), "x")[0]], ["100", "100", "99"]);
-    assert.match(text(home.slots.weekly.querySelector(".pool-sum.none")), /OpenAI Weekly usage not reported/);
+    assert.match(text(home.slots.weekly.querySelector(".pool-sum.none")), /OpenAI No reading · snapshot age unknown/);
 
     // Two hours into a week: the share gone, but too early to project.
     fillUsage(home, { state: "ok", usage: { ...usage, pools: { openai: { ...usage.pools!.openai!, observedAt: "2026-10-07T10:47:12.000Z", usedPercent: 3 } } } }, undefined, Date.parse("2026-10-07T10:50:00Z"));
     assert.equal(text(pool("openai").querySelector(".pool-label")), "3% used · 1% of week gone · held");
     assert.match(text(pool("openai").querySelector(".pool-detail")), /too early to project/);
+  });
+
+  it("keeps Mistral and both missing pool rows with the snapshot age", () => {
+    const home = homeSkeleton(hooks());
+    const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-null-pools.json"))}\n\`\`\``)!;
+    fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-18T14:47:00Z"));
+    const rows = [...home.slots.weekly.querySelectorAll(".pool-sum.none")].map(text);
+    assert.deepEqual(rows, ["Claude No reading · snapshot 5m ago.", "OpenAI No reading · snapshot 5m ago.", "Mistral 2,500 requests · 1,234,567 tokens since the broker started"]);
+    assert.match(text(home.slots.weekly), /Mistral/);
+    assert.doesNotMatch(text(home.slots.weekly), /No usage published/);
+    assert.match(text(home.slots.usage), /Mistral/);
   });
 
   it("puts weekly usage first after the summary, and human requests behind an opt-in disclosure after Decisions", () => {

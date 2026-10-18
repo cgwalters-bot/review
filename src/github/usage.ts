@@ -276,8 +276,10 @@ export function parseUsage(body: string | null | undefined): Usage | undefined {
     if (pool) pools[name] = pool;
   }
   const updatedAt = time(raw.updated_at);
+  const observedAt = time(raw.observed_at);
+  const mistral = parseMistral(raw.mistral);
   const windows = (Array.isArray(raw.windows) ? raw.windows.slice(0, MAX_WINDOWS) : []).flatMap((w) => parseWindow(w) ?? []);
-  if (!Object.keys(pools).length && (!updatedAt || !windows.length)) return undefined;
+  if (!Object.keys(pools).length && !mistral && !updatedAt && !observedAt) return undefined;
   const workers = (Array.isArray(raw.workers) ? raw.workers.slice(0, MAX_WORKERS) : []).flatMap((w) => {
     const name = isObject(w) ? str(w.name, NAME_RE) : undefined;
     const tokens = isObject(w) ? parseTokens(w.tokens) : undefined;
@@ -285,10 +287,9 @@ export function parseUsage(body: string | null | undefined): Usage | undefined {
   });
   // A pool-only publication need not carry a publication timestamp.
   const usage: Usage = { updatedAt: updatedAt ?? "", windows, workers };
-  if (Object.keys(pools).length) usage.pools = pools;
-  const mistral = parseMistral(raw.mistral);
+  // Empty pools are intentional after a restart/reset, not a legacy window publication.
+  if (Object.keys(pools).length || !windows.length) usage.pools = pools;
   if (mistral) usage.mistral = mistral;
-  const observedAt = time(raw.observed_at);
   if (observedAt) usage.observedAt = observedAt;
   const coordinatorTokens = parseTokens(raw.coordinator_tokens);
   if (coordinatorTokens) usage.coordinatorTokens = coordinatorTokens;
