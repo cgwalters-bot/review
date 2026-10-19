@@ -3,6 +3,7 @@
 // synthetic payloads.
 
 import { parseBlocks, parseQuestion, type Question, unfencedLines } from "../answer.ts";
+import { isBot } from "./authors.ts";
 import { BOT_LOGIN, CHORE_LABEL, DONE, FEED_FIELD, FIELD, OPERATOR, QUESTION_LABEL, QUEUE_STATUSES, REVIEW_LABEL, TRACKER_REPO, TRIAGE_FIELD } from "./config.ts";
 
 /** The subset of a project field the app uses. */
@@ -394,7 +395,6 @@ export interface CommentFacts {
  * order.
  */
 export function answeredPending(comments: readonly CommentFacts[]): boolean {
-  const last = (login: string) => comments.findLastIndex((c) => c.author === login);
-  const mine = last(OPERATOR);
-  return mine >= 0 && mine > last(BOT_LOGIN);
+  const mine = comments.findLastIndex((c) => c.author === OPERATOR);
+  return mine >= 0 && mine > comments.findLastIndex((c) => isBot(c.author));
 }

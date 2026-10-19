@@ -5,6 +5,7 @@ import { type Answer, parseAnswer, parseBlocks, type Question, unfencedLines } f
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import { commentNote, type ItemAction, parseAskBody } from "./asks.ts";
+import { authorLabel } from "./authors.ts";
 import { ASK_LABELS, askKind, type IssueRef, isAsk, isQuestion, type Item, questionOf, type SubIssueSummary } from "./board.ts";
 import type { Context, RunStatus, SubIssue } from "./backend.ts";
 import { BOARD_URL, OPERATOR } from "./config.ts";
@@ -395,7 +396,7 @@ function commentView(c: Context["comments"][number], render: Renderer, onAsk: "q
   return h(
     "article",
     { class: `comment${isAnswer ? " your-answer" : ""}` },
-    h("div", { class: "meta" }, link(c.url, `${c.author} · ${time(c.createdAt)}`), label),
+    h("div", { class: "meta" }, link(c.url, `${authorLabel(c.author)} · ${time(c.createdAt)}`), label),
     h("div", { class: "md" }, render(c.body)),
   );
 }
