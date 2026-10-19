@@ -11,6 +11,7 @@ import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
 import { itemAction, reviewAskFor, reviewComment, type RunRef } from "./asks.ts";
+import { isBot } from "./authors.ts";
 import type { Item } from "./board.ts";
 import {
   type Context,
@@ -48,7 +49,6 @@ import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import { DECISIONS_CONFIG, refreshDocument } from "./decisiondocument.ts";
 import {
   CLASSIC_SCOPES,
-  BOT_LOGIN,
   DONE_NOTICE_MS,
   FETCH_CONCURRENCY,
   FORGE_MIN_INTERVAL_MS,
@@ -319,7 +319,7 @@ function renderMeta(state: State): void {
   const who = state.login ? `signed in as ${state.login}` : undefined;
   const api = state.gh.rate ? `API ${state.gh.rate.remaining}/${state.gh.rate.limit}` : undefined;
   if (who) part("mp-who", who);
-  const botCount = state.needs.filter((n) => !n.done && (n.entry?.pr?.author ?? n.entry?.item?.author ?? n.decision?.item.author)?.toLowerCase() === BOT_LOGIN.toLowerCase()).length;
+  const botCount = state.needs.filter((n) => !n.done && isBot(n.entry?.pr?.author ?? n.entry?.item?.author ?? n.decision?.item.author)).length;
   part("mp-queues", `people ${state.people ? state.people.rows.length : "…"} · bot ${botCount}`);
   const since = cachedSince(state);
   if (since !== undefined) part("mp-age", h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, cachedLabel(since, Date.now())));

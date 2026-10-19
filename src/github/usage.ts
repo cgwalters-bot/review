@@ -9,7 +9,8 @@
 // The comment is parsed strictly, like the heartbeat.
 
 import { GitHubError, type GitHub, RateLimited } from "./api.ts";
-import { BOT_LOGIN, USAGE_ISSUE, USAGE_REPO } from "./config.ts";
+import { isBot } from "./authors.ts";
+import { USAGE_ISSUE, USAGE_REPO } from "./config.ts";
 import type { RawComment } from "./heartbeat.ts";
 import config from "./usage-config.json" with { type: "json" };
 
@@ -308,7 +309,7 @@ export function findUsage(comments: readonly RawComment[]): Usage | undefined {
   let found: Usage | undefined;
   let foundAt = -Infinity;
   for (const c of comments) {
-    if (c.user?.login !== BOT_LOGIN) continue;
+    if (!isBot(c.user?.login)) continue;
     const usage = parseUsage(c.body);
     if (!usage) continue;
     const edited = time(c.updated_at);
