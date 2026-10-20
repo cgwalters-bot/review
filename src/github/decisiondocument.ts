@@ -1,9 +1,11 @@
 import config from "./decisions-config.json" with { type: "json" };
 import { h } from "../dom.ts";
 import { GitHub, GitHubError } from "./api.ts";
-import type { Renderer } from "../markdown.ts";
+import { taskItemLines, type Renderer } from "../markdown.ts";
 
-export const DECISIONS_CONFIG = config as { document: { repo: string; number: number } | null; legacyQuestions: boolean };
+// `checkboxes: true` makes an open entry's task-list items tappable; off
+// unless set, so a document not written for one-tap edits stays read-only.
+export const DECISIONS_CONFIG = config as { document: { repo: string; number: number; checkboxes?: boolean } | null; legacyQuestions: boolean };
 
 function proseLines(text: string): { text: string; start: number }[] {
   const lines: { text: string; start: number }[] = [];
@@ -82,8 +84,40 @@ export function answerDocument(body: string, id: string, letter: string, reply: 
   return body.slice(0, entry.start) + replacement + body.slice(entry.end);
 }
 
-export async function sendDocumentAnswer(gh: GitHub, path: string, shown: string, id: string, letter: string, reply: string): Promise<string> {
-  const body = answerDocument(shown, id, letter, reply);
+// The start of a line markdown-it reads as a task list item: optional
+// blockquote markers, a bullet or ordered marker, then "[ ]" or "[x]". The
+// line comes from markdown-it's map (taskItemLines); this only finds the box
+// on it, and refuses a line it does not recognise rather than guess.
+const TASK_LINE = /^((?:[ \t]*>)*[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+\[)([ xX])(?=\][ \t])/;
+// Lettered options are answered through the form, with its Reply line.
+const OPTION_LINE = /^- \[[ xX]\] [A-Z]\) /;
+
+/** Line `line` (0-based) of `text`, without its line ending, and where it starts. */
+function lineAt(text: string, line: number): { text: string; start: number } | undefined {
+  let start = 0;
+  // Line breaks as markdown-it counts them, a lone \r included, so its line
+  // numbers name the same lines here.
+  const lines = text.split(/(?<=\r\n|\r(?!\n)|\n)/);
+  for (const before of lines.slice(0, line)) start += before.length;
+  const found = lines[line];
+  return found === undefined ? undefined : { text: found.replace(/\r?\n$|\r$/, ""), start };
+}
+
+/** Tick or untick the task-list item on line `line` of open entry `id`'s text, changing only that line's box. */
+export function toggleDocument(body: string, id: string, line: number, checked: boolean): string {
+  const entry = parseDocument(body).find((e) => e.id === id && !e.done);
+  const found = entry && lineAt(entry.text, line);
+  const box = found && !OPTION_LINE.test(found.text) ? TASK_LINE.exec(found.text) : null;
+  // The box must still be in the state the checkbox was showing.
+  if (!entry || !found || !box || (box[2] !== " ") === checked) throw new Error("Item is no longer there to toggle");
+  // entry.text is the body up to entry.end, from just after its heading.
+  const at = entry.end - entry.text.length + found.start + box[1]!.length;
+  return body.slice(0, at) + (checked ? "x" : " ") + body.slice(at + 1);
+}
+
+/** Write `edit(shown)` to the document at `path`, unless it changed since `shown` was read. */
+export async function sendDocumentEdit(gh: GitHub, path: string, shown: string, edit: (body: string) => string): Promise<string> {
+  const body = edit(shown);
   // Stops a stale form overwriting edits made since its refresh. GitHub has
   // no issue-body CAS: an edit after this GET can still race the PATCH.
   const fresh = await gh.send<{ body: string }>("GET", path);
@@ -92,12 +126,70 @@ export async function sendDocumentAnswer(gh: GitHub, path: string, shown: string
   return body;
 }
 
-/** The document, with each entry's text as GitHub-flavored markdown (sanitized by `render`), and a form for each one still open. */
-export function documentView(body: string, send: (id: string, letter: string, reply: string) => Promise<void>, render: Renderer, repository?: string): HTMLElement {
+export function sendDocumentAnswer(gh: GitHub, path: string, shown: string, id: string, letter: string, reply: string): Promise<string> {
+  return sendDocumentEdit(gh, path, shown, (body) => answerDocument(body, id, letter, reply));
+}
+
+/**
+ * Swap the ☐/☑ glyphs `render` put on an open entry's task items for
+ * checkboxes calling `toggle` with each item's source line. Glyphs pair with
+ * markdown-it's task items in document order; if any list item's text
+ * merely starts with a glyph, the counts differ and all stay glyphs, since
+ * a tap could then tick a different line than the one shown.
+ */
+function tappableTasks(md: HTMLElement, entry: DocumentEntry, toggle: (id: string, line: number, checked: boolean) => Promise<void>, status: HTMLElement): boolean {
+  const glyphs = [...md.querySelectorAll("li")].flatMap((li) => {
+    // 4 is NodeFilter.SHOW_TEXT, which jsdom's window has but node's global
+    // does not. A loose list item's first text is the newline before its <p>.
+    const walker = document.createTreeWalker(li, 4);
+    let node = walker.nextNode() as Text | null;
+    while (node && !node.data.trim()) node = walker.nextNode() as Text | null;
+    return node && /^[☐☑] /.test(node.data) ? [node] : [];
+  });
+  const lines = taskItemLines(entry.text);
+  if (glyphs.length !== lines.length) return false;
+  let any = false;
+  glyphs.forEach((node, i) => {
+    const line = lines[i]!;
+    const source = lineAt(entry.text, line);
+    const box = source && !OPTION_LINE.test(source.text) ? TASK_LINE.exec(source.text) : null;
+    const checked = node.data[0] === "☑";
+    if (!box || (box[2] !== " ") !== checked) return;
+    any = true;
+    const input = h("input", { type: "checkbox", "aria-label": `${entry.id}: ${node.data.slice(2, 82)}` });
+    input.checked = checked;
+    input.addEventListener("change", async () => {
+      input.disabled = true;
+      try {
+        await toggle(entry.id, line, input.checked);
+        status.textContent = "";
+      } catch (e) {
+        input.checked = !input.checked;
+        status.textContent = e instanceof Error ? e.message : String(e);
+      } finally {
+        input.disabled = false;
+      }
+    });
+    node.data = node.data.slice(1);
+    node.before(input);
+  });
+  return any;
+}
+
+/**
+ * The document, with each entry's text as GitHub-flavored markdown (sanitized by `render`), and a form for each one still open.
+ * With `toggle`, an open entry's task-list items are checkboxes; done entries stay read-only.
+ */
+export function documentView(body: string, send: (id: string, letter: string, reply: string) => Promise<void>, render: Renderer, repository?: string, toggle?: (id: string, line: number, checked: boolean) => Promise<void>): HTMLElement {
   const root = h("div", { class: "decision-document" });
   const done = h("details", {}, h("summary", {}, "Done"));
   for (const entry of parseDocument(body)) {
-    const row = h("section", {}, h("h3", {}, `${entry.id} ${entry.title}`), h("div", { class: "md" }, render(entry.text, repository)));
+    const md = h("div", { class: "md" }, render(entry.text, repository));
+    const row = h("section", {}, h("h3", {}, `${entry.id} ${entry.title}`), md);
+    if (toggle && !entry.done) {
+      const status = h("p", { role: "status" });
+      if (tappableTasks(md, entry, toggle, status)) row.append(status);
+    }
     if (!entry.done && !entry.options.some((o) => o.checked)) {
       const form = h("form", {});
       for (const option of entry.options) {
@@ -134,6 +226,7 @@ const readers = new WeakMap<HTMLElement, { running: boolean; body?: string }>();
 
 export async function refreshDocument(gh: GitHub, slot: HTMLElement, render: Renderer, target = DECISIONS_CONFIG.document, force = false): Promise<void> {
   if (!target) return;
+  const checkboxes = target.checkboxes === true;
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(target.repo) || !Number.isSafeInteger(target.number) || target.number < 1) throw new Error("Invalid decisions configuration");
   const state = readers.get(slot) ?? { running: false };
   readers.set(slot, state);
@@ -145,18 +238,24 @@ export async function refreshDocument(gh: GitHub, slot: HTMLElement, render: Ren
     slot.querySelector(":scope > p[role=status]")?.remove();
     if (!force && state.body === data.body) return;
     if (!force && [...slot.querySelectorAll<HTMLFormElement>("form:not([data-sent])")].some((form) => form.querySelector("input:checked") || form.querySelector<HTMLInputElement>('input[type="text"]')?.value)) return;
+    // A tap still writing: re-rendering now would show a body without it.
+    // A forced reload goes ahead; the re-read before each write then refuses
+    // the next tap with "changed, reload" rather than undo this one.
+    if (!force && slot.querySelector('.md input[type="checkbox"]:disabled')) return;
     let baseline = data.body;
     // Every form patches the same body: run each read/compare/PATCH after the
     // previous one settles so a second answer builds on the first instead of
     // overwriting it with the same stale baseline.
     let queue = Promise.resolve();
-    slot.replaceChildren(documentView(data.body, (id, letter, reply) => {
+    const write = (edit: (body: string) => string) => {
       const run = queue.then(async () => {
-        baseline = await sendDocumentAnswer(gh, path, baseline, id, letter, reply);
+        baseline = await sendDocumentEdit(gh, path, baseline, edit);
       });
       queue = run.catch(() => {});
       return run;
-    }, render, target.repo));
+    };
+    slot.replaceChildren(documentView(data.body, (id, letter, reply) => write((body) => answerDocument(body, id, letter, reply)), render, target.repo,
+      checkboxes ? (id, index, checked) => write((body) => toggleDocument(body, id, index, checked)) : undefined));
     state.body = data.body;
   } catch (e) {
     const note = h("p", { role: "status" }, e instanceof GitHubError && e.status === 404 ? "Cannot read the decisions issue: it may be private and this viewer's token has no access, or the issue does not exist." : String(e));

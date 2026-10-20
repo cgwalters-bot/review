@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GitHub } from "../src/github/api.ts";
-import { DECISIONS_CONFIG, answerDocument, documentView, parseDocument, refreshDocument, sendDocumentAnswer } from "../src/github/decisiondocument.ts";
+import { DECISIONS_CONFIG, answerDocument, documentView, parseDocument, refreshDocument, sendDocumentAnswer, toggleDocument } from "../src/github/decisiondocument.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
 
@@ -146,3 +146,116 @@ test("an entry's text renders as GitHub-flavored markdown: a task list right aft
   assert.equal(md.querySelector("li code")!.textContent, "main");
   assert.equal(md.querySelectorAll("script, input").length, 0);
 });
+
+const tasks = "### D20 Checks\nTick what applies.\n- [ ] Rotate the key\n  - [x] Tell people\n- [ ] A) Ship it\n\n> - [ ] Quoted\n\n- [ ] Loose one\n\n- [ ] Loose two\n\n```md\n- [ ] Example\n```\nReply:\n\n## Done\n### D3 Old\n- [ ] Never\n";
+const target = { repo: "example/private", number: 8, checkboxes: true };
+
+function changedLines(before: string, after: string): string[] {
+  const a = before.split(/\r?\n/);
+  return after.split(/\r?\n/).filter((line, i) => line !== a[i]);
+}
+
+function tap(box: HTMLInputElement): Promise<void> {
+  box.checked = !box.checked;
+  box.dispatchEvent(new win.Event("change"));
+  return new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+test("tapping a checkbox toggles only that item's line in the document", async () => {
+  let server = tasks;
+  const gh = new GitHub(async () => "token", async (_, init) => {
+    if (init?.method === "PATCH") server = JSON.parse(String(init.body)).body;
+    return new Response(JSON.stringify({ body: server }));
+  });
+  const slot = document.createElement("div");
+  await refreshDocument(gh, slot, render, target);
+  const boxes = [...slot.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+  // None for the lettered option (the form answers it), the fenced example or the done entry.
+  assert.deepEqual(boxes.map((b) => [b.checked, b.closest("li")!.textContent!.trim().split("\n")[0]]), [
+    [false, "Rotate the key"], [true, "Tell people"], [false, "Quoted"], [false, "Loose one"], [false, "Loose two"],
+  ]);
+  await tap(boxes[0]!);
+  assert.deepEqual(changedLines(tasks, server), ["- [x] Rotate the key"]);
+  for (const [i, line] of [[1, "  - [ ] Tell people"], [2, "> - [x] Quoted"], [4, "- [x] Loose two"]] as const) {
+    const before = server;
+    await tap(boxes[i]!);
+    assert.deepEqual(changedLines(before, server), [line]);
+  }
+});
+
+test("a checkbox refuses to write over a document changed since it was read, and says so", async () => {
+  let server = tasks;
+  let patches = 0;
+  const gh = new GitHub(async () => "token", async (_, init) => {
+    if (init?.method === "PATCH") patches++;
+    return new Response(JSON.stringify({ body: server }));
+  });
+  const slot = document.createElement("div");
+  await refreshDocument(gh, slot, render, target);
+  server = tasks.replace("Tick what", "Edited: tick what");
+  const box = slot.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  await tap(box);
+  assert.equal(patches, 0);
+  assert.equal(box.checked, false);
+  assert.match(slot.querySelector("section p[role=status]")!.textContent!, /changed, reload/);
+});
+
+test("a refresh waits for a tap still writing", async () => {
+  let server = tasks;
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => (release = resolve));
+  const gh = new GitHub(async () => "token", async (_, init) => {
+    if (init?.method === "PATCH") {
+      await barrier;
+      server = JSON.parse(String(init.body)).body;
+    }
+    return new Response(JSON.stringify({ body: server }));
+  });
+  const slot = document.createElement("div");
+  await refreshDocument(gh, slot, render, target);
+  const box = slot.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  const tapped = tap(box);
+  server = tasks.replace("Tick what", "Edited: tick what");
+  await refreshDocument(gh, slot, render, target);
+  assert.ok(slot.contains(box));
+  release();
+  await tapped;
+});
+
+test("each checkbox ticks the line it is shown on, even where source and rendering disagree", () => {
+  for (const [doc, count] of [
+    ["### D1 X\n> - [ ] Quoted harmless\n\nPara\n2. [ ] Delete prod\nReply:\n", 1],
+    // A list item that merely starts with a glyph: none are tappable.
+    ["### D1 X\nIntro\n2. [ ] Delete prod\n- ☐ Harmless\nReply:\n", 0],
+    ["### D1 X\n- [ ] \n> - [ ] q\nReply:\n", 1],
+    ["### D1 X\r\n1. [ ] First\r\n2) [x] Second\r\n> > - [ ] Deep\r\nReply:\r\n", 3],
+    // A lone \r is a line break to markdown-it.
+    ["### D1 X\nIntro\r- [ ] Harmless\n- [ ] Delete prod\nReply:\n", 2],
+    ["### D1 X\nA\rB\r- [ ] Harmless\n```\n- [ ] code\n```\nReply:\n", 1],
+  ] as const) {
+    const lines: number[] = [];
+    const view = documentView(doc, async () => {}, render, undefined, async (_, line) => void lines.push(line));
+    const boxes = view.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    assert.equal(boxes.length, count, JSON.stringify(doc));
+    for (const box of boxes) {
+      box.checked = !box.checked;
+      box.dispatchEvent(new win.Event("change"));
+      const changed = changedLines(doc, toggleDocument(doc, "D1", lines.at(-1)!, box.checked));
+      assert.equal(changed.length, 1);
+      assert.ok(changed[0]!.endsWith(box.closest("li")!.textContent!.trim().split("\n")[0]!), `${JSON.stringify(doc)}: ${changed[0]}`);
+    }
+  }
+});
+
+test("checkboxes are off unless configured, and toggles refuse stale, option or done items", async () => {
+  const gh = new GitHub(async () => "token", async () => new Response(JSON.stringify({ body: tasks })));
+  const slot = document.createElement("div");
+  await refreshDocument(gh, slot, render, { repo: "example/private", number: 8 });
+  assert.equal(slot.querySelectorAll('input[type="checkbox"]').length, 0);
+  assert.throws(() => toggleDocument(tasks, "D3", 0, true), /no longer/);
+  assert.throws(() => toggleDocument(tasks, "D20", 2, true), /no longer/);
+  assert.throws(() => toggleDocument(tasks, "D20", 3, true), /no longer/);
+  assert.throws(() => toggleDocument(tasks, "D20", 0, true), /no longer/);
+  assert.throws(() => toggleDocument(tasks, "D20", 99, true), /no longer/);
+});
+
