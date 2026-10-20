@@ -200,7 +200,11 @@ for private repositories. Entries use `### D12 Question`, checklist options
 starts the collapsed history. Each entry's text is rendered as GitHub-flavored
 markdown by the same sanitizing renderer as issue bodies (task list items show
 ☑ or ☐). Answers tick one option and fill a one-line reply
-only within that id. A fresh body comparison refuses stale forms with
+only within that id. With `checkboxes: true` in `document` (off by default),
+an open entry's task list items, other than the lettered options the form
+answers, are checkboxes: a tap ticks or unticks that
+one line through the same write as Send, and done entries stay read-only.
+A fresh body comparison refuses stale forms and taps with
 “changed, reload”; GitHub has no atomic issue-body compare-and-swap, so an edit
 between that final read and write can still race. No private contents ship in
 the build. Configuration and migration are left to the operator.

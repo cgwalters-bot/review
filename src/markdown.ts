@@ -53,6 +53,27 @@ function markdownIt(): MarkdownIt {
   return md;
 }
 
+/** Whether tokens[i] is a task list item's text, which the renderer gives a ☐/☑ glyph. */
+function taskBox(tokens: Token[], i: number): RegExpExecArray | null {
+  const token = tokens[i];
+  const first = token?.children?.[0];
+  if (token?.type !== "inline" || tokens[i - 2]?.type !== "list_item_open" || first?.type !== "text") return null;
+  return /^\[([ xX])\] /.exec(first.content);
+}
+
+const taskParser = markdownIt();
+
+/**
+ * The 0-based source line of each task list item a renderer gives a glyph,
+ * in the order the glyphs appear: markdown-it's own line map, so a caller
+ * pairing glyphs with lines need not guess which line a list item came from.
+ */
+export function taskItemLines(source: string): number[] {
+  if (source.length > MAX_SOURCE_CHARS) return [];
+  const tokens = taskParser.parse(source, {});
+  return tokens.flatMap((token, i) => (taskBox(tokens, i) && token.map ? [token.map[0]] : []));
+}
+
 export type Renderer = (source: string, repository?: string) => DocumentFragment;
 
 /**
@@ -75,10 +96,9 @@ export function createRenderer(win: WindowLike): Renderer {
     const text = cut ? `${source.slice(0, MAX_SOURCE_CHARS)}\n\n*(cut: too long to show here)*` : source;
     const tokens = md.parse(text, {});
     tokens.forEach((token, i) => {
+      const box = taskBox(tokens, i);
       const first = token.children?.[0];
-      if (token.type !== "inline" || tokens[i - 2]?.type !== "list_item_open" || first?.type !== "text") return;
-      const box = /^\[([ xX])\] /.exec(first.content);
-      if (box) first.content = `${box[1] === " " ? "☐" : "☑"} ${first.content.slice(box[0].length)}`;
+      if (box && first) first.content = `${box[1] === " " ? "☐" : "☑"} ${first.content.slice(box[0].length)}`;
     });
     if (repository && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
       for (const block of tokens) {
