@@ -246,26 +246,72 @@ export interface WaitingPr {
 }
 
 /**
- * Read what decides whose turn each PR other than a forge draft is (see
- * classifyPr), and keep those that are listed. Every read is
- * conditional, so an unchanged PR costs nothing but its round trips:
- * the PR, his decisions, and upstream the head's check runs, the base's
- * rules and, only when DCO fails, the commits. Check runs move without
- * the PR's updated_at, so all are re-read each time. A PR that can't be
- * read is left out, reported in `errors` and named in `failed`.
+ * What loadWaiting read of a PR that moves its updated_at when it
+ * changes: the PR, his decisions, and once read, the head's unsigned
+ * commits and when he was asked. Reused while the search's updated_at
+ * stands (see loadWaiting); by refKey.
  */
-export async function loadWaiting(gh: GitHub, others: readonly OtherPr[]): Promise<{ prs: WaitingPr[]; errors: string[]; failed: Set<string> }> {
+export interface WaitingRead {
+  /** The search's updated_at when read. */
+  updatedAt: string;
+  /** When read, in epoch ms. */
+  at: number;
+  pull: RawPull & { mergeable_state?: string };
+  decision: { verdict: Verdict; botReplied: boolean; reviewedCurrentHead?: boolean };
+  unsigned?: string[];
+  /** Null when the timeline names no request of his. */
+  askedAt?: string | null;
+}
+
+/**
+ * Re-read a PR's own reads at least this often whatever its updated_at
+ * says: GitHub recomputes mergeable_state (a conflict after the base
+ * moves) without touching it, so this bounds how long one goes unseen.
+ */
+const WAITING_REUSE_MS = 10 * 60_000;
+
+/**
+ * Read what decides whose turn each PR other than a forge draft is (see
+ * classifyPr), and keep those that are listed. Upstream that takes the
+ * head's check runs, the base's rules and, only when DCO fails, the
+ * commits. Check runs move without the PR's updated_at, so they and the
+ * rules are re-read each time; the PR's own reads come from `known`
+ * while the search's updated_at for it is unchanged (a push, a review, a
+ * comment or a review request all move it), since even conditional
+ * reads cost a request each across dozens of PRs every poll. A PR that
+ * can't be read is left out, reported in `errors` and named in `failed`;
+ * `reads` holds what to pass as `known` next time.
+ */
+export async function loadWaiting(
+  gh: GitHub,
+  others: readonly OtherPr[],
+  known: ReadonlyMap<string, WaitingRead> = new Map(),
+  now = Date.now(),
+): Promise<{ prs: WaitingPr[]; errors: string[]; failed: Set<string>; reads: Map<string, WaitingRead> }> {
   const rules = new Map<string, Promise<string[]>>();
   const errors: string[] = [];
   const failed = new Set<string>();
+  const reads = new Map<string, WaitingRead>();
   const read = await mapLimit(others, FETCH_CONCURRENCY, async ({ pr, requested }): Promise<WaitingPr | undefined> => {
     try {
       const { ref } = pr;
       const repo = `${ref.owner}/${ref.repo}`;
-      const pull = (await gh.get<RawPull & { mergeable_state?: string }>(pullPath(ref))).data;
+      const k = known.get(refKey(ref));
+      // GitHub answers "unknown" until it has computed mergeability: ask again.
+      const reuse = k && pr.updatedAt && k.updatedAt === pr.updatedAt && now - k.at < WAITING_REUSE_MS && k.pull.mergeable_state !== "unknown";
+      let own: WaitingRead;
+      if (reuse) own = { ...k };
+      else {
+        const pull = (await gh.get<RawPull & { mergeable_state?: string }>(pullPath(ref))).data;
+        const open = pull.state === "open" && !pull.merged_at;
+        own = { updatedAt: pr.updatedAt, at: now, pull, decision: open ? await readVerdict(gh, ref, pull.head.sha) : { verdict: { state: "none" }, botReplied: false } };
+      }
+      // Stored now, so the reads below that fill it in are kept too.
+      reads.set(refKey(ref), own);
+      const { pull } = own;
       if (pull.state !== "open" || pull.merged_at) return undefined;
       const head = pull.head.sha;
-      const { verdict, botReplied, reviewedCurrentHead } = await readVerdict(gh, ref, head);
+      const { verdict, botReplied, reviewedCurrentHead } = own.decision;
       const facts: PrFacts = {
         owner: ref.owner,
         requested: pull.requested_reviewers === undefined ? requested : pull.requested_reviewers.some((r) => r.login?.toLowerCase() === OPERATOR.toLowerCase()),
@@ -291,19 +337,21 @@ export async function loadWaiting(gh: GitHub, others: readonly OtherPr[]): Promi
         const here = (run: RunRef) => run.owner.toLowerCase() === ref.owner.toLowerCase() && run.repo.toLowerCase() === ref.repo.toLowerCase();
         facts.failedRequired = failedRequired(runs, required).map(({ run, ...c }) => (run && here(run) ? { ...c, run } : c));
         if (facts.dcoFailing) {
-          const commits = await gh.getAll<RawPrCommit>(`${pullPath(ref)}/commits?per_page=${PAGE_SIZE}`, 3);
-          facts.unsigned = unsignedCommits(commits.data);
+          // The commits move only with the head, so with the PR's own reads.
+          own.unsigned ??= unsignedCommits((await gh.getAll<RawPrCommit>(`${pullPath(ref)}/commits?per_page=${PAGE_SIZE}`, 3)).data);
+          facts.unsigned = own.unsigned;
         }
       }
       const freshPr = { ...pr, title: pull.title ?? pr.title, draft: pull.draft === true, body: pull.body ?? "" };
       const wait: PrWait | undefined = classifyPr(facts) ?? (promotionAction(freshPr, verdict) ? { reasons: [], onBot: false } : undefined);
       if (wait) {
         if (reviewedCurrentHead) wait.reviewedCurrentHead = true;
-        if (facts.requested) {
+        if (facts.requested && own.askedAt === undefined) {
           const events = await gh.getAll<{ event?: string; created_at?: string; requested_reviewer?: { login?: string } }>(`/repos/${repo}/issues/${ref.number}/timeline?per_page=${PAGE_SIZE}`).catch(() => undefined);
-          const at = events?.data.findLast((e) => e.event === "review_requested" && e.requested_reviewer?.login === OPERATOR)?.created_at;
-          if (at) wait.askedAt = at;
+          // Only the age shown: a failed read isn't worth a request every poll, so it waits for the PR's next re-read like the rest.
+          own.askedAt = events?.data.findLast((e) => e.event === "review_requested" && e.requested_reviewer?.login === OPERATOR)?.created_at ?? null;
         }
+        if (facts.requested && own.askedAt) wait.askedAt = own.askedAt;
       }
       return wait ? { pr: freshPr, head, wait, verdict } : undefined;
     } catch (e) {
@@ -312,7 +360,7 @@ export async function loadWaiting(gh: GitHub, others: readonly OtherPr[]): Promi
       return undefined;
     }
   });
-  return { prs: read.filter((w): w is WaitingPr => w !== undefined), errors, failed };
+  return { prs: read.filter((w): w is WaitingPr => w !== undefined), errors, failed, reads };
 }
 
 export interface Commit {
