@@ -135,6 +135,38 @@ describe("the bot's PRs other than the forge's drafts", () => {
     assert.equal(paths.filter((p) => p === "/repos/bootc-dev/bootc/rules/branches/main?per_page=100").length, 1);
   });
 
+  it("re-reads only check runs and rules for a PR whose updated_at stands", async () => {
+    const { fetchImpl, calls } = github();
+    const gh = new GitHub(token, fetchImpl);
+    const others = await loadOtherPrs(gh);
+    const T = Date.parse("2026-10-20T00:00:00Z");
+    const first = await loadWaiting(gh, others, new Map(), T);
+    const poll = async (known: Parameters<typeof loadWaiting>[2], over = others, now = T + 60_000) => {
+      const before = calls.length;
+      const got = await loadWaiting(gh, over, known, now);
+      return { got, paths: calls.slice(before).map((c) => c.url.replace(API, "")) };
+    };
+    const uncached = await poll(new Map());
+    const cached = await poll(first.reads);
+    // The numbers in the change's description: 30 requests a poll before, 7 after, for these 7 PRs.
+    assert.deepEqual([uncached.paths.length, cached.paths.length], [30, 7]);
+    assert.ok(cached.paths.every((p) => /\/check-runs\?|\/rules\/branches\//.test(p)), cached.paths.join("\n"));
+    const sig = (r: typeof first) => JSON.stringify(r.prs);
+    assert.equal(sig(cached.got), sig(uncached.got), "the same standing either way");
+    // A PR whose updated_at moved is read again; so is everything after WAITING_REUSE_MS.
+    const moved = others.map((o) => (o.pr.title === "requested" ? { ...o, pr: { ...o.pr, updatedAt: "2026-10-01T00:00:00Z" } } : o));
+    const one = await poll(cached.got.reads, moved);
+    assert.ok(one.paths.includes("/repos/cgwalters-bot/homegit/pulls/45"));
+    assert.equal(one.paths.filter((p) => /\/pulls\/\d+$/.test(p)).length, 1);
+    const old = await poll(cached.got.reads, others, T + 11 * 60_000);
+    assert.equal(old.paths.filter((p) => /\/pulls\/\d+$/.test(p)).length, others.length);
+    // A search without updated_at, or mergeability not computed yet, is no reason to trust the last read.
+    const unknown = new Map([...first.reads].map(([k, v]) => [k, { ...v, pull: { ...v.pull, mergeable_state: "unknown" } }]));
+    assert.equal((await poll(unknown)).paths.filter((p) => /\/pulls\/\d+$/.test(p)).length, others.length);
+    const undated = others.map((o) => ({ ...o, pr: { ...o.pr, updatedAt: "" } }));
+    assert.equal((await poll(first.reads, undated)).paths.filter((p) => /\/pulls\/\d+$/.test(p)).length, others.length);
+  });
+
   it("reads unreadable rules as none, and fails the PRs on any other rules error", async () => {
     const { fetchImpl } = github();
     const rules = (status: number) => async (url: string, init?: RequestInit) =>

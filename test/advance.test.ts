@@ -6,6 +6,7 @@ import {
   decisionStops,
   EDITED_ATTR,
   overlayVerdicts,
+  overlayWaiting,
   type PendingVerdict,
   pickNext,
   queueStops,
@@ -16,7 +17,7 @@ import {
 import { parseItem } from "../src/github/board.ts";
 import { parseDecision } from "../src/github/triage.ts";
 import { OPTIMISTIC_TTL_MS } from "../src/github/config.ts";
-import type { VerdictEntry } from "../src/github/prs.ts";
+import type { VerdictEntry, WaitingPr } from "../src/github/prs.ts";
 import type { Entry } from "../src/github/queue.ts";
 import { installDom, rawBoardItem } from "./helpers.ts";
 
@@ -164,6 +165,37 @@ describe("overlayVerdicts", () => {
   it("leaves other PRs as GitHub read them", () => {
     const got = overlayVerdicts(new Map([["o/r#2", read("changes-requested")]]), new Map([["o/r#1", approved]]), T);
     assert.equal(got.verdicts.get("o/r#2")?.state, "changes-requested");
+  });
+});
+
+describe("overlayWaiting", () => {
+  const T = 1_000_000;
+  const waiting = (n: number, head = "h1"): WaitingPr => ({
+    pr: { ref: { owner: "o", repo: "r", number: n }, url: `https://github.com/o/r/pull/${n}`, title: `#${n}`, body: "", author: "bot", createdAt: "", updatedAt: "", draft: false },
+    head,
+    wait: { reasons: ["review-requested"], onBot: false },
+  });
+  const pending = (state: PendingVerdict["state"]) => new Map([["o/r#1", { state, head: "h1", at: T }]]);
+  // [name, the read, his review, now, reasons left (undefined: not listed)]
+  const cases: [string, WaitingPr, PendingVerdict["state"], number, string[] | undefined][] = [
+    ["drops a PR he approved that a lagging read still lists", waiting(1), "approved", T + 1000, undefined],
+    ["keeps one he asked changes on, on the bot", waiting(1), "changes-requested", T + 1000, []],
+    ["lets the read win after the time limit", waiting(1), "approved", T + OPTIMISTIC_TTL_MS + 1, ["review-requested"]],
+    ["lets the read win once the head moved", waiting(1, "h2"), "approved", T + 1000, ["review-requested"]],
+    ["leaves any other verdict to the read", waiting(1), "promoted", T + 1000, ["review-requested"]],
+    ["leaves other PRs as read", waiting(2), "approved", T + 1000, ["review-requested"]],
+    // The read has his change request, and lists the PR for the bot's reply since.
+    ["lets the read win once it shows his verdict", { ...waiting(1), verdict: { state: "changes-requested" } }, "changes-requested", T + 1000, ["review-requested"]],
+  ];
+  for (const [name, w, state, now, reasons] of cases) {
+    it(name, () => {
+      const got = overlayWaiting([w], pending(state), now);
+      assert.deepEqual(got[0]?.wait.reasons, reasons);
+    });
+  }
+
+  it("puts a PR he asked changes on on the bot", () => {
+    assert.equal(overlayWaiting([waiting(1)], pending("changes-requested"), T + 1000)[0]?.wait.onBot, true);
   });
 });
 

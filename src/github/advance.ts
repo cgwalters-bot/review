@@ -7,11 +7,12 @@
 
 import { OPTIMISTIC_TTL_MS } from "./config.ts";
 import { applyFilter, type QueueFilter } from "./filter.ts";
-import type { Verdict, VerdictState } from "./forge.ts";
+import { refKey, type Verdict, type VerdictState } from "./forge.ts";
 import type { Item } from "./board.ts";
-import type { VerdictEntry } from "./prs.ts";
+import type { VerdictEntry, WaitingPr } from "./prs.ts";
 import { type Entry, onBot } from "./queue.ts";
 import { type Decision, decisionLabel } from "./triage.ts";
+import { afterReview } from "./waiting.ts";
 
 /** One row of a list he steps through. */
 export interface Stop {
@@ -186,4 +187,27 @@ export function overlayVerdicts(
     verdicts.set(key, { ...r?.verdict, state: p.state });
   }
   return { verdicts, pending: still };
+}
+
+/**
+ * The same for the PRs listed for what waits on him (not forge drafts,
+ * which have no verdict overlay): his reviews from this tab applied to
+ * their waits (see afterReview), so a read that predates a review, or
+ * lags it, doesn't list the PR again. A review stops applying as
+ * overlayVerdicts' do: after `ttl`, once the head moved, or once a read
+ * shows its verdict, so what came after it (a bot's reply) shows.
+ */
+export function overlayWaiting(
+  read: readonly WaitingPr[],
+  pending: ReadonlyMap<string, PendingVerdict>,
+  now: number,
+  ttl: number = OPTIMISTIC_TTL_MS,
+): WaitingPr[] {
+  return read.flatMap((w) => {
+    const p = pending.get(refKey(w.pr.ref));
+    if (!p || now - p.at > ttl || p.head !== w.head || w.verdict?.state === p.state) return [w];
+    if (p.state !== "approved" && p.state !== "changes-requested") return [w];
+    const wait = afterReview(w.wait, p.state);
+    return wait ? [{ ...w, wait }] : [];
+  });
 }
