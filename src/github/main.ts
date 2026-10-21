@@ -83,6 +83,7 @@ import { Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
 import { loadPeople, markPeopleDone, type People } from "./people.ts";
+import { peopleMeta } from "./peopleview.ts";
 import {
   loadFileLines,
   loadForgePrs,
@@ -325,7 +326,8 @@ function renderMeta(state: State): void {
   const api = state.gh.rate ? `API ${state.gh.rate.remaining}/${state.gh.rate.limit}` : undefined;
   if (who) part("mp-who", who);
   const botCount = state.needs.filter((n) => !n.done && isBot(n.entry?.pr?.author ?? n.entry?.item?.author ?? n.decision?.item.author)).length;
-  part("mp-queues", `people ${state.people ? state.people.rows.length : "…"} · bot ${botCount}`);
+  const people = peopleMeta(state.people, !!state.home?.el.isConnected && !!state.home.el.querySelector<HTMLDetailsElement>("#sec-people")?.open);
+  part("mp-queues", h("span", { title: people.title }, people.text), ` · bot ${botCount}`);
   const since = cachedSince(state);
   if (since !== undefined) part("mp-age", h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, cachedLabel(since, Date.now())));
   else if (state.lastPoll) part("mp-age", `checked ${clock(state.lastPoll.getTime())}`);
@@ -434,6 +436,7 @@ function homeHooks(state: State): HomeHooks {
       if (open) void refreshTriage(state);
     },
     peopleToggled: (open) => {
+      renderChrome(state);
       if (open) void refreshPeople(state);
     },
   };
@@ -582,8 +585,9 @@ async function refreshPeople(state: State): Promise<void> {
   state.peopleRunning = true;
   const revision = state.peopleRevision;
   try {
-    const people = await loadPeople(state.gh, Date.now(), state.login === OPERATOR);
-    if (state.closed || revision !== state.peopleRevision) return;
+    const people = await readSource(state.sources, "people", (gh) => loadPeople(gh, Date.now(), state.login === OPERATOR), state.gh);
+    if (state.closed) return;
+    if (!people || revision !== state.peopleRevision) { renderChrome(state); return; }
     state.people = people;
     paintPeople(state);
     renderChrome(state);

@@ -253,7 +253,8 @@ activity are excluded. Matching threads appear once. Five rows show before
 View all, with author, request age (unknown when unavailable), CI, and GitHub
 Review/Reply links. Mark done marks the notification read on GitHub; an open
 search review request stays until reviewed. The header shows people and bot
-ask counts. No separate inbox or dismissal state is stored.
+ask counts; while From people is closed the people count is "—", and the
+source freshness line says when it was last read. No separate inbox or dismissal state is stored.
 
 Notifications need access to the signed-in operator's notifications: a classic
 token needs the `notifications` scope (or `repo`, which also grants access).
