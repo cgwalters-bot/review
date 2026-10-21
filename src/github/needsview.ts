@@ -11,7 +11,7 @@ import { OPERATOR } from "./config.ts";
 import type { Entry } from "./queue.ts";
 import { ACTION_LABEL, ACTION_TITLE, ALL_PRIORITIES, matchesPriority, type Need, needPriority, priorityChips } from "./needs.ts";
 import { decisionLabel, shortRef } from "./triage.ts";
-import { age, answerForm, askText, excerpt, KIND_LABEL, KIND_TITLE, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, rowText, STATE_LABEL, time } from "./view.ts";
+import { age, answerForm, askText, excerpt, KIND_LABEL, KIND_TITLE, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, rowText, sinceTitle, STATE_LABEL } from "./view.ts";
 
 /** Characters of the ask shown on a row before "The whole question". */
 const ASK_EXCERPT = 240;
@@ -211,7 +211,7 @@ export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
       link(item?.url, where),
       [item?.org, n.parent ? `for ${excerpt(n.parent.title, 48)}` : undefined].filter(Boolean).map((t) => ` · ${t}`).join(""),
       " · ",
-      h("span", { class: "age", title: since ? `asked ${time(since)}` : "ask date not available", ...(since ? { "data-since": since } : {}) }, age(since, hooks.now) || "age unknown"),
+      h("span", { class: "age", title: since ? sinceTitle(e, since, "asked") : "ask date not available", ...(since ? { "data-since": since } : {}) }, age(since, hooks.now) || "age unknown"),
     ),
     n.done ? h("span", { class: "state answered" }, STATE_LABEL.answered) : label ? h("span", { class: `state ${label.cls}` }, label.text) : null,
   );

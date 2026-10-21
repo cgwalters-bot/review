@@ -104,6 +104,14 @@ describe("representative operator asks", () => {
     const item = tracked("context", 95, { labels: ["escalate"], priority: "P0" });
     assert.deepEqual(buildNeeds({ entries: [{ ...base, item, wait: { reasons: [], onBot: true } }], board: [item] }).map((n) => n.key), ["item:context"]);
   });
+
+  it("ages an escalation by its last move on the board, not its issue's creation", () => {
+    const moved = tracked("moved", 96, { labels: ["escalate"], createdAt: "2026-07-01T00:00:00Z", movedAt: "2026-10-20T00:00:00Z" });
+    const unknown = tracked("unknown", 97, { labels: ["escalate"], createdAt: "2026-07-01T00:00:00Z" });
+    const since = new Map(buildNeeds({ entries: [], board: [moved, unknown] }).map((n) => [n.key, n.since]));
+    assert.equal(since.get("item:moved"), "2026-10-20T00:00:00Z");
+    assert.equal(since.get("item:unknown"), undefined);
+  });
 });
 
 describe("buildNeeds", () => {
