@@ -228,7 +228,11 @@ answers, are checkboxes: a tap ticks or unticks that
 one line through the same write as Send, and done entries stay read-only.
 A fresh body comparison refuses stale forms and taps with
 “changed, reload”; GitHub has no atomic issue-body compare-and-swap, so an edit
-between that final read and write can still race. No private contents ship in
+between that final read and write can still race. A refused Send redraws the
+document as it is now with the pick and reply still filled in, to check and
+send again. A poll that finds the body changed under an unsent answer says so
+instead of redrawing, and `r` reloads it; every redraw keeps unsent answers
+for entries still open. No private contents ship in
 the build. Configuration and migration are left to the operator.
 
 The legacy Decisions list is

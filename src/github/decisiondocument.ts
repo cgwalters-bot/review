@@ -115,13 +115,22 @@ export function toggleDocument(body: string, id: string, line: number, checked: 
   return body.slice(0, at) + (checked ? "x" : " ") + body.slice(at + 1);
 }
 
+/** A write refused because the document is no longer `shown`; `body` is what it is now. */
+export class DocumentChanged extends Error {
+  readonly body: string;
+  constructor(body: string) {
+    super("changed, reload");
+    this.body = body;
+  }
+}
+
 /** Write `edit(shown)` to the document at `path`, unless it changed since `shown` was read. */
 export async function sendDocumentEdit(gh: GitHub, path: string, shown: string, edit: (body: string) => string): Promise<string> {
   const body = edit(shown);
   // Stops a stale form overwriting edits made since its refresh. GitHub has
   // no issue-body CAS: an edit after this GET can still race the PATCH.
   const fresh = await gh.send<{ body: string }>("GET", path);
-  if (fresh.body !== shown) throw new Error("changed, reload");
+  if (fresh.body !== shown) throw new DocumentChanged(fresh.body);
   await gh.send("PATCH", path, { body });
   return body;
 }
@@ -191,7 +200,7 @@ export function documentView(body: string, send: (id: string, letter: string, re
       if (tappableTasks(md, entry, toggle, status)) row.append(status);
     }
     if (!entry.done && !entry.options.some((o) => o.checked)) {
-      const form = h("form", {});
+      const form = h("form", { "data-id": entry.id });
       for (const option of entry.options) {
         form.append(h("label", {}, h("input", { type: "radio", name: entry.id, value: option.letter, required: "" }), `${option.letter}) ${option.text}`));
       }
@@ -222,7 +231,27 @@ export function documentView(body: string, send: (id: string, letter: string, re
   return root;
 }
 
-const readers = new WeakMap<HTMLElement, { running: boolean; body?: string }>();
+export const DOCUMENT_CHANGED_NOTE = "The decisions document changed; press r to reload it (unsent answers are kept).";
+export const DOCUMENT_KEPT = "The document changed; your answer is kept, check it and send again";
+
+/** The unsent forms' picks (by their label, "B) Wait") and replies, by entry id. */
+function drafts(slot: HTMLElement): Map<string, { pick: string | undefined; reply: string }> {
+  const found = new Map<string, { pick: string | undefined; reply: string }>();
+  for (const form of slot.querySelectorAll<HTMLFormElement>("form[data-id]:not([data-sent])")) {
+    const pick = form.querySelector<HTMLInputElement>('input[type="radio"]:checked')?.parentElement?.textContent ?? undefined;
+    const reply = form.querySelector<HTMLInputElement>('input[type="text"]')?.value ?? "";
+    if (pick || reply) found.set(form.dataset.id!, { pick, reply });
+  }
+  return found;
+}
+
+function slotNote(slot: HTMLElement, text: string): void {
+  slot.querySelector(":scope > p[role=status]")?.remove();
+  slot.prepend(h("p", { role: "status" }, text));
+}
+
+// `body` is the one shown, `written` the last this view itself wrote.
+const readers = new WeakMap<HTMLElement, { running: boolean; body?: string; written?: string }>();
 
 export async function refreshDocument(gh: GitHub, slot: HTMLElement, render: Renderer, target = DECISIONS_CONFIG.document, force = false): Promise<void> {
   if (!target) return;
@@ -233,16 +262,12 @@ export async function refreshDocument(gh: GitHub, slot: HTMLElement, render: Ren
   if (state.running) return;
   state.running = true;
   const path = `/repos/${target.repo}/issues/${target.number}`;
-  try {
-    const { data } = await gh.get<{ body: string }>(path);
-    slot.querySelector(":scope > p[role=status]")?.remove();
-    if (!force && state.body === data.body) return;
-    if (!force && [...slot.querySelectorAll<HTMLFormElement>("form:not([data-sent])")].some((form) => form.querySelector("input:checked") || form.querySelector<HTMLInputElement>('input[type="text"]')?.value)) return;
-    // A tap still writing: re-rendering now would show a body without it.
-    // A forced reload goes ahead; the re-read before each write then refuses
-    // the next tap with "changed, reload" rather than undo this one.
-    if (!force && slot.querySelector('.md input[type="checkbox"]:disabled')) return;
-    let baseline = data.body;
+  // Show `body`, carrying each unsent pick and reply over to the same entry's
+  // new form, so neither a reload nor a refused send loses what was typed. An
+  // entry answered or moved to Done meanwhile has no form, and its draft goes.
+  const mount = (body: string) => {
+    const kept = drafts(slot);
+    let baseline = body;
     // Every form patches the same body: run each read/compare/PATCH after the
     // previous one settles so a second answer builds on the first instead of
     // overwriting it with the same stale baseline.
@@ -250,17 +275,55 @@ export async function refreshDocument(gh: GitHub, slot: HTMLElement, render: Ren
     const write = (edit: (body: string) => string) => {
       const run = queue.then(async () => {
         baseline = await sendDocumentEdit(gh, path, baseline, edit);
+        // Our own write is not a change for the poll to report.
+        if (slot.contains(view)) state.written = baseline;
       });
       queue = run.catch(() => {});
       return run;
     };
-    slot.replaceChildren(documentView(data.body, (id, letter, reply) => write((body) => answerDocument(body, id, letter, reply)), render, target.repo,
-      checkboxes ? (id, index, checked) => write((body) => toggleDocument(body, id, index, checked)) : undefined));
+    const answer = async (id: string, letter: string, reply: string) => {
+      try {
+        await write((body) => answerDocument(body, id, letter, reply));
+      } catch (e) {
+        // Refused as stale: show the document as it is now, with this answer
+        // still filled in, rather than leave a form every retry refuses. Not
+        // while a tap is writing (redrawing would hide its outcome) or once
+        // this view is gone (a newer one is already showing).
+        if (!(e instanceof DocumentChanged) || !slot.contains(view) || slot.querySelector('.md input[type="checkbox"]:disabled')) throw e;
+        mount(e.body);
+        state.body = e.body;
+        const status = slot.querySelector<HTMLFormElement>(`form[data-id="${id}"]`)?.querySelector("p[role=status]");
+        if (status) status.textContent = DOCUMENT_KEPT;
+        else slotNote(slot, `The document changed; ${id} is no longer open to answer.`);
+        throw e;
+      }
+    };
+    const view = documentView(body, answer, render, target.repo, checkboxes ? (id, index, checked) => write((body) => toggleDocument(body, id, index, checked)) : undefined);
+    for (const [id, draft] of kept) {
+      const form = view.querySelector<HTMLFormElement>(`form[data-id="${id}"]`);
+      if (!form) continue;
+      // A pick whose option was reworded or relettered is dropped, not moved
+      // onto whatever that letter says now; the reply is kept either way.
+      for (const radio of form.querySelectorAll<HTMLInputElement>('input[type="radio"]')) radio.checked = radio.parentElement?.textContent === draft.pick;
+      form.querySelector<HTMLInputElement>('input[type="text"]')!.value = draft.reply;
+    }
+    slot.replaceChildren(view);
+  };
+  try {
+    const { data } = await gh.get<{ body: string }>(path);
+    slot.querySelector(":scope > p[role=status]")?.remove();
+    if (!force && state.body === data.body) return;
+    // Redrawing under a half-written answer would move it as it is typed:
+    // say the document changed, and leave the reload to r.
+    if (!force && drafts(slot).size) return data.body === state.written ? undefined : slotNote(slot, DOCUMENT_CHANGED_NOTE);
+    // A tap still writing: re-rendering now would show a body without it.
+    // A forced reload goes ahead; the re-read before each write then refuses
+    // the next tap with "changed, reload" rather than undo this one.
+    if (!force && slot.querySelector('.md input[type="checkbox"]:disabled')) return;
+    mount(data.body);
     state.body = data.body;
   } catch (e) {
-    const note = h("p", { role: "status" }, e instanceof GitHubError && e.status === 404 ? "Cannot read the decisions issue: it may be private and this viewer's token has no access, or the issue does not exist." : String(e));
-    slot.querySelector(":scope > p[role=status]")?.remove();
-    slot.prepend(note);
+    slotNote(slot, e instanceof GitHubError && e.status === 404 ? "Cannot read the decisions issue: it may be private and this viewer's token has no access, or the issue does not exist." : String(e));
   } finally {
     state.running = false;
   }

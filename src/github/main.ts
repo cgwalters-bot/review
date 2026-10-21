@@ -1705,7 +1705,7 @@ function run(state: State, cmd: Command, where: Route): void {
         return;
       }
       if (r.route === "home") {
-        // The sections' data is re-read too, now rather than when due; a reload on request drops unsent picks, as the note warned.
+        // The sections' data is re-read too, now rather than when due; a reload on request drops the needs rows' unsent picks, as the note warned (the decisions document keeps its own).
         state.activeStarted = 0;
         state.opsStarted = 0;
         state.runsStarted = 0;
