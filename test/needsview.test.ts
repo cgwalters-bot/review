@@ -71,30 +71,33 @@ describe("needsRedraw", () => {
 });
 
 describe("needsSignature", () => {
-  it("tracks the exact rendered age label and defers an age-only change under a draft", () => {
-    const since = "2026-02-01T00:00:00Z";
+  it("keeps the ask time, not the age label, so an age tick neither redraws nor claims a change", () => {
+    const since = "2026-02-01T10:00:00Z";
     const entry = first([tracked("PVTI_q", 21, { labels: ["question"], body: BODY })]);
     // The concrete ask's age takes precedence over the PR/item creation age.
     const n: Need = { ...entry, since, entry: { ...entry.entry!, since: "2026-01-01T00:00:00Z" } };
-    const before = { ...hooks(), now: Date.parse(since) + 59_999 };
-    const after = { ...before, now: before.now + 1 };
+    const before = { ...hooks(), now: Date.parse(since) + 10 * 60_000 };
+    const after = { ...before, now: before.now + 60_000 };
+    assert.equal(needRow(n, before).querySelector(".age")?.textContent, "10m");
+    assert.equal(needRow(n, after).querySelector(".age")?.textContent, "11m");
     const previousSignature = needsSignature([n], before);
     const signature = needsSignature([n], after);
-    assert.equal(needRow(n, before).querySelector(".age")?.textContent, "now");
-    assert.equal(needRow(n, after).querySelector(".age")?.textContent, "1m");
-    assert.equal(JSON.parse(previousSignature)[1][0].at(-1), "now");
-    assert.equal(JSON.parse(signature)[1][0].at(-1), "1m");
-    assert.notEqual(signature, previousSignature);
-    assert.equal(needsSignature([n], { ...after, now: after.now + 1 }), signature);
-    assert.deepEqual(needsRedraw({ signature, previousSignature, forms: [{ sent: false, text: "draft", picked: false }], note: undefined, force: false }), { action: "defer", note: NEEDS_CHANGED_NOTE });
+    assert.equal(JSON.parse(signature)[1][0].at(-1), since);
+    assert.equal(signature, previousSignature);
+    const forms = [{ sent: false, text: "half an answer", picked: false }];
+    assert.deepEqual(needsRedraw({ signature, previousSignature, forms, note: undefined, force: false }), { action: "skip", note: undefined });
+    // A new ask time is a change, and is still held back under a draft.
+    const later = needsSignature([{ ...n, since: "2026-02-01T10:05:00Z" }], after);
+    assert.notEqual(later, previousSignature);
+    assert.deepEqual(needsRedraw({ signature: later, previousSignature, forms, note: undefined, force: false }), { action: "defer", note: NEEDS_CHANGED_NOTE });
   });
 
-  it("uses the need's age for a decision without an entry", () => {
+  it("uses the need's ask time for a decision without an entry", () => {
     const d = parseDecision(tracked("I_7", 7, { title: "D3: Promote?", body: BODY, labels: ["question", "decision"], createdAt: "2026-01-31T00:00:00Z" }));
     const needs = buildNeeds({ entries: [], decisions: [d] });
     const view = hooks();
     assert.equal(needRow(needs[0]!, view).querySelector(".age")?.textContent, "1d");
-    assert.equal(JSON.parse(needsSignature(needs, view))[1][0].at(-1), "1d");
+    assert.equal(JSON.parse(needsSignature(needs, view))[1][0].at(-1), "2026-01-31T00:00:00Z");
   });
 });
 

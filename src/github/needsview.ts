@@ -48,11 +48,16 @@ export interface NeedsHooks {
   pickPriority?(priority: string): void;
 }
 
-/** What the rows show, so an unchanged list is not redrawn under his hands. */
-export function needsSignature(needs: readonly Need[], hooks: Pick<NeedsHooks, "login" | "loginError" | "now" | "labelOf">, entries: readonly Entry[] = []): string {
+/**
+ * What the rows show, so an unchanged list is not redrawn under his hands.
+ * It holds a row's ask time, not its age label: the page's ticker moves the
+ * label in place, and a label in here would redraw (or, under a draft, claim
+ * a change) every minute.
+ */
+export function needsSignature(needs: readonly Need[], hooks: Pick<NeedsHooks, "login" | "loginError" | "labelOf">, entries: readonly Entry[] = []): string {
   return JSON.stringify([
     [hooks.login, hooks.loginError],
-    needs.map((n) => [n.key, n.action, n.title, n.priority, n.why, n.href, n.where, n.done === true, n.parent?.key, n.decision?.item.nodeId, n.decision?.item.body, n.entry?.item?.body, n.entry ? hooks.labelOf(n.entry)?.text : undefined, age(n.since, hooks.now)]),
+    needs.map((n) => [n.key, n.action, n.title, n.priority, n.why, n.href, n.where, n.done === true, n.parent?.key, n.decision?.item.nodeId, n.decision?.item.body, n.entry?.item?.body, n.entry ? hooks.labelOf(n.entry)?.text : undefined, n.since]),
     entries.flatMap((e) => [e, ...(e.children ?? [])]).map((e) => [e.key, e.title, e.where, e.href, e.verdict?.state, e.wait?.onBot, e.wait?.reasons, rowText(e), hooks.labelOf(e)]),
   ]);
 }
