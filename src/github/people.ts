@@ -136,7 +136,12 @@ export async function loadPeople(gh: GitHub, now = Date.now(), notifications = t
   };
   const readNotifications = async () => {
     if (!notifications) return;
-    const { data } = await gh.getAll<PeopleNotification>(`/notifications?all=false&participating=true&since=${encodeURIComponent(new Date(cutoff).toISOString())}&per_page=100`);
+    // since= is floored to the UTC day so the URL repeats between polls and
+    // the cached entry is revalidated (a free 304) instead of every poll
+    // being a new, unconditional request and cache entry. The exact cutoff
+    // is applied below; this only fetches up to a day more.
+    const since = Math.floor(cutoff / DAY_MS) * DAY_MS;
+    const { data } = await gh.getAll<PeopleNotification>(`/notifications?all=false&participating=true&since=${encodeURIComponent(new Date(since).toISOString())}&per_page=100`);
     await mapLimit(data, FETCH_CONCURRENCY, async (notification) => {
       if (!notification.unread || !["mention", "review_requested"].includes(notification.reason) || Date.parse(notification.updated_at) < cutoff || Date.parse(notification.updated_at) > now || !Number.isFinite(Date.parse(notification.updated_at))) return;
       if (!["Issue", "PullRequest"].includes(notification.subject.type)) return;
