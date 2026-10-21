@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Item } from "../src/github/board.ts";
 import type { ForgePr, Verdict } from "../src/github/forge.ts";
+import { parseRoute } from "../src/github/keys.ts";
 import { buildNeeds, type Need, needStops, waitingCount } from "../src/github/needs.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
 import { parseDecision } from "../src/github/triage.ts";
@@ -180,6 +181,14 @@ describe("buildNeeds", () => {
       assert.equal(needs[0]?.decision?.number, 1);
       assert.equal(needs[1]?.inPlace, true);
       assert.equal(needs[1]?.href, "#item/I_40");
+    });
+
+    it("links every in-page row to a route that opens it", () => {
+      const q = ask("PVTI_q", 21, "question", `${TRACKER}/9`, QUESTION, { title: "D1: Which?" });
+      const needs = buildNeeds({ entries: entriesOf([q]), decisions: [decision("I_kwDOP9abcd", 40, "D2: Another?")] });
+      const local = needs.map((n) => n.href).filter((h) => h.startsWith("#") && h !== "#");
+      assert.equal(local.length, 2);
+      for (const h of local) assert.notEqual(parseRoute(h).route, "home", h);
     });
 
     it("drops one he answered, unless he did from the page", () => {
