@@ -89,7 +89,8 @@ describe("the bot's PRs other than the forge's drafts", () => {
 
   it("searches them and those requesting his review, with GitHub's own qualifiers", async () => {
     assert.equal(OTHER_QUERY, "is:pr is:open author:cgwalters-bot");
-    assert.equal(REQUESTED_QUERY, "is:pr is:open draft:false author:cgwalters-bot user-review-requested:cgwalters");
+    // Drafts too: the bot requests his review on forge drafts.
+    assert.equal(REQUESTED_QUERY, "is:pr is:open author:cgwalters-bot user-review-requested:cgwalters");
     const { fetchImpl } = github();
     const others = await loadOtherPrs(new GitHub(token, fetchImpl));
     assert.deepEqual(
@@ -101,8 +102,10 @@ describe("the bot's PRs other than the forge's drafts", () => {
         ["bootc-dev/bcvk/pull/12", false],
         ["coreos/bootupd/pull/13", false],
         ["bootc-dev/bootc/pull/14", false],
-        // A PR in the forge's own repository is here; its drafts are loadForgePrs'.
+        // A PR in the forge's own repository is here; its drafts are loadForgePrs',
         ["cgwalters-forge/workflow-compiler/pull/15", true],
+        // except those requesting his review, read here for the request.
+        ["cgwalters-forge/bootc/pull/16", true],
       ],
     );
   });
@@ -120,8 +123,10 @@ describe("the bot's PRs other than the forge's drafts", () => {
         ["requested", ["review-requested"], false],
         ["on the bot", [], true],
         ["forge repo, requested", ["review-requested"], false],
+        ["forge draft", ["review-requested"], false],
       ],
     );
+    assert.equal(prs.find((w) => w.pr.title === "forge draft")?.wait.askedAt, "2026-10-03T00:00:00Z");
     const [resign, rerun] = prs;
     assert.deepEqual(resign?.wait.unsigned, ["111111111111"]);
     assert.deepEqual([rerun?.wait.failed, rerun?.wait.runs?.map((r) => r.url)], [["required-checks"], ["https://github.com/bootc-dev/bootc/actions/runs/900"]]);
@@ -148,8 +153,9 @@ describe("the bot's PRs other than the forge's drafts", () => {
     };
     const uncached = await poll(new Map());
     const cached = await poll(first.reads);
-    // The numbers in the change's description: 30 requests a poll before, 7 after, for these 7 PRs.
-    assert.deepEqual([uncached.paths.length, cached.paths.length], [30, 7]);
+    // 34 requests a poll uncached, 7 cached, for these 8 PRs (the requested
+    // forge draft adds its 4 reads, none of them per poll once cached).
+    assert.deepEqual([uncached.paths.length, cached.paths.length], [34, 7]);
     assert.ok(cached.paths.every((p) => /\/check-runs\?|\/rules\/branches\//.test(p)), cached.paths.join("\n"));
     const sig = (r: typeof first) => JSON.stringify(r.prs);
     assert.equal(sig(cached.got), sig(uncached.got), "the same standing either way");
@@ -200,7 +206,7 @@ describe("the bot's PRs other than the forge's drafts", () => {
       url.endsWith("/repos/bootc-dev/bootc/pulls/11") ? new Response(JSON.stringify({ message: "Server Error" }), { status: 500 }) : fetchImpl(url, init);
     const gh = new GitHub(token, broken);
     const { prs, errors, failed } = await loadWaiting(gh, await loadOtherPrs(gh));
-    assert.deepEqual(prs.map((w) => w.pr.title), ["resign", "requested", "on the bot", "forge repo, requested"]);
+    assert.deepEqual(prs.map((w) => w.pr.title), ["resign", "requested", "on the bot", "forge repo, requested", "forge draft"]);
     assert.equal(errors.length, 1);
     assert.match(errors[0] ?? "", /^bootc-dev\/bootc#11: /);
     assert.deepEqual([...failed], ["bootc-dev/bootc#11"]);
@@ -235,7 +241,9 @@ describe("current concrete PR asks", () => {
     { name: "comment-reviewed head", review: { state: "COMMENTED", commit_id: HEAD }, draft: false, requested: true, wanted: false },
     { name: "approved head", review: { state: "APPROVED", commit_id: HEAD }, draft: false, requested: true, wanted: false },
     { name: "reviewed older head", review: { state: "APPROVED", commit_id: MOVED }, draft: false, requested: true, wanted: true },
-    { name: "draft moved since search", review: undefined, draft: true, requested: true, wanted: false },
+    // A forge draft is what he reviews to promote; drafts upstream are needs.test's.
+    { name: "forge draft, moved since search", review: undefined, draft: true, requested: true, wanted: true },
+    { name: "forge draft, approved head", review: { state: "APPROVED", commit_id: HEAD }, draft: true, requested: true, wanted: false },
     { name: "withdrawn request", review: undefined, draft: false, requested: false, wanted: false },
     { name: "closed requested PR", review: undefined, draft: false, requested: true, state: "closed", wanted: false },
     { name: "merged requested PR", review: undefined, draft: false, requested: true, merged_at: "2026-10-02T00:00:00Z", wanted: false },

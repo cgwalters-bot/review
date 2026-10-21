@@ -6,7 +6,7 @@ import { type GitHub, GitHubError, RateLimited } from "./api.ts";
 import type { RunRef } from "./asks.ts";
 import type { IssueRef } from "./board.ts";
 import { findGuide, type GuideState } from "./guide.ts";
-import { BOT_LOGIN, FETCH_CONCURRENCY, FORGE_ORG, OPERATOR, PAGE_SIZE } from "./config.ts";
+import { BOT_LOGIN, FETCH_CONCURRENCY, OPERATOR, PAGE_SIZE } from "./config.ts";
 import {
   botRepliedSince,
   classifyPr,
@@ -24,6 +24,7 @@ import {
   type CiCheck,
   ciChecks,
   type ForgePr,
+  isForgeDraft,
   parseSearchPr,
   promotionAction,
   type RawCheckRun,
@@ -38,12 +39,14 @@ import {
 } from "./forge.ts";
 
 /**
- * The bot's open non-draft PRs anywhere that request his review, from him
+ * The bot's open PRs anywhere that request his review, from him
  * directly (review-requested: would also match teams he is on, such as
  * CODEOWNERS' automatic requests). GitHub drops the request once he
- * reviews.
+ * reviews. Drafts too: the bot asks for reviews on forge drafts (see
+ * loadOtherPrs); a request on a draft elsewhere is read but not an ask
+ * (needs' actionOf).
  */
-export const REQUESTED_QUERY = `is:pr is:open draft:false author:${BOT_LOGIN} user-review-requested:${OPERATOR}`;
+export const REQUESTED_QUERY = `is:pr is:open author:${BOT_LOGIN} user-review-requested:${OPERATOR}`;
 /**
  * All the bot's open PRs: upstream, in its own repositories, and the
  * forge's, drafts in its forks and ready ones in its own (non-fork)
@@ -64,29 +67,28 @@ export async function loadForgePrs(gh: GitHub, all?: readonly ForgePr[]): Promis
   return (all ?? (await searchBotPrs(gh))).filter((pr) => pr.author === BOT_LOGIN && isForgeDraft(pr));
 }
 
-/** A PR other than a forge draft, and whether his review is requested on it. */
+/** A PR other than a forge draft (unless it requests his review), and whether his review is requested on it. */
 export interface OtherPr {
   pr: ForgePr;
   requested: boolean;
-}
-
-/** Whether a PR is a draft in the forge. */
-function isForgeDraft(pr: ForgePr): boolean {
-  return pr.draft && pr.ref.owner.toLowerCase() === FORGE_ORG.toLowerCase();
 }
 
 /**
  * The bot's open PRs other than the forge's drafts (which loadForgePrs
  * lists), oldest first, each marked with whether it requests his
  * review: from `searched`, searchBotPrs' answer (else searched), and a
- * search for the requests.
+ * search for the requests. A forge draft requesting his review is here
+ * too, so loadWaiting reads its request (and its age, and whether he
+ * reviewed the head) like any other's: the bot asks on drafts. Only
+ * those the request search finds, so the extra reads per poll are
+ * bounded by his open requests, not by the forge's drafts.
  */
 export async function loadOtherPrs(gh: GitHub, searched?: readonly ForgePr[]): Promise<OtherPr[]> {
   const all = searched ?? (await searchBotPrs(gh));
   const requested = await searchPrs(gh, REQUESTED_QUERY);
   const want = new Set(requested.map((p) => refKey(p.ref).toLowerCase()));
   const merged = new Map([...all, ...requested].filter((pr) => pr.author === BOT_LOGIN).map((pr) => [refKey(pr.ref).toLowerCase(), pr]));
-  return [...merged.values()].filter((pr) => !isForgeDraft(pr)).map((pr) => ({ pr, requested: want.has(refKey(pr.ref).toLowerCase()) }));
+  return [...merged.values()].map((pr) => ({ pr, requested: want.has(refKey(pr.ref).toLowerCase()) })).filter((o) => o.requested || !isForgeDraft(o.pr));
 }
 
 /** Every PR a search finds, oldest first. */

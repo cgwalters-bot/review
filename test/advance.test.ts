@@ -198,6 +198,11 @@ describe("overlayWaiting", () => {
   it("puts a PR he asked changes on on the bot", () => {
     assert.equal(overlayWaiting([waiting(1)], pending("changes-requested"), T + 1000)[0]?.wait.onBot, true);
   });
+
+  // A requested forge draft is listed here, and the queue takes this verdict over overlayVerdicts'.
+  it("shows his change request as the verdict before a read does", () => {
+    assert.deepEqual(overlayWaiting([{ ...waiting(1), verdict: { state: "none" } }], pending("changes-requested"), T + 1000)[0]?.verdict, { state: "changes-requested" });
+  });
 });
 
 describe("triageStops and decisionStops", () => {

@@ -22,7 +22,11 @@ function world(method: string, url: string): Scripted | undefined {
   const path = url.slice(API.length);
   if (url.startsWith(`${PROJECT}/fields`)) return { body: fields() };
   if (url.startsWith(`${PROJECT}/items`)) return { body: [...rawItems(), ...fixture<unknown[]>("cli-questions.json")] };
-  if (path.startsWith("/search/issues?")) return { body: fixture("forge-search.json") };
+  if (path.startsWith("/search/issues?")) {
+    // These drafts are forge entries, not explicit review requests.
+    if (decodeURIComponent(path).includes("user-review-requested:")) return { body: { total_count: 0, items: [] } };
+    return { body: fixture("forge-search.json") };
+  }
   const pulls = /^\/repos\/cgwalters-forge\/(\w+)\/pulls\?state=open/.exec(path);
   if (pulls) {
     const n = { widget: 5, homegit: 9, bootc: 3 }[pulls[1] as string];
