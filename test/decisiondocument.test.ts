@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GitHub } from "../src/github/api.ts";
-import { DECISIONS_CONFIG, answerDocument, documentView, parseDocument, refreshDocument, sendDocumentAnswer, toggleDocument } from "../src/github/decisiondocument.ts";
+import { DECISIONS_CONFIG, DOCUMENT_CHANGED_NOTE, DOCUMENT_KEPT, answerDocument, documentView, parseDocument, refreshDocument, sendDocumentAnswer, toggleDocument } from "../src/github/decisiondocument.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
 
@@ -107,8 +107,88 @@ test("sequential answers share the latest baseline and refresh preserves only un
   server = body.replace("Context.", "Changed context.");
   await refreshDocument(gh, slot, render, target);
   assert.doesNotMatch(slot.textContent!, /Changed context/);
+  assert.equal(slot.querySelector(":scope > p[role=status]")?.textContent, DOCUMENT_CHANGED_NOTE);
   await refreshDocument(gh, slot, render, target, true);
   assert.match(slot.textContent!, /Changed context/);
+  assert.equal(slot.querySelector(":scope > p[role=status]"), null);
+  assert.equal(slot.querySelector<HTMLInputElement>('form[data-id="D12"] input[type="text"]')!.value, "draft");
+});
+
+test("a send refused as stale redraws the fresh document with the answer kept, and the retry goes through", async () => {
+  let server = body;
+  let patches = 0;
+  const gh = new GitHub(async () => "token", async (_, init) => {
+    if (init?.method === "PATCH") {
+      patches++;
+      server = JSON.parse(String(init.body)).body;
+    }
+    return new Response(JSON.stringify({ body: server }));
+  });
+  const slot = document.createElement("div");
+  const target = { repo: "example/private", number: 8 };
+  await refreshDocument(gh, slot, render, target);
+  const fill = (id: string, letter: string, reply: string) => {
+    const form = slot.querySelector<HTMLFormElement>(`form[data-id="${id}"]`)!;
+    form.querySelector<HTMLInputElement>(`input[value="${letter}"]`)!.checked = true;
+    form.querySelector<HTMLInputElement>('input[type="text"]')!.value = reply;
+    return form;
+  };
+  fill("D13", "B", "other draft");
+  const form = fill("D12", "B", "Not today");
+  server = body.replace("Context.", "Changed context.");
+  form.dispatchEvent(new win.Event("submit", { cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(patches, 0);
+  assert.ok(!slot.contains(form));
+  assert.match(slot.textContent!, /Changed context/);
+  const kept = slot.querySelector<HTMLFormElement>('form[data-id="D12"]')!;
+  assert.equal(kept.querySelector<HTMLInputElement>("input:checked")!.value, "B");
+  assert.equal(kept.querySelector<HTMLInputElement>('input[type="text"]')!.value, "Not today");
+  assert.equal(kept.querySelector("p[role=status]")!.textContent, DOCUMENT_KEPT);
+  assert.equal(slot.querySelector<HTMLInputElement>('form[data-id="D13"] input[type="text"]')!.value, "other draft");
+  kept.dispatchEvent(new win.Event("submit", { cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(patches, 1);
+  assert.match(server, /Changed context/);
+  assert.match(server, /\[x\] B\) Wait\n\nReply: Not today/);
+  assert.match(kept.textContent!, /Answered/);
+
+  // Answered elsewhere meanwhile: no form to carry the answer to, and the page says so.
+  await refreshDocument(gh, slot, render, target, true);
+  const late = slot.querySelector<HTMLFormElement>('form[data-id="D13"]')!;
+  late.querySelector<HTMLInputElement>('input[value="A"]')!.checked = true;
+  server = answerDocument(server, "D13", "B", "from another tab");
+  late.dispatchEvent(new win.Event("submit", { cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(patches, 1);
+  assert.equal(slot.querySelector('form[data-id="D13"]'), null);
+  assert.match(slot.querySelector(":scope > p[role=status]")!.textContent!, /D13 is no longer open/);
+});
+
+test("one's own send is not reported as a change, and a reworded option's pick is not kept", async () => {
+  let server = body;
+  const gh = new GitHub(async () => "token", async (_, init) => {
+    if (init?.method === "PATCH") server = JSON.parse(String(init.body)).body;
+    return new Response(JSON.stringify({ body: server }));
+  });
+  const slot = document.createElement("div");
+  const target = { repo: "example/private", number: 8 };
+  await refreshDocument(gh, slot, render, target);
+  const d13 = slot.querySelector<HTMLFormElement>('form[data-id="D13"]')!;
+  d13.querySelector<HTMLInputElement>('input[value="B"]')!.checked = true;
+  d13.querySelector<HTMLInputElement>('input[type="text"]')!.value = "half written";
+  const d12 = slot.querySelector<HTMLFormElement>('form[data-id="D12"]')!;
+  d12.querySelector<HTMLInputElement>('input[value="A"]')!.checked = true;
+  d12.dispatchEvent(new win.Event("submit", { cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.match(d12.textContent!, /Answered/);
+  await refreshDocument(gh, slot, render, target);
+  assert.equal(slot.querySelector(":scope > p[role=status]"), null);
+  server = server.replace("B) No", "B) Yes, but later");
+  await refreshDocument(gh, slot, render, target, true);
+  const kept = slot.querySelector<HTMLFormElement>('form[data-id="D13"]')!;
+  assert.equal(kept.querySelector("input:checked"), null);
+  assert.equal(kept.querySelector<HTMLInputElement>('input[type="text"]')!.value, "half written");
 });
 
 test("overlapping answers from different forms are serialized and both kept", async () => {
