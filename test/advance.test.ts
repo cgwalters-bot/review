@@ -10,6 +10,7 @@ import {
   type PendingVerdict,
   pickNext,
   queueStops,
+  stillReviewed,
   type Stop,
   triageStops,
   writingElsewhere,
@@ -234,5 +235,20 @@ describe("triageStops and decisionStops", () => {
       ["decision:PVTI_t9", "#decisions", "D9: pick", true],
     ]);
     assert.equal(pickNext(got, "decision:PVTI_t7", got)?.key, "decision:PVTI_t9");
+  });
+});
+
+describe("stillReviewed", () => {
+  const reviewed = new Map([["o/r#1", "aaa"], ["o/r#2", "bbb"], ["o/r#3", "ccc"]]);
+  const reads: Record<string, (string | undefined)[]> = {
+    // A push since his review: the bot sent it back to him.
+    "o/r#1": ["aaa", "zzz"],
+    // Still the head he reviewed, or not read yet.
+    "o/r#2": ["bbb", undefined],
+  };
+
+  it("drops a mark once any read shows another head, keeps it while none does", () => {
+    const got = stillReviewed(reviewed, (key) => reads[key] ?? []);
+    assert.deepEqual([...got], [["o/r#2", "bbb"], ["o/r#3", "ccc"]]);
   });
 });

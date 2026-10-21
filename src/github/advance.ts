@@ -211,3 +211,17 @@ export function overlayWaiting(
     return wait ? [{ ...w, wait }] : [];
   });
 }
+
+/**
+ * The PRs still "reviewed from here" (refKey → the head he reviewed):
+ * a mark is dropped once any read (`heads` gives each source's head for
+ * a key) shows the PR at another head, so a push the bot sends him back
+ * for reads as his to review again rather than answered, with no TTL:
+ * the tab stays open all day and the mark holds as long as the head does.
+ */
+export function stillReviewed(
+  reviewed: ReadonlyMap<string, string>,
+  heads: (key: string) => readonly (string | undefined)[],
+): Map<string, string> {
+  return new Map([...reviewed].filter(([key, head]) => heads(key).every((h) => !h || h === head)));
+}
