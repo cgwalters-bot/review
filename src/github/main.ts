@@ -38,6 +38,7 @@ import {
   type PendingVerdict,
   pickNext,
   queueStops,
+  stillReviewed,
   triageStops,
   writingElsewhere,
 } from "./advance.ts";
@@ -164,8 +165,8 @@ interface State {
   answered: Set<string>;
   /** Bumped per board change, so an older answered read can't land over a newer one. */
   answeredSeq: number;
-  /** PRs reviewed from this tab, by refKey. */
-  reviewed: Set<string>;
+  /** PRs reviewed from this tab, by refKey, with the head reviewed (see stillReviewed). */
+  reviewed: Map<string, string>;
   /** Those reviews' verdicts, shown until GitHub's reads agree (see overlayVerdicts); by refKey. */
   pending: Map<string, PendingVerdict>;
   /** Context of opened items, by node id. */
@@ -900,7 +901,7 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
         found && !canReview(detail)
           ? await submitAskedReview(state.gh, found.ref, ref, found.target.head, reviews, onSent)
           : await submitReview(state.gh, ref, reviews, onSent);
-      state.reviewed.add(key);
+      state.reviewed.set(key, detail.head);
       // Show its effect now: search and the reviews API lag a write.
       const verdict = REVIEW_VERDICT[action];
       if (verdict) {
@@ -1505,6 +1506,11 @@ async function refreshAnswered(state: State, items: readonly Item[]): Promise<vo
 function rebuildEntries(state: State): void {
   const { verdicts, pending } = overlayVerdicts(state.verdicts, state.pending, Date.now());
   state.pending = pending;
+  state.reviewed = stillReviewed(state.reviewed, (key) => [
+    state.verdicts.get(key)?.head,
+    state.waiting.find((w) => refKey(w.pr.ref) === key)?.head,
+    state.details.get(key)?.head,
+  ]);
   const replied = new Set([...state.verdicts].filter(([, v]) => v.botReplied).map(([k]) => k));
   state.entries = buildEntries(state.items, state.prs, verdicts, state.forgeKnown, new Set([...state.answered, ...state.sent]), {
     others: state.waiting,
@@ -1881,7 +1887,7 @@ async function start(source: TokenSource): Promise<void> {
     rerunning: new Set(),
     rerunsSent: new Set(),
     answeredSeq: 0,
-    reviewed: new Set(),
+    reviewed: new Map(),
     pending: new Map(),
     context: new Map(),
     details: new Map(),
