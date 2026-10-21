@@ -733,6 +733,11 @@ async function refreshActive(state: State): Promise<void> {
   }
 }
 
+/** The item `#item/<id>` opens: a board item, or a decision's issue that is not on the board. */
+function routedItem(state: State, id: string): Item | undefined {
+  return [...state.items, ...(state.active?.board ?? []), ...(state.decisions?.map((d) => d.item) ?? [])].find((i) => i.nodeId === id);
+}
+
 /** Rebuild the whole view for the current route. */
 function renderRoute(state: State): void {
   if (state.closed) return;
@@ -761,7 +766,7 @@ function renderRoute(state: State): void {
     renderHome(state);
     return;
   }
-  const item = r.route === "item" ? [...state.items, ...(state.active?.board ?? []), ...(state.decisions?.map((d) => d.item) ?? [])].find((i) => i.nodeId === r.id) : undefined;
+  const item = r.route === "item" ? routedItem(state, r.id) : undefined;
   if (!item) {
     if (r.route === "item") setNotice("That item no longer needs you (or isn't on the board).");
     renderHome(state);
@@ -1538,7 +1543,7 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
       paintPriority(state);
     } else renderRoute(state);
   } else if (r.route === "item") {
-    const item = state.items.find((i) => i.nodeId === r.id);
+    const item = routedItem(state, r.id);
     if (!item) state.itemNote = "This item no longer needs you; the bot may have acted on it.";
     else if (state.shown && itemKey(item) !== state.shown.key) {
       state.itemNote = "This item changed on the board since you opened it; go back and reopen it to see the new version.";
