@@ -259,7 +259,9 @@ describe("operator dashboard", () => {
     assert.ok([...home.el.children].indexOf(home.sections.needs.details) < [...home.el.children].indexOf(home.slots.status));
     const status = { body: "First paragraph\n\nSecond paragraph", createdAt: "2026-10-15T10:00:00Z" };
     fillStatus(home, status, render, undefined, Date.parse("2026-10-15T10:30:00Z"));
-    assert.match(text(home.slots.status.querySelector(".status-age")), /As of .*30 min ago/);
+    // The locale's clock, as every other time on the page: 12 or 24 hours as it prefers.
+    const at = new Date("2026-10-15T10:00:00Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    assert.equal(text(home.slots.status.querySelector(".status-age")), `As of ${at}, 30 min ago`);
     assert.equal(home.slots.status.querySelector(".status-age.hot"), null);
     home.slots.status.querySelector<HTMLButtonElement>("button")!.click();
     fillStatus(home, status, render, undefined, Date.parse("2026-10-15T11:01:00Z"));
@@ -298,6 +300,32 @@ describe("operator dashboard", () => {
     const overflow = home.slots.needs.querySelector<HTMLElement>(".watching .need")!;
     reveal(overflow, home.slots.needs, "needs", ".need");
     assert.ok(walkRows(home.el).includes(overflow));
+  });
+
+  it("filters by priority before the limit, so a chip's rows are in the list, not in Watching", () => {
+    const home = homeSkeleton(hooks(["needs"]));
+    // The last three, ranked after the P1s, are past the limit unfiltered.
+    const items = questions(DECISION_LIMIT + 3).map((q, i) => ({ ...q, labels: ["escalate"], priority: i < DECISION_LIMIT ? "P1" : "P2" }));
+    const entries = buildEntries(items, [], new Map());
+    fillNeeds(home, buildNeeds({ entries }), { ...needsHooks(), priority: "P2" }, entries);
+    document.body.replaceChildren(home.el);
+    const shown = () => walkRows(home.el).map((r) => r.getAttribute("data-priority"));
+    const watching = () => text(home.slots.needs.querySelector(".watching summary"));
+    assert.deepEqual(shown(), ["P2", "P2", "P2"]);
+    assert.equal(home.slots.needs.querySelector<HTMLElement>(".needs-none")?.hidden, true);
+    assert.equal(home.slots.needs.querySelector<HTMLElement>(".watching")?.hidden, true);
+    const rows = [...home.slots.needs.querySelectorAll(".need")];
+    const chip = (label: string) => [...home.slots.needs.querySelectorAll<HTMLButtonElement>(".needs-filter button")].find((b) => text(b).startsWith(label))!;
+    chip("All").click();
+    assert.equal(shown().length, DECISION_LIMIT);
+    assert.equal(watching(), "Watching (3)");
+    assert.equal(home.slots.needs.querySelector(".watching .need")?.getAttribute("data-priority"), "P2");
+    chip("P2").click();
+    assert.deepEqual(shown(), ["P2", "P2", "P2"]);
+    assert.equal(home.slots.needs.querySelector(".watching .need"), null);
+    assert.deepEqual(new Set(home.slots.needs.querySelectorAll(".need")), new Set(rows), "the rows are moved, not redrawn");
+    chip("All").click();
+    assert.deepEqual([...home.slots.needs.querySelectorAll(".need")], rows, "back in their order");
   });
 
   it("keeps every open question visible with its blocked item and answer options", () => {

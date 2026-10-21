@@ -11,7 +11,6 @@ import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
 import { itemAction, reviewAskFor, reviewComment, type RunRef } from "./asks.ts";
-import { isBot } from "./authors.ts";
 import type { Item } from "./board.ts";
 import {
   type Context,
@@ -75,7 +74,7 @@ import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fil
 import { ACTION_CONFIG } from "./actions.ts";
 import { actionsPanel } from "./actionsview.ts";
 import { loadProjectStatus } from "./backend.ts";
-import { filterNeeds, type Need, needStops } from "./needs.ts";
+import { botWaitingCount, filterNeeds, type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
 import { activeFromOps, type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
 import { tickOps } from "./opsview.ts";
@@ -106,7 +105,7 @@ import { buildEntries, type Entry, itemHref, onBot, staleItems } from "./queue.t
 import { isSection, loadSectionPrefs, type SectionId, type SectionPrefs, saveSectionPref, sectionOpen } from "./sections.ts";
 import { loadAdvance, loadFilter, loadNeedsPriority, saveAdvance, saveFilter, saveNeedsPriority } from "./store.ts";
 import { buildTriage, type Decision, decisionLabel, parseDecision, sortDecisions, triageOrder, type TriageFilter } from "./triage.ts";
-import { age, answerState, type BoardHref, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL } from "./view.ts";
+import { answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
 const render = createRenderer(window);
@@ -325,7 +324,8 @@ function renderMeta(state: State): void {
   const who = state.login ? `signed in as ${state.login}` : undefined;
   const api = state.gh.rate ? `API ${state.gh.rate.remaining}/${state.gh.rate.limit}` : undefined;
   if (who) part("mp-who", who);
-  const botCount = state.needs.filter((n) => !n.done && isBot(n.entry?.pr?.author ?? n.entry?.item?.author ?? n.decision?.item.author)).length;
+  // From what waits now, not state.needs (the rows drawn), which stays behind while a redraw is deferred under a half-written answer.
+  const botCount = botWaitingCount(currentNeeds(state));
   const people = peopleMeta(state.people, !!state.home?.el.isConnected && !!state.home.el.querySelector<HTMLDetailsElement>("#sec-people")?.open);
   part("mp-queues", h("span", { title: people.title }, people.text), ` · bot ${botCount}`);
   const since = cachedSince(state);
@@ -340,10 +340,6 @@ function renderMeta(state: State): void {
   if (api) part("mp-api", api);
   byId("meta").replaceChildren(...parts);
   byId("menu-meta").textContent = [who, api].filter(Boolean).join(" · ");
-}
-
-function clock(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 /** Meta line and notices only: never touches the view, or a half-typed answer. */
@@ -2000,7 +1996,7 @@ async function start(source: TokenSource): Promise<void> {
       renderChrome(state);
       if (actionRunsDue(state)) void refreshActionRuns(state);
       // Waiting ages move on without a redraw of the rows.
-      for (const el of document.querySelectorAll<HTMLElement>(".need .age[data-since]")) el.textContent = age(el.dataset.since, Date.now());
+      tickAges(document.body, Date.now());
     }
   }, META_TICK_MS);
   await cached;

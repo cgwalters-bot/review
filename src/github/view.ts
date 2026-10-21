@@ -25,6 +25,11 @@ export function excerpt(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+/** A time of day, hours and minutes, the locale's way (12 or 24 h): the one format every clock time uses. "" for a bad time. */
+export function clock(ms: number): string {
+  return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+}
+
 export function time(iso: string | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -149,8 +154,24 @@ function row(e: Entry, labelOf: (e: Entry) => RowLabel | undefined, now: number,
       ),
       why ? h("span", { class: "why" }, why) : null,
     ),
-    h("span", { class: "age", title: sinceTitle(e, e.since) }, age(e.since, now)),
+    h("span", { class: "age", title: sinceTitle(e, e.since), ...(e.since ? { [SINCE_ATTR]: e.since } : {}) }, age(e.since, now)),
   );
+}
+
+/** On an age label the page's ticker moves on (tickAges): the time it counts from. */
+export const SINCE_ATTR = "data-since";
+
+/**
+ * Move every ticking age under `root` to `now`, in place: the queue is
+ * redrawn only when it changes, so without this a row's age sits at the
+ * time of the last change. An age with nothing to count from keeps its
+ * text ("age unknown").
+ */
+export function tickAges(root: ParentNode, now: number): void {
+  for (const el of root.querySelectorAll<HTMLElement>(`.age[${SINCE_ATTR}]`)) {
+    const text = age(el.getAttribute(SINCE_ATTR) ?? undefined, now);
+    if (text) el.textContent = text;
+  }
 }
 
 /** A filter chip: a link to the queue filtered so, with its row count. */

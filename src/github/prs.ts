@@ -27,7 +27,6 @@ import {
   isForgeDraft,
   parseSearchPr,
   promotionAction,
-  type RawCheckRun,
   type RawIssueComment,
   type RawReview,
   type RawSearchIssue,
@@ -484,7 +483,8 @@ export async function loadPrDetail(gh: GitHub, ref: IssueRef): Promise<PrDetail>
   const [commits, files, runs, status, decisions, repoInfo] = await Promise.all([
     gh.getAll<RawCommit>(`${base}/commits?per_page=${PAGE_SIZE}`, 3).then((r) => r.data),
     gh.getAll<RawFile>(`${base}/files?per_page=${PAGE_SIZE}`, MAX_FILE_PAGES).then((r) => r.data),
-    optional("check runs", gh.get<{ check_runs?: RawCheckRun[] }>(`${repo}/commits/${head}/check-runs?per_page=${PAGE_SIZE}`).then((r) => r.data.check_runs ?? []), []),
+    // The same read as the queue's, so the badge here agrees with the row's: a rerun's superseded attempts left out, a big matrix past one page.
+    optional("check runs", headCheckRuns(gh, `${ref.owner}/${ref.repo}`, head), []),
     optional("commit statuses", gh.get<{ statuses?: RawStatus[] }>(`${repo}/commits/${head}/status`).then((r) => r.data.statuses ?? []), []),
     readDecisions(gh, ref),
     optional("the repository", gh.get<{ private?: boolean; parent?: { full_name?: string } }>(repo).then((r) => r.data), {}),

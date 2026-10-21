@@ -6,6 +6,7 @@ import { askProblem, blockedBy, isQuestion, type Item, NO_PRIORITY, PRIORITY_ORD
 import { effectivePriority, type Entry, onBot, priorityRank } from "./queue.ts";
 import type { Stop } from "./advance.ts";
 import { type Decision, decisionLabel } from "./triage.ts";
+import { isBot } from "./authors.ts";
 import { OPERATOR } from "./config.ts";
 import { isForgeDraft, promotionAction, refKey } from "./forge.ts";
 
@@ -174,6 +175,10 @@ export function buildNeeds(input: NeedsInput): Need[] {
 
 /** How many of the rows still wait on him. */
 export const waitingCount = (needs: readonly Need[]): number => needs.filter((n) => !n.done).length;
+
+/** How many of the rows still waiting on him the bot raised (its PR, issue or decision). */
+export const botWaitingCount = (needs: readonly Need[]): number =>
+  needs.filter((n) => !n.done && isBot(n.entry?.pr?.author ?? n.entry?.item?.author ?? n.decision?.item.author)).length;
 
 /** The rows as a list to step through: answerable questions are answered in place, the rest open. */
 export function needStops(needs: readonly Need[]): Stop[] {
