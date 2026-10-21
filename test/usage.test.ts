@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import type { RawComment } from "../src/github/heartbeat.ts";
-import { findUsage, loadUsage, parseBudget, parseUsage, poolPace, tokenTotal, USAGE_CONFIG, USAGE_MARKER, usagePath } from "../src/github/usage.ts";
+import { findUsage, loadUsage, MAX_RUNS, parseBudget, parseUsage, poolPace, spendByRun, tokenTotal, UNKNOWN_KIND, USAGE_CONFIG, USAGE_MARKER, usagePath } from "../src/github/usage.ts";
 import { fixture, scriptedFetch } from "./helpers.ts";
 
 // The fixture's second comment is what bin/bot-heartbeat publish
@@ -148,6 +148,75 @@ describe("parseUsage", () => {
   }
   it("needs its marker", () => assert.equal(parseUsage(body(valid()).replace(USAGE_MARKER, "")), undefined));
   it("totals tokens", () => assert.equal(tokenTotal({ input: 1, output: 2, cacheRead: 3, cacheWrite: 4 }), 10));
+});
+
+describe("runs in the snapshot", () => {
+  const raw = () => fixture<{ runs: Record<string, unknown>[] }>("usage-runs.json");
+  const runs = (edit: Record<string, unknown>) => parseUsage(body({ ...raw(), runs: [{ ...raw().runs[0], ...edit }] }))?.runs;
+  it("reads each run's names and tokens, kind and item optional", () => {
+    const u = parseUsage(body(raw()));
+    assert.equal(u?.runs?.length, 5);
+    assert.deepEqual(u?.runs?.[0], {
+      repository: "cgwalters-forge/review", runId: 19876543210, pool: "claude", kind: "implement", item: "cgwalters-forge/review#99",
+      finishedAt: "2026-10-18T13:30:00Z", requests: 412, tokens: { input: 120000, output: 310000, cacheRead: 41000000, cacheWrite: 2600000 },
+    });
+    assert.deepEqual(u?.runs?.[3], { repository: "cgwalters-forge/agentic-job", runId: 19876543213, pool: "mistral", finishedAt: "2026-10-18T02:00:00Z", tokens: { input: 500000, output: 20000, cacheRead: 0, cacheWrite: 0 } });
+    assert.equal(u?.pools?.claude?.usedPercent, 73, "the pools are read as before");
+  });
+  it("tells no runs list from an empty one", () => {
+    const { runs: _, ...without } = raw();
+    assert.equal(parseUsage(body(without))?.runs, undefined);
+    assert.deepEqual(parseUsage(body({ ...without, runs: [] }))?.runs, []);
+    assert.equal(parseUsage(body({ ...without, runs: {} }))?.runs, undefined);
+  });
+  it("drops a malformed run, not the list", () => {
+    for (const bad of [
+      { repository: "review" }, { repository: "cgwalters-forge/.." }, { repository: "<b>/x" }, { run_id: "19876543210" }, { run_id: 1.5 }, { run_id: 0 }, { pool: "Claude" }, { pool: "<b>" },
+      { finished_at: "yesterday" }, { finished_at: undefined }, { tokens: { input: 1, output: 2, cache_read: 3 } }, { tokens: { input: -1, output: 2, cache_read: 3, cache_write: 4 } },
+    ]) {
+      assert.deepEqual(runs(bad), [], JSON.stringify(bad));
+    }
+    assert.equal(parseUsage(body({ ...raw(), runs: [{ ...raw().runs[0], pool: "<b>" }, raw().runs[1]] }))?.runs?.length, 1);
+  });
+  it("counts a run listed twice once, by repository and run id", () => {
+    const twice = parseUsage(body({ ...raw(), runs: [raw().runs[0], { ...raw().runs[0], kind: "review" }, { ...raw().runs[0], repository: "cgwalters-forge/tracker" }] }))?.runs;
+    assert.deepEqual(twice?.map((r) => [r.repository, r.kind]), [["cgwalters-forge/review", "implement"], ["cgwalters-forge/tracker", "implement"]]);
+  });
+  it("leaves out a kind, item or request count it can't read, keeping the run", () => {
+    for (const edit of [{ kind: "<img src=x>" }, { item: "cgwalters-forge/review" }, { item: "cgwalters-forge/review#0" }, { item: "../x#1" }, { requests: -1 }, { requests: "4" }]) {
+      const [run] = runs(edit) ?? [];
+      assert.ok(run, JSON.stringify(edit));
+      const field = Object.keys(edit)[0] as "kind" | "item" | "requests";
+      assert.equal(run?.[field], undefined, JSON.stringify(edit));
+    }
+  });
+  it(`reads at most ${MAX_RUNS} runs`, () => {
+    const many = Array.from({ length: MAX_RUNS + 20 }, (_, i) => ({ ...raw().runs[0], run_id: i + 1 }));
+    assert.equal(parseUsage(body({ ...raw(), runs: many }))?.runs?.length, MAX_RUNS);
+  });
+});
+
+describe("spendByRun", () => {
+  const now = Date.parse("2026-10-18T14:44:00Z");
+  const all = () => parseUsage(body(fixture("usage-runs.json")))!.runs!;
+  it("keeps the day's runs, largest first, and totals them by kind and repository", () => {
+    const spend = spendByRun(all(), now);
+    assert.deepEqual(spend.runs.map((r) => r.runId), [19876543210, 19876543212, 19876543211, 19876543213], "the run of two days ago is left out");
+    assert.deepEqual(spend.byKind, [
+      { name: "implement", tokens: 44030000, runs: 1 },
+      { name: "review", tokens: 11399000, runs: 2 },
+      { name: UNKNOWN_KIND, tokens: 520000, runs: 1 },
+    ]);
+    assert.deepEqual(spend.byRepository, [
+      { name: "cgwalters-forge/review", tokens: 52300000, runs: 2 },
+      { name: "cgwalters-forge/tracker", tokens: 3129000, runs: 1 },
+      { name: "cgwalters-forge/agentic-job", tokens: 520000, runs: 1 },
+    ]);
+  });
+  it("leaves out a run dated after now, and finds nothing a day later", () => {
+    assert.equal(spendByRun(all(), now - 60 * 60_000).runs.length, 3, "a run that finished after this now is not yet shown");
+    assert.deepEqual(spendByRun(all(), now + 2 * 24 * 60 * 60_000), { runs: [], byKind: [], byRepository: [] });
+  });
 });
 
 describe("loadUsage", () => {

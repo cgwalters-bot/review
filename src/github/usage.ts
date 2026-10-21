@@ -42,6 +42,18 @@ const MAX_USD = 1e9;
 /** Mistral models priced or counted; more are dropped. */
 const MAX_MODELS = 32;
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+/**
+ * Runs read from a snapshot; the rest are dropped. A day's runs are a few
+ * dozen, and the comment itself is capped at 32 KiB by the publisher.
+ */
+export const MAX_RUNS = 200;
+/** A pool's name in a run: claude, openai, mistral, or a newer one. */
+const POOL_RE = /^[a-z][a-z0-9_-]{0,23}$/;
+/** OWNER/REPO#N, as the heartbeat's workers name their items. */
+const ITEM_RE = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d{0,9})$/;
+/** An Actions run id is a positive integer; GitHub's are far below this. */
+const MAX_RUN_ID = Number.MAX_SAFE_INTEGER;
+const DAY_MS = 24 * 60 * 60_000;
 
 export interface Tokens {
   input: number;
@@ -141,6 +153,32 @@ export interface MistralBudget {
   url?: string;
 }
 
+/**
+ * What one agent run spent, as the snapshot's `runs` list carries it: the
+ * broker's per-run usage record (praxis-run-usage/v2: the repository and
+ * run id from the job's OIDC token, requests and tokens) with the pool
+ * its models name and, from the dispatch, the job's kind and its item.
+ * Nothing the browser can reach writes this yet: the broker serves the
+ * record only to the run holding its token (GET /v1/runs/self), and its
+ * /usage endpoint, which the publisher copies, lists no runs. Until the
+ * publisher gathers them, `usage.runs` is undefined and the section says
+ * so (see README, "Weekly subscription usage").
+ */
+export interface RunUsage {
+  /** OWNER/REPO the run ran in. */
+  repository: string;
+  runId: number;
+  /** claude, openai or mistral: the provider the run's requests went to. */
+  pool: string;
+  /** implement, review, ...: what the dispatcher started; missing for a run it didn't name. */
+  kind?: string;
+  /** OWNER/REPO#N the run worked on. */
+  item?: string;
+  finishedAt: string;
+  requests?: number;
+  tokens: Tokens;
+}
+
 export interface Usage {
   updatedAt: string;
   /** When the status line last reported the percents. */
@@ -153,6 +191,8 @@ export interface Usage {
   commentUrl?: string;
   pools?: Partial<Record<"claude" | "openai", UsagePool>>;
   mistral?: MistralUsage;
+  /** The runs the snapshot attributes spend to; undefined when it carries no `runs` list at all. */
+  runs?: RunUsage[];
 }
 
 /** What the ops view knows of the usage: the snapshot, none published yet, or a repository this token can't read. */
@@ -250,6 +290,79 @@ export function parseAllowance(raw: unknown): MistralAllowance | undefined {
   return { limitUsd, resetsAt, spentUsd, estimated: true, unpriced, lowerBound: unpriced.length > 0 || dropped > 0 };
 }
 
+/** Whether any "/"-separated part of a path is only dots. */
+const dotted = (path: string): boolean => path.split("/").some((part) => /^\.+$/.test(part));
+
+/**
+ * One entry of the snapshot's `runs`: {repository, run_id, pool,
+ * finished_at, tokens} with kind, item and requests optional. Anything
+ * malformed drops the entry, not the list: a run that can't be named
+ * can't be linked, and its tokens would be attributed to nothing.
+ */
+function parseRun(raw: unknown): RunUsage | undefined {
+  if (!isObject(raw)) return undefined;
+  const repository = str(raw.repository, REPO_RE);
+  const runId = count(raw.run_id, MAX_RUN_ID);
+  const pool = str(raw.pool, POOL_RE);
+  const finishedAt = time(raw.finished_at);
+  const tokens = parseTokens(raw.tokens);
+  // Both names become link paths: no "." or ".." parts (REPO_RE's characters allow them).
+  if (!repository || dotted(repository) || !runId || !Number.isInteger(runId) || !pool || !finishedAt || !tokens) return undefined;
+  const run: RunUsage = { repository, runId, pool, finishedAt, tokens };
+  const kind = str(raw.kind, NAME_RE);
+  if (kind) run.kind = kind;
+  const item = str(raw.item, ITEM_RE);
+  if (item && !dotted(item.slice(0, item.indexOf("#")))) run.item = item;
+  const requests = count(raw.requests, MAX_TOKENS);
+  if (requests !== undefined) run.requests = requests;
+  return run;
+}
+
+/** A total by one name of a run's, largest first. */
+export interface SpendTotal {
+  name: string;
+  tokens: number;
+  runs: number;
+}
+
+/** The last day's runs, largest first, and their totals by kind and by repository. */
+export interface Spend {
+  runs: RunUsage[];
+  byKind: SpendTotal[];
+  byRepository: SpendTotal[];
+}
+
+/** Runs the snapshot can't name a kind for are totalled under this. */
+export const UNKNOWN_KIND = "unknown";
+
+function totals(runs: readonly RunUsage[], nameOf: (r: RunUsage) => string): SpendTotal[] {
+  const by = new Map<string, SpendTotal>();
+  for (const r of runs) {
+    const name = nameOf(r);
+    const t = by.get(name) ?? { name, tokens: 0, runs: 0 };
+    t.tokens += tokenTotal(r.tokens);
+    t.runs++;
+    by.set(name, t);
+  }
+  return [...by.values()].sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name));
+}
+
+/**
+ * Where the spend went: the runs that finished in the day before `now`
+ * (a run dated after it is a clock's error, left out), largest first,
+ * with a total per kind and per repository. The snapshot's runs are the
+ * publisher's selection; this only narrows them to the day shown.
+ */
+export function spendByRun(runs: readonly RunUsage[], now: number): Spend {
+  const day = runs
+    .filter((r) => {
+      const at = Date.parse(r.finishedAt);
+      return at > now - DAY_MS && at <= now;
+    })
+    .sort((a, b) => tokenTotal(b.tokens) - tokenTotal(a.tokens) || b.finishedAt.localeCompare(a.finishedAt));
+  return { runs: day, byKind: totals(day, (r) => r.kind ?? UNKNOWN_KIND), byRepository: totals(day, (r) => r.repository) };
+}
+
 function parseMistral(raw: unknown): MistralUsage | undefined {
   if (!isObject(raw)) return undefined;
   const requests = count(raw.requests, MAX_TOKENS);
@@ -294,6 +407,18 @@ export function parseUsage(body: string | null | undefined): Usage | undefined {
   if (observedAt) usage.observedAt = observedAt;
   const coordinatorTokens = parseTokens(raw.coordinator_tokens);
   if (coordinatorTokens) usage.coordinatorTokens = coordinatorTokens;
+  // A list, even empty, says the publisher attributes runs; none says it
+  // doesn't yet. A run listed twice (gathered from two places) counts once.
+  if (Array.isArray(raw.runs)) {
+    const seen = new Set<string>();
+    usage.runs = raw.runs.slice(0, MAX_RUNS).flatMap((r) => {
+      const run = parseRun(r);
+      const key = run && `${run.repository}/${run.runId}`;
+      if (!run || !key || seen.has(key)) return [];
+      seen.add(key);
+      return [run];
+    });
+  }
   return usage;
 }
 
