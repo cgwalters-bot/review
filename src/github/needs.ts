@@ -7,7 +7,7 @@ import { effectivePriority, type Entry, onBot, priorityRank } from "./queue.ts";
 import type { Stop } from "./advance.ts";
 import { type Decision, decisionLabel } from "./triage.ts";
 import { OPERATOR } from "./config.ts";
-import { promotionAction, refKey } from "./forge.ts";
+import { isForgeDraft, promotionAction, refKey } from "./forge.ts";
 
 /** The one thing a row asks of him. */
 export type NeedAction = "answer" | "review" | "write" | "promote";
@@ -57,7 +57,9 @@ function actionOf(e: Entry): NeedAction | "none" {
     if (promotion) return promotion;
     if (e.verdict?.state === "approved") return "none";
     if (e.verdict?.state === "promoted" && !(e.wait?.askedAt && e.verdict.at && e.wait.askedAt > e.verdict.at)) return "none";
-    if (e.pr && !e.pr.draft && e.wait?.reasons.includes("review-requested") && !e.wait.reviewedCurrentHead && e.verdict?.state !== "changes-requested") return "review";
+    // A draft upstream isn't ready for review whoever asks; a forge draft is
+    // what he reviews to promote, and the bot requests his review on it.
+    if (e.pr && (!e.pr.draft || isForgeDraft(e.pr)) && e.wait?.reasons.includes("review-requested") && !e.wait.reviewedCurrentHead && e.verdict?.state !== "changes-requested") return "review";
     return "none";
   }
   const item = e.item;

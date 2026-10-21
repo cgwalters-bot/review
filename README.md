@@ -148,8 +148,9 @@ in the header turns this off (remembered per browser).
 
 **Operator dashboard.** Under "Ask anything", **Decisions** contains only
 current concrete asks: unanswered open tracker questions assigned to the
-operator, non-draft PRs explicitly requesting the operator's review of an
-unreviewed head (any author), and open items labelled `escalate` assigned to
+operator, PRs explicitly requesting the operator's review of an unreviewed
+head (any author; drafts only in the forge, where the bot asks on its
+drafts), and open items labelled `escalate` assigned to
 the operator. PRs approved by the operator at the current head are excluded,
 including human-text forks. Bot review guides are advisory; the dashboard
 does not infer approval or human-text promotion readiness from them.

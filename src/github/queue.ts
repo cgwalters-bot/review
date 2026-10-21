@@ -107,7 +107,8 @@ function itemWhere(item: Item): string {
 /** What buildEntries takes besides the board and the forge. */
 export interface QueueInputs {
   /**
-   * The bot's PRs other than the forge's drafts that are listed, with
+   * The bot's PRs other than the forge's drafts (save those requesting
+   * his review, whose standing this then is) that are listed, with
    * where each stands (see classifyPr): those with something for him, and those
    * waiting on the bot.
    */

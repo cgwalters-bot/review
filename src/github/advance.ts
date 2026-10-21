@@ -190,10 +190,11 @@ export function overlayVerdicts(
 }
 
 /**
- * The same for the PRs listed for what waits on him (not forge drafts,
- * which have no verdict overlay): his reviews from this tab applied to
- * their waits (see afterReview), so a read that predates a review, or
- * lags it, doesn't list the PR again. A review stops applying as
+ * The same for the PRs listed for what waits on him (a forge draft only
+ * when his review is requested on it): his reviews from this tab applied
+ * to their waits (see afterReview) and verdicts, so a read that predates
+ * a review, or lags it, doesn't list the PR again. The verdict too: the
+ * queue takes it over overlayVerdicts' for a forge draft listed here. A review stops applying as
  * overlayVerdicts' do: after `ttl`, once the head moved, or once a read
  * shows its verdict, so what came after it (a bot's reply) shows.
  */
@@ -208,7 +209,7 @@ export function overlayWaiting(
     if (!p || now - p.at > ttl || p.head !== w.head || w.verdict?.state === p.state) return [w];
     if (p.state !== "approved" && p.state !== "changes-requested") return [w];
     const wait = afterReview(w.wait, p.state);
-    return wait ? [{ ...w, wait }] : [];
+    return wait ? [{ ...w, wait, verdict: { ...w.verdict, state: p.state } }] : [];
   });
 }
 
