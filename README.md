@@ -249,10 +249,12 @@ Opening it starts its reads; while closed, people notifications are not polled.
 It combines open human-authored PRs requesting
 the operator's review (`review-requested:cgwalters -author:cgwalters-bot`)
 with participating unread mention/review-request notifications from the last
-14 days. Notifications require a recent explicit human comment/review mentioning
-the operator or a human review-request event; unknown actors and bot-only
-activity are excluded. Matching threads appear once. Five rows show before
-View all, with author, request age (unknown when unavailable), CI, and GitHub
+14 days. Notifications require a recent explicit human comment, review, inline
+review comment or issue/PR opening body mentioning the operator, or a human
+review-request event; unknown actors and bot-only activity are excluded. A
+mention notification whose mention isn't found in any of these is listed as
+"mention (not located)" so it can still be marked done. Matching threads
+appear once. Five rows show before View all, with author, request age (unknown when unavailable), CI, and GitHub
 Review/Reply links. Mark done marks the notification read on GitHub; an open
 search review request stays until reviewed. The header shows people and bot
 ask counts; while From people is closed the people count is "—", and the

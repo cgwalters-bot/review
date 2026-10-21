@@ -8,7 +8,7 @@ import type { Recorded, Scripted } from "./helpers.ts";
 const data = JSON.parse(readFileSync(new URL("fixtures/people.json", import.meta.url), "utf8")) as { search: PeopleSubject[]; notifications: PeopleNotification[]; timelines: Record<string, PeopleEvent[]> };
 const now = Date.parse("2026-10-04T00:00:00Z");
 
-function client(options: { notificationsStatus?: number; searchStatus?: number; failedThread?: number; failedTimeline?: number; failedCI?: boolean; truncatedCI?: boolean; notifications?: PeopleNotification[]; paginated?: boolean } = {}) {
+function client(options: { notificationsStatus?: number; searchStatus?: number; failedThread?: number; failedTimeline?: number; failedCI?: boolean; truncatedCI?: boolean; notifications?: PeopleNotification[]; paginated?: boolean; threads?: Record<number, { subject: Partial<PeopleSubject>; timeline: PeopleEvent[] }> } = {}) {
   const calls: Recorded[] = [];
   const route = (method: string, url: string): Scripted | undefined => {
     const path = new URL(url).pathname;
@@ -22,11 +22,13 @@ function client(options: { notificationsStatus?: number; searchStatus?: number; 
       return { body: notifications };
     }
     const timeline = /\/issues\/(\d+)\/timeline$/.exec(path);
-    if (timeline) return Number(timeline[1]) === options.failedTimeline ? { status: 403 } : { body: data.timelines[timeline[1]!] ?? [] };
+    if (timeline) return Number(timeline[1]) === options.failedTimeline ? { status: 403 } : { body: options.threads?.[Number(timeline[1])]?.timeline ?? data.timelines[timeline[1]!] ?? [] };
     const issue = /\/issues\/(\d+)$/.exec(path);
     if (issue) {
       const n = Number(issue[1]);
       if (n === options.failedThread) return { status: 404 };
+      const thread = options.threads?.[n];
+      if (thread) return { body: { number: n, title: `Thread ${n}`, ...thread.subject } };
       return { body: data.search.find((s) => s.number === n) ?? { number: n, title: `Thread ${n}`, user: { login: "cgwalters-bot", type: "User" }, ...(n === 12 ? { pull_request: {} } : {}) } };
     }
     if (/\/pulls\/\d+$/.test(path)) return { body: { head: { sha: "abc" } } };
@@ -138,6 +140,31 @@ describe("From people loader", () => {
     assert.equal(seen[0]!.validator, null);
     assert.equal(seen[1]!.validator, '"n1"');
     assert.deepEqual(threads, [], "the extra day since= fetches is dropped by the exact cutoff before any thread read");
+  });
+
+  it("finds mentions in an opening body and inline review comments, and lists unlocated mentions", async () => {
+    const alice = { login: "alice", type: "User" };
+    const bot = { login: "cgwalters-bot", type: "User" };
+    const mention = (n: number): PeopleNotification => ({ ...data.notifications[1]!, id: String(200 + n), subject: { type: "Issue", url: `https://api.github.com/repos/upstream/widget/issues/${n}` } });
+    const threads = {
+      // The mention is in the issue body; the timeline has no event for it.
+      20: { subject: { user: alice, body: "@cgwalters, is this the right approach?", created_at: "2026-10-01T00:00:00Z" }, timeline: [] },
+      // An inline review comment is a line-commented event with comments[].
+      21: { subject: { user: bot, body: "Automated PR", pull_request: {} }, timeline: [{ event: "line-commented", comments: [{ user: alice, body: "@cgwalters see this line", created_at: "2026-10-02T12:00:00Z" }] }] },
+      // Nothing read mentions the operator: listed, not hidden.
+      22: { subject: { user: alice, body: "no mention here" }, timeline: [] },
+      // Located but from a bot, or before the window: still dropped.
+      23: { subject: { user: bot, body: "@cgwalters bot body", created_at: "2026-10-02T00:00:00Z" }, timeline: [] },
+      24: { subject: { user: alice, body: "@cgwalters old body", created_at: "2026-09-01T00:00:00Z" }, timeline: [{ event: "line-commented", comments: [{ user: bot, body: "@cgwalters bot line", created_at: "2026-10-02T00:00:00Z" }] }] },
+    };
+    const { gh } = client({ notifications: [20, 21, 22, 23, 24].map(mention), threads, searchStatus: 500 });
+    const people = await loadPeople(gh, now);
+    assert.deepEqual(people.rows.map((r) => [r.key, r.requestedAt, r.unlocated, r.notificationIds]), [
+      ["upstream/widget#21", "2026-10-02T12:00:00Z", undefined, ["221"]],
+      ["upstream/widget#20", "2026-10-01T00:00:00Z", undefined, ["220"]],
+      ["upstream/widget#22", undefined, true, ["222"]],
+    ]);
+    assert.equal(people.rows[2]?.url, "https://github.com/upstream/widget/issues/22");
   });
 
   it("leaves a truncated CI summary unknown instead of claiming success", async () => {
