@@ -24,7 +24,7 @@ import {
   type WorkGroup,
 } from "./ops.ts";
 import { type MistralBudget, type MistralUsage, poolPace, type RunUsage, spendByRun, type SpendTotal, type Tokens, tokenTotal, UNKNOWN_KIND, type Usage, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
-import { age, pill, time } from "./view.ts";
+import { age, clock, pill, time } from "./view.ts";
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -68,10 +68,7 @@ export function coreHoursText(n: number): string {
   return n < 10 ? n.toFixed(1) : String(Math.round(n));
 }
 
-function clock(iso: string | undefined): string {
-  const d = new Date(iso ?? "");
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
+const clockAt = (iso: string | undefined): string => clock(Date.parse(iso ?? ""));
 
 const PHASE_LABEL: Record<Phase, string> = { queued: "queued", starting: "starting", ready: "up", ending: "ending", done: "done" };
 const PHASE_TITLE: Record<Phase, string> = {
@@ -104,7 +101,7 @@ function sparkline(buckets: readonly number[], now: number): SVGSVGElement {
   buckets.forEach((v, i) => {
     const hgt = max > 0 && v > 0 ? Math.max(2, (v / max) * H) : 1;
     const from = new Date(now - (buckets.length - i) * HOUR);
-    const label = `${from.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${coreHoursText(v)} core-h`;
+    const label = `${clock(from.getTime())} · ${coreHoursText(v)} core-h`;
     el.append(svg("rect", { x: String(i * (BAR + GAP)), y: String(H - hgt), width: String(BAR), height: String(hgt), rx: "1", class: v > 0 ? "on" : "off" }, svg("title", {}, label)));
   });
   return el;
@@ -177,7 +174,7 @@ function liveRow(d: Devspace, now: number): HTMLElement {
     h(
       "span",
       { class: "up", title: `started ${time(d.startedAt ?? d.createdAt)}` },
-      `${clock(d.startedAt ?? d.createdAt)} · up `,
+      `${clockAt(d.startedAt ?? d.createdAt)} · up `,
       h("span", { class: TICK_SINCE, [ATTR_T]: String(since) }, duration(now - since)),
     ),
     leftCell,
@@ -295,7 +292,7 @@ function localSection(hb: Heartbeat | null | undefined, devspaces: DevspaceData 
     return sec;
   }
   const stale = isStale(hb, now);
-  const wake = hb.nextWakeAt && hb.loopState === "sleeping" && Date.parse(hb.nextWakeAt) > now ? ` · wakes at ${clock(hb.nextWakeAt)}` : "";
+  const wake = hb.nextWakeAt && hb.loopState === "sleeping" && Date.parse(hb.nextWakeAt) > now ? ` · wakes at ${clockAt(hb.nextWakeAt)}` : "";
   sec.append(
     h(
       "p",
@@ -332,7 +329,7 @@ const tokensTitle = (t: Tokens) =>
 function resetText(iso: string, now: number): string {
   const t = Date.parse(iso);
   const d = new Date(t);
-  const at = t - now < 20 * HOUR ? clock(iso) : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  const at = t - now < 20 * HOUR ? clock(t) : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
   return t > now ? `resets ${at}, in ${duration(t - now, false)}` : `reset at ${at}; the percent is from before`;
 }
 
@@ -345,7 +342,7 @@ function windowRow(w: UsageWindow, now: number): HTMLElement {
       { class: "uw" },
       h("span", { class: "wl" }, label),
       h("span", { class: "pct unknown", title: "The status line hasn't reported this window; see bot-heartbeat statusline." }, "—"),
-      h("span", { class: "reset" }, `since ${clock(w.since)}`),
+      h("span", { class: "reset" }, `since ${clockAt(w.since)}`),
       tokens,
     );
   }

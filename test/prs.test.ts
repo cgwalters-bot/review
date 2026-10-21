@@ -389,6 +389,22 @@ describe("loadPrDetail", () => {
     }
   });
 
+  it("reads the head's latest check runs past the first page, as the queue does", async () => {
+    const run = (i: number, conclusion = "success") => ({ name: `job ${i}`, status: "completed", conclusion });
+    const base = route(HEAD);
+    const { fetchImpl, calls } = scriptedFetch((method, url, headers) => {
+      if (!url.includes("/check-runs")) return base(method, url, headers);
+      const q = new URL(url).searchParams;
+      if (q.get("filter") !== "latest") return { body: { total_count: 1, check_runs: [run(0, "failure")] } };
+      const page = Number(q.get("page"));
+      return { body: { total_count: 150, check_runs: page === 1 ? Array.from({ length: 100 }, (_, i) => run(i)) : page === 2 ? [...Array.from({ length: 49 }, (_, i) => run(100 + i)), run(149, "failure")] : [] } };
+    });
+    const d = await loadPrDetail(new GitHub(token, fetchImpl), ref);
+    assert.equal(d.checks.filter((c) => c.name.startsWith("job ")).length, 150);
+    assert.ok(d.checks.some((c) => c.name === "job 149"));
+    assert.equal(calls.filter((c) => c.url.includes("/check-runs")).length, 2);
+  });
+
   it("re-reads the PR unconditionally before reviewing, even when cached", async () => {
     const { fetchImpl, calls } = scriptedFetch(route(HEAD));
     const gh = new GitHub(token, fetchImpl);

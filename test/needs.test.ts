@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import type { Item } from "../src/github/board.ts";
 import type { ForgePr, Verdict } from "../src/github/forge.ts";
 import { parseRoute } from "../src/github/keys.ts";
-import { buildNeeds, type Need, needStops, waitingCount } from "../src/github/needs.ts";
+import { botWaitingCount, buildNeeds, type Need, needStops, waitingCount } from "../src/github/needs.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
 import { parseDecision } from "../src/github/triage.ts";
 import type { PrWait } from "../src/github/waiting.ts";
@@ -155,6 +155,16 @@ describe("buildNeeds", () => {
     assert.equal(waitingCount(needs), 1);
     // Done rows are listed but never next.
     assert.deepEqual(needStops(needs).map((s) => [s.key, s.waiting]), [["item:PVTI_b", true], ["item:PVTI_a", false]]);
+  });
+
+  it("counts the bot's rows still waiting from the rows given, whoever raised the rest", () => {
+    const items = [ask("PVTI_a", 30, "question", `${TRACKER}/9`), ask("PVTI_b", 31, "question", `${TRACKER}/9`)];
+    const needs = buildNeeds({ entries: entriesOf(items, ["PVTI_a"]), answeredHere: new Set(["item:PVTI_a"]) });
+    const waiting = needs[0]!;
+    const theirs: Need = { ...waiting, key: "item:theirs", entry: { ...waiting.entry!, item: { ...waiting.entry!.item!, author: "someone" } } };
+    assert.equal(botWaitingCount(needs), 1);
+    assert.equal(botWaitingCount([...needs, theirs]), 1);
+    assert.equal(botWaitingCount([]), 0);
   });
 
   it("lists only explicit review requests on non-draft PRs", () => {
