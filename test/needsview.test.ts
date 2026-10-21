@@ -8,7 +8,8 @@ import { type Item } from "../src/github/board.ts";
 import { ALL_PRIORITIES, buildNeeds, filterNeeds, type Need, priorityChips } from "../src/github/needs.ts";
 import { applyPriority, NEED_FILTERED_CLASS, NEEDS_CHANGED_NOTE, needId, type NeedsForm, type NeedsHooks, needRow, needsHead, needsRedraw, needsSignature } from "../src/github/needsview.ts";
 import { loadNeedsPriority, saveNeedsPriority } from "../src/github/store.ts";
-import { buildEntries } from "../src/github/queue.ts";
+import type { ForgePr } from "../src/github/forge.ts";
+import { buildEntries, type Entry } from "../src/github/queue.ts";
 import { parseDecision } from "../src/github/triage.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
@@ -327,5 +328,47 @@ describe("the bar over the rows", () => {
       if (before) Object.defineProperty(globalThis, "localStorage", before);
       else delete g.localStorage;
     }
+  });
+});
+
+describe("needRow location", () => {
+  const upstreamPr: ForgePr = {
+    ref: { owner: "upstream", repo: "widget", number: 2500 }, url: "https://github.com/upstream/widget/pull/2500", title: "Fix the widget", body: "",
+    author: "cgwalters-bot", createdAt: "2026-01-10T00:00:00Z", updatedAt: "2026-01-11T00:00:00Z", draft: false,
+  };
+  const reviewEntry = (item: Item | undefined): Entry => ({
+    key: "pr:upstream/widget#2500", kind: "pr", pr: upstreamPr, title: upstreamPr.title, where: "upstream/widget#2500", href: "#pr/upstream/widget/2500",
+    wait: { reasons: ["review-requested"], onBot: false }, ...(item ? { item } : {}),
+  });
+  const tag = (e: Entry) => needRow(buildNeeds({ entries: [e] })[0]!, hooks()).querySelector(".tag")!;
+  const links = (el: Element) => [...el.querySelectorAll("a")].map((a) => [text(a), a.getAttribute("href")]);
+
+  it("links a PR row to the PR, and its tracking issue as a labelled second link", () => {
+    const el = tag(reviewEntry(tracked("PVTI_t", 123, { org: "upstream" })));
+    assert.deepEqual(links(el), [["upstream/widget#2500", upstreamPr.url], ["tracker#123", `${TRACKER}/123`]]);
+    assert.match(text(el), /^upstream\/widget#2500 · tracks tracker#123 · age unknown$/);
+    // A board Org other than the PR's owner is still shown.
+    assert.match(text(tag(reviewEntry(tracked("PVTI_t", 123, { org: "containers" })))), /^upstream\/widget#2500 · tracks tracker#123 · containers · /);
+  });
+
+  it("keeps the issue as the location of an escalation row", () => {
+    const el = needRow(first([tracked("PVTI_e", 31, { labels: ["escalate"], org: "containers" })]), hooks()).querySelector(".tag")!;
+    assert.deepEqual(links(el), [["tracker#31", `${TRACKER}/31`]]);
+    assert.match(text(el), /^tracker#31 · containers · /);
+  });
+
+  it("does not repeat the PR when its board item is the PR itself", () => {
+    const el = tag(reviewEntry(tracked("PVTI_s", 1, { kind: "pr", url: upstreamPr.url.toUpperCase() })));
+    assert.deepEqual(links(el), [["upstream/widget#2500", upstreamPr.url]]);
+  });
+
+  it("links a PR row without a board item to the PR", () => {
+    assert.deepEqual(links(tag(reviewEntry(undefined))), [["upstream/widget#2500", upstreamPr.url]]);
+  });
+
+  it("keeps the issue as the location of a question row", () => {
+    const el = needRow(first([tracked("PVTI_q", 21, { labels: ["question"], body: BODY, org: "cgwalters-bot" })]), hooks()).querySelector(".tag")!;
+    assert.deepEqual(links(el), [["tracker#21", `${TRACKER}/21`]]);
+    assert.match(text(el), /^tracker#21 · cgwalters-bot · /);
   });
 });

@@ -197,7 +197,12 @@ export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
   const since = n.since;
   const form = n.inPlace && !n.done ? answerPart(n, hooks) : null;
   // One small line: priority, where it is (a link to GitHub, where it can also be answered), and how long it has waited.
-  const where = item?.url ? shortRef(item.url) : n.where;
+  // A PR row is about the PR: its board item only tracks it, so the PR is
+  // the location and the item, when it is a separate issue, a second link.
+  const pr = e?.pr;
+  const tracks = pr && item?.url && item.url.toLowerCase() !== pr.url.toLowerCase() ? item.url : undefined;
+  const whereUrl = pr ? pr.url : item?.url;
+  const where = pr ? n.where : item?.url ? shortRef(item.url) : n.where;
   const sub = h(
     "span",
     { class: "sub" },
@@ -208,8 +213,11 @@ export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
     h(
       "span",
       { class: "tag" },
-      link(item?.url, where),
-      [item?.org, n.parent ? `for ${excerpt(n.parent.title, 48)}` : undefined].filter(Boolean).map((t) => ` · ${t}`).join(""),
+      link(whereUrl, where),
+      tracks ? " · tracks " : null,
+      tracks ? link(tracks, shortRef(tracks)) : null,
+      // The board's Org, unless it is the PR's owner, already in its reference.
+      [pr && item?.org?.toLowerCase() === pr.ref.owner.toLowerCase() ? undefined : item?.org, n.parent ? `for ${excerpt(n.parent.title, 48)}` : undefined].filter(Boolean).map((t) => ` · ${t}`).join(""),
       " · ",
       h("span", { class: "age", title: since ? sinceTitle(e, since, "asked") : "ask date not available", ...(since ? { "data-since": since } : {}) }, age(since, hooks.now) || "age unknown"),
     ),
