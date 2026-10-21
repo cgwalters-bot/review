@@ -49,6 +49,16 @@ export function age(iso: string | undefined, now: number): string {
   return "now";
 }
 
+/**
+ * An age's tooltip. A board item that isn't an ask ages from the board
+ * item's last change (see waitingSince), an upper bound on when it began
+ * to wait, so it says so rather than "waiting since".
+ */
+export function sinceTitle(e: Entry | undefined, since: string | undefined, waiting = "waiting since"): string {
+  if (!since) return "";
+  return e?.kind === "item" ? `board item last changed ${time(since)}` : `${waiting} ${time(since)}`;
+}
+
 export function pill(priority: string | undefined): HTMLElement {
   const p = priority ?? "–";
   return h("span", { class: `pill ${/^P[0-3]$/.test(p) ? p.toLowerCase() : "pn"}` }, p);
@@ -139,7 +149,7 @@ function row(e: Entry, labelOf: (e: Entry) => RowLabel | undefined, now: number,
       ),
       why ? h("span", { class: "why" }, why) : null,
     ),
-    h("span", { class: "age", title: e.since ? `waiting since ${time(e.since)}` : "" }, age(e.since, now)),
+    h("span", { class: "age", title: sinceTitle(e, e.since) }, age(e.since, now)),
   );
 }
 

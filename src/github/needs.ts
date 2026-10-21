@@ -2,7 +2,7 @@
 // current-head review requests, approved forks to promote and escalations.
 // The broader legacy queue is kept in Watching and By priority.
 
-import { askProblem, blockedBy, isQuestion, type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
+import { askProblem, blockedBy, isQuestion, type Item, NO_PRIORITY, PRIORITY_ORDER, waitingSince } from "./board.ts";
 import { effectivePriority, type Entry, onBot, priorityRank } from "./queue.ts";
 import type { Stop } from "./advance.ts";
 import { type Decision, decisionLabel } from "./triage.ts";
@@ -127,7 +127,8 @@ export function buildNeeds(input: NeedsInput): Need[] {
   }
   const listed = new Set(input.entries.flatMap((e) => [e, ...(e.children ?? [])]).filter((e) => e.kind !== "pr").map((e) => e.item?.nodeId));
   for (const item of board) {
-    if (!listed.has(item.nodeId) && item.labels.includes("escalate") && item.ref) push({ key: `item:${item.nodeId}`, kind: "item", title: item.title, where: refKey(item.ref), href: `#item/${item.nodeId}`, item, ...(item.priority ? { priority: item.priority } : {}), ...(item.createdAt ? { since: item.createdAt } : {}) }, undefined);
+    const since = waitingSince(item);
+    if (!listed.has(item.nodeId) && item.labels.includes("escalate") && item.ref) push({ key: `item:${item.nodeId}`, kind: "item", title: item.title, where: refKey(item.ref), href: `#item/${item.nodeId}`, item, ...(item.priority ? { priority: item.priority } : {}), ...(since ? { since } : {}) }, undefined);
   }
   const questions = new Map(out.concat(done).flatMap((n) => (n.action === "answer" && issueKey(n.entry?.item) ? [[issueKey(n.entry?.item) as string, n] as const] : [])));
   for (const d of input.decisions ?? []) {

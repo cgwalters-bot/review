@@ -121,7 +121,7 @@ export interface Item {
   news?: string;
   /** The Run field: the devspace agent run working on it, a URL. */
   run?: string;
-  /** When the item was added to the board. */
+  /** When its issue or PR was created, else when the item was added to the board. */
   createdAt?: string;
   /** When the board item itself (a field) last changed. */
   movedAt?: string;
@@ -362,6 +362,18 @@ export function questionProblem(q: AskFacts, scope: AskScope = TRACKER_SCOPE): s
 /** An ask issue in the tracker, open or closed, of any kind. */
 export function isAsk(item: Item): boolean {
   return askKind(item) !== undefined;
+}
+
+/**
+ * Since when an item has waited on him, as far as the API says. An ask
+ * waits from its issue's creation: the bot opens it when it asks. Any
+ * other item may be months older than its move to Needs human or Draft,
+ * and GitHub keeps no field history, so it waits from the board item's
+ * own last change, an upper bound on that move; undefined (age unknown)
+ * without one, never the issue's age.
+ */
+export function waitingSince(item: Item): string | undefined {
+  return isAsk(item) ? item.createdAt ?? item.updatedAt : item.movedAt;
 }
 
 /** A question issue in the tracker, open or closed. */
