@@ -54,6 +54,13 @@ describe("From people UI", () => {
     assert.deepEqual(people.rows[0]?.notificationIds, []);
   });
 
+  it("labels an unlocated mention and still offers Mark done", () => {
+    const people: People = { rows: [{ ...row(1), unlocated: true }], warnings: [] };
+    const el = peopleView(people, Date.now(), { done: async () => {}, changed: () => {} });
+    assert.match(el.textContent ?? "", /alice · mention \(not located\) · CI n\/a/);
+    assert.equal(el.querySelector("button")?.textContent, "Mark done");
+  });
+
   it("reports mark-read failures without dismissing the row and retries only unread IDs", async () => {
     const ask = { ...row(1), notificationIds: ["1", "2"] };
     const people: People = { rows: [ask], warnings: ["Notifications partially unavailable"] };
