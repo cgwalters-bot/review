@@ -12,7 +12,8 @@ function client(options: { notificationsStatus?: number; searchStatus?: number; 
   const calls: Recorded[] = [];
   const route = (method: string, url: string): Scripted | undefined => {
     const path = new URL(url).pathname;
-    if (method === "PATCH") return { status: 204 };
+    // GitHub answers "mark a thread as read" with 205 and no body.
+    if (method === "PATCH") return { status: 205 };
     if (path === "/search/issues") return options.searchStatus ? { status: options.searchStatus } : { body: { items: data.search } };
     if (path === "/notifications") {
       if (options.notificationsStatus) return { status: options.notificationsStatus, body: { message: "notifications denied" } };
@@ -40,7 +41,7 @@ function client(options: { notificationsStatus?: number; searchStatus?: number; 
     const response = route(method, url);
     assert.ok(response, `unexpected fixture request: ${method} ${url}`);
     const status = response.status ?? 200;
-    return new Response(status === 204 ? null : JSON.stringify(response.body ?? {}), { status, headers: { "content-type": "application/json", ...response.headers } });
+    return new Response(status === 204 || status === 205 ? null : JSON.stringify(response.body ?? {}), { status, headers: { "content-type": "application/json", ...response.headers } });
   });
   return { gh, calls };
 }
