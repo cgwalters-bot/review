@@ -84,7 +84,7 @@ label.opt { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px;
 label.opt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 label.opt input { margin-top: 4px; }
 .rec { font: 11px var(--mono); color: var(--ok); margin-left: 6px; white-space: nowrap; }
-textarea, input[type=password] { width: 100%; font: 15px/1.45 var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+textarea, input[type=password], .decision-document input[type=text] { width: 100%; font: 15px/1.45 var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
 .target { font-size: 13px; color: var(--muted); margin: 0; }
 .actions { display: flex; gap: 8px; }
 button, .button { font: 14px var(--sans); font-weight: 500; border-radius: 6px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); text-decoration: none; }
@@ -721,3 +721,11 @@ body:has(.chat-full) { overflow: hidden; }
 .dashboard-summary li { padding: 1px 0; overflow-wrap: anywhere; }
 .dashboard-summary .sum-jump { font-weight: 600; }
 .dashboard-summary li.hot { color: var(--p1); }
+/* iOS Safari zooms the page in when a text field under 16px takes focus and
+   leaves it zoomed, so wherever there is a touch screen (iPads too, hence
+   not max-width) every typed-into field gets a 16px floor. !important
+   because component rules such as tr.composer textarea are more specific;
+   mouse-only desktops keep their smaller sizes. */
+@media (any-pointer: coarse) {
+  textarea, select, input:not([type]), input[type=text], input[type=password], input[type=search], input[type=url], input[type=email] { font-size: 16px !important; }
+}
