@@ -112,6 +112,34 @@ describe("From people loader", () => {
     assert.deepEqual(people.rows.map((r) => r.key), ["upstream/widget#1"]);
   });
 
+  it("repeats the notifications URL between polls so it is revalidated, still filtering by the exact cutoff", async () => {
+    const seen: { url: string; validator: string | null }[] = [];
+    const threads: string[] = [];
+    const base = data.notifications[1]!;
+    const start = Date.parse("2026-10-06T12:00:00Z");
+    // Updated after the floored since= but before the exact 14-day cutoff.
+    const stale = { ...base, updated_at: new Date(start - PEOPLE_RECENT_DAYS * 86_400_000 - 3_600_000).toISOString() };
+    const gh = new GitHub(async () => "fixture-only", async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path === "/notifications") {
+        const validator = new Headers(init?.headers).get("if-none-match");
+        seen.push({ url, validator });
+        if (validator === '"n1"') return new Response(null, { status: 304 });
+        return new Response(JSON.stringify([stale]), { headers: { "content-type": "application/json", etag: '"n1"' } });
+      }
+      if (path !== "/search/issues") threads.push(path);
+      return new Response(JSON.stringify(path === "/search/issues" ? { items: [] } : []), { headers: { "content-type": "application/json" } });
+    });
+    assert.deepEqual((await loadPeople(gh, start)).rows, []);
+    assert.deepEqual((await loadPeople(gh, start + 60_000)).rows, []);
+    assert.equal(seen.length, 2);
+    assert.equal(seen[0]!.url, seen[1]!.url);
+    assert.equal(new URL(seen[0]!.url).searchParams.get("since"), "2026-09-22T00:00:00.000Z");
+    assert.equal(seen[0]!.validator, null);
+    assert.equal(seen[1]!.validator, '"n1"');
+    assert.deepEqual(threads, [], "the extra day since= fetches is dropped by the exact cutoff before any thread read");
+  });
+
   it("leaves a truncated CI summary unknown instead of claiming success", async () => {
     const { gh } = client({ truncatedCI: true });
     const people = await loadPeople(gh, now);
