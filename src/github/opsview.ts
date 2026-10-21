@@ -23,7 +23,7 @@ import {
   workGroups,
   type WorkGroup,
 } from "./ops.ts";
-import { type MistralBudget, type MistralUsage, poolPace, type Tokens, tokenTotal, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
+import { type MistralBudget, type MistralUsage, poolPace, type RunUsage, spendByRun, type SpendTotal, type Tokens, tokenTotal, UNKNOWN_KIND, type Usage, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
 import { age, pill, time } from "./view.ts";
 
 const SECOND = 1000;
@@ -569,6 +569,7 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
         ...(usage.mistral ? [mistralRow(usage.mistral, now)] : []),
         h("p", { class: "fine" }, usage.updatedAt ? `Published ${time(usage.updatedAt)}. ` : "Publication time unknown. ", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""),
       ),
+      spendRows(usage, now),
     );
     return sec;
   }
@@ -586,6 +587,59 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
   const observed = usage.observedAt;
   sec.append(h("p", { class: observed && now - Date.parse(observed) <= HEARTBEAT_STALE_MS ? "fine" : "warn" }, observed ? `Observed ${time(observed)}${now - Date.parse(observed) > HEARTBEAT_STALE_MS ? " · stale" : ""}.` : "Observation time unknown; publication does not confirm a fresh subscription reading.", ` Published ${time(usage.updatedAt)}.`, usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""));
   return sec;
+}
+
+/** A pool's label in the run table: the meter's name for the ones it shows, the snapshot's word for a newer one. */
+const POOL_LABEL = new Map<string, string>([...POOLS, ["mistral", "Mistral"]]);
+
+/** "implement 12.3M (3 runs) · review 4.1M (1 run)": a total's name, tokens and run count. */
+function totalsText(totals: readonly SpendTotal[]): string {
+  return totals.map((t) => `${t.name} ${tokensText(t.tokens)} (${t.runs} ${t.runs === 1 ? "run" : "runs"})`).join(" · ");
+}
+
+function runRow(r: RunUsage): HTMLElement {
+  // Both links are built from parts the parser matched, never from a URL the snapshot gave.
+  const item = r.item ? /^([^#]+)#(\d+)$/.exec(r.item) : null;
+  const requests = r.requests === undefined ? "" : `, in ${r.requests} ${r.requests === 1 ? "request" : "requests"}`;
+  return h(
+    "tr",
+    {},
+    h("td", {}, POOL_LABEL.get(r.pool) ?? r.pool),
+    h("td", r.kind ? {} : { class: "unknown" }, r.kind ?? UNKNOWN_KIND),
+    h("td", {}, r.repository),
+    h("td", {}, item ? link(`https://github.com/${item[1]}/issues/${item[2]}`, r.item ?? "") : h("span", { class: "unknown" }, "—")),
+    h("td", { class: "num", title: `${tokensTitle(r.tokens)}${requests}` }, tokensText(tokenTotal(r.tokens))),
+    h("td", { class: "when" }, link(`https://github.com/${r.repository}/actions/runs/${r.runId}`, time(r.finishedAt))),
+  );
+}
+
+/**
+ * Where the day's spend went, run by run, largest first, with totals by
+ * kind and by repository; or one line on why the snapshot can't say.
+ */
+function spendRows(usage: Usage, now: number): HTMLElement {
+  const box = h("div", { class: "spend" }, h("h3", { class: "group-h" }, "By run, last day"));
+  if (!usage.runs) {
+    box.append(h("p", { class: "fine" }, "Not published: the snapshot carries no runs list, so nothing says which runs spent it (see the README)."));
+    return box;
+  }
+  const spend = spendByRun(usage.runs, now);
+  if (!spend.runs.length) {
+    box.append(h("p", { class: "fine" }, "No run finished in the last day."));
+    return box;
+  }
+  box.append(
+    h(
+      "table",
+      { class: "spend-runs" },
+      h("thead", {}, h("tr", {}, h("th", {}, "Pool"), h("th", {}, "Kind"), h("th", {}, "Repository"), h("th", {}, "Item"), h("th", { class: "num" }, "Tokens"), h("th", {}, "Finished"))),
+      h("tbody", {}, ...spend.runs.map(runRow)),
+    ),
+    h("p", { class: "fine" }, "By kind: ", totalsText(spend.byKind), "."),
+    h("p", { class: "fine" }, "By repository: ", totalsText(spend.byRepository), "."),
+    h("p", { class: "fine" }, "Tokens: the broker's per-run record, cache reads included; a row links to its run."),
+  );
+  return box;
 }
 
 function consumerRow(c: Consumer, max: number): HTMLElement {

@@ -189,6 +189,25 @@ gives the row the allowance and the share of the month gone, with the spend
 shown as unknown. Snapshots with no subscription readings still show Mistral;
 each null pool says "No reading" with the snapshot's age (not a reading age).
 Older publications retain the Claude window display.
+
+**By run, last day**, under the pool rows (so for pool snapshots only), says
+where that spend went: the runs that finished in the last 24 hours, largest
+first, each with its pool, kind, repository, item (linked) and tokens (the
+breakdown and request count on hover; the time links to the run), then a
+total per kind and per repository. It reads the snapshot's optional `runs`
+list, at most 200 entries, each `{repository, run_id, pool, finished_at,
+tokens}` with `kind`, `item` (`OWNER/REPO#N`) and `requests` optional; an
+entry that fails the strict parse is dropped alone, and a run listed twice
+counts once. Nothing writes that list yet: the only per-run usage
+record is the broker's (`praxis-run-usage/v2`: repository, run id, requests
+and tokens by model), which it serves to the run holding its token (`GET
+/v1/runs/self`, for a day after the run) and not through the `/usage`
+endpoint tracker's usage publisher copies. For the table to fill, the run
+has to write its record out where the publisher can gather it (a usage line
+in the run's status comment, or a job output), and tracker's `usage.cjs` has
+to carry the day's into `runs`. Until then the block says so in one line; a
+snapshot with an empty list says no run finished in the day.
+
 **Decisions** comes right after usage, before Status, open on entry,
 The optional single checklist document is configured in
 `src/github/decisions-config.json`: set `document` to an object with `repo`

@@ -426,6 +426,14 @@ summary.pool-sum::before { content: "▸"; }
 .pool-detail { padding: 0 0 6px calc(1em + 10px); }
 .pool-detail p, .pools .fine { font-size: 12px; color: var(--muted); margin: 2px 0; overflow-wrap: anywhere; }
 .pools .fine { margin-top: 4px; }
+/* Spend by run: a small table under the pools, largest run first, numbers in mono. */
+.spend .fine { font-size: 12px; color: var(--muted); margin: 4px 0 0; overflow-wrap: anywhere; }
+.spend-runs { border-collapse: collapse; width: 100%; font-size: 13px; }
+.spend-runs th, .spend-runs td { padding: 3px 10px 3px 0; text-align: left; vertical-align: baseline; overflow-wrap: anywhere; }
+.spend-runs th { font: 12px var(--mono); color: var(--muted); font-weight: 400; }
+.spend-runs th.num, .spend-runs td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.spend-runs td.when { white-space: nowrap; }
+.spend-runs .unknown { color: var(--muted); }
 .uw .reset, .uw .tok, .uc .tok { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .uc-list { list-style: none; margin: 4px 0 0; padding: 0; }
 .uc { display: grid; grid-template-columns: minmax(0, 1fr) 8em 4.5em; gap: 2px 12px; align-items: center; padding: 3px 0; font-size: 14px; }

@@ -67,6 +67,40 @@ describe("operator dashboard", () => {
     assert.ok(shown.includes(`Published ${time("2026-10-18T14:42:00Z")}.`), shown);
   });
 
+  it("lists the day's runs under the pools, largest first, with totals by kind and repository", () => {
+    const home = homeSkeleton(hooks());
+    const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-runs.json"))}\n\`\`\``)!;
+    fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-18T14:44:00Z"));
+    const spend = home.slots.weekly.querySelector(".spend")!;
+    assert.equal(text(spend.querySelector("h3")), "By run, last day");
+    assert.deepEqual([...spend.querySelectorAll("th")].map((th) => text(th)), ["Pool", "Kind", "Repository", "Item", "Tokens", "Finished"]);
+    const rows = [...spend.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => text(td)));
+    assert.deepEqual(rows.map((r) => r.slice(0, 5)), [
+      ["Claude", "implement", "cgwalters-forge/review", "cgwalters-forge/review#99", "44.0M"],
+      ["Claude", "review", "cgwalters-forge/review", "cgwalters-forge/review#97", "8.3M"],
+      ["OpenAI", "review", "cgwalters-forge/tracker", "cgwalters-forge/tracker#797", "3.1M"],
+      ["Mistral", "unknown", "cgwalters-forge/agentic-job", "—", "520k"],
+    ]);
+    assert.equal(rows[0]?.[5], time("2026-10-18T13:30:00Z"));
+    const links = [...spend.querySelectorAll("tbody tr:first-child a")].map((a) => a.getAttribute("href"));
+    assert.deepEqual(links, ["https://github.com/cgwalters-forge/review/issues/99", "https://github.com/cgwalters-forge/review/actions/runs/19876543210"]);
+    assert.equal(spend.querySelector("tbody td.num")?.getAttribute("title"), "120k input, 310k output, 41.0M cache read, 2.6M cache write, in 412 requests");
+    assert.match(text(spend), /By kind: implement 44\.0M \(1 run\) · review 11\.4M \(2 runs\) · unknown 520k \(1 run\)\./);
+    assert.match(text(spend), /By repository: cgwalters-forge\/review 52\.3M \(2 runs\) · cgwalters-forge\/tracker 3\.1M \(1 run\) · cgwalters-forge\/agentic-job 520k \(1 run\)\./);
+    assert.doesNotMatch(text(spend), /#90/, "the run of two days ago is not shown");
+    assert.match(text(home.slots.weekly), /Claude.*73\.0% used/, "the pool rows stay above it");
+  });
+
+  it("says when the snapshot attributes nothing to runs, and when no run finished in the day", () => {
+    const home = homeSkeleton(hooks());
+    const usage = findUsage(fixture<RawComment[]>("usage-snapshot.json"))!;
+    fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-18T14:44:00Z"));
+    assert.match(text(home.slots.weekly.querySelector(".spend .fine")), /^Not published: the snapshot carries no runs list/);
+    assert.equal(home.slots.weekly.querySelector(".spend-runs"), null);
+    fillUsage(home, { state: "ok", usage: { ...usage, runs: [] } }, undefined, Date.parse("2026-10-18T14:44:00Z"));
+    assert.match(text(home.slots.weekly.querySelector(".spend")), /No run finished in the last day\./);
+  });
+
   it("reads both published pools, marks held and over-pace usage, and keeps questions open", () => {
     const home = homeSkeleton(hooks());
     const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-pools.json"))}\n\`\`\``)!;
