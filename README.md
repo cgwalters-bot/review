@@ -281,6 +281,9 @@ showing only its first paragraph until Expand. Issue references link to GitHub
 left alone. Its publication time and age update on refresh, with a stale warning
 after the Coordinator's configured `staleAfterMinutes` interval. **Focus** shows active epics by priority,
 sub-issue progress and running child items; paused or parked epics are gray.
+An epic whose sub-issues are all closed reads "Ready to close" with what keeps
+it open (its open asks, else its Status) rather than a stale Needs human, and a
+missing Status is flagged in red as a board bug.
 **Agents** shows remote/local placement, engine, item and age, the count
 against `AGENT_TARGET`, and OpenCode's share. Engines come from the optional
 board Engine field or heartbeat worker `engine`; absent engines stay unknown.
