@@ -633,7 +633,7 @@ function paintActive(state: State): void {
   if (!state.home) return;
   const model = snapshot(state);
   fillAgents(state.home, state.active, Date.now(), model.agents);
-  fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError);
+  fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError, Date.now(), state.active?.board);
   fillFocus(state.home, state.active?.board ? model.focus : undefined);
   fillUsage(state.home, model.usage ?? undefined, state.active?.local, Date.now());
   fillState(state.home, model);

@@ -278,8 +278,10 @@ opens its GitHub issue.
 **Status** renders the newest ProjectV2 status update as sanitized Markdown,
 showing only its first paragraph until Expand. Issue references link to GitHub
 (bare `#N` uses the configured tracker repository); code and existing links are
-left alone. Its publication time and age update on refresh, with a stale warning
-after the Coordinator's configured `staleAfterMinutes` interval. **Focus** shows active epics by priority,
+left alone. HTML comments, such as the writer's marker, are hidden as on
+GitHub, and a link to a board item whose title the writer cut short shows
+the item's full title. Its publication time and age update on refresh, with a
+stale warning after the Coordinator's configured `staleAfterMinutes` interval. **Focus** shows active epics by priority,
 sub-issue progress and running child items; paused or parked epics are gray.
 **Agents** shows remote/local placement, engine, item and age, the count
 against `AGENT_TARGET`, and OpenCode's share. Engines come from the optional
