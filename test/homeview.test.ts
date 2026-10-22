@@ -271,6 +271,31 @@ describe("operator dashboard", () => {
     assert.match(text(home.slots.status), /Status age unknown/);
   });
 
+  it("renders a recorded status block without its marker, with full titles from the board", () => {
+    // Recorded from the board on 21 Oct: every title cut to ~25 characters.
+    const status = fixture<{ body: string; createdAt: string }>("project-status.json");
+    const home = homeSkeleton(hooks());
+    const full = "Cross-check ostreedev/ostree's CI against bootc's composefs tests";
+    const board = [
+      tracked("cross", 540, { title: full }),
+      // A board title the cut label does not start with is not the writer's.
+      tracked("other", 405, { title: "A different title" }),
+    ];
+    fillStatus(home, status, render, undefined, Date.parse(status.createdAt), board);
+    const slot = home.slots.status;
+    assert.doesNotMatch(slot.textContent ?? "", /<!--|bot-board-status-v1|-->/);
+    assert.equal(slot.querySelector(".md > p:last-child")?.textContent, "Full board");
+    const link = (n: number) => slot.querySelector(`a[href="${TRACKER}/${n}"]`)?.textContent;
+    assert.equal(link(540), full);
+    assert.equal(link(405), "Epic: Clean up the harness:…");
+    assert.equal(link(528), "Epic: Cut over to the new h…");
+    // Restored on a repaint of an unchanged update too, once the board arrives.
+    const later = homeSkeleton(hooks());
+    fillStatus(later, status, render);
+    fillStatus(later, status, render, undefined, Date.now(), board);
+    assert.equal(later.slots.status.querySelector(`a[href="${TRACKER}/540"]`)?.textContent, full);
+  });
+
   it("previews the first paragraph even after a heading or list", () => {
     for (const prefix of ["## Update", "- One\n- Two"]) {
       const home = homeSkeleton(hooks());
