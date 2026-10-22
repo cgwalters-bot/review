@@ -716,6 +716,14 @@ body:has(.chat-full) { overflow: hidden; }
 .operator-proposal pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .operator-proposal ol { padding-left: 1.5rem; }
 .operator-proposal button { max-width: 100%; white-space: normal; min-height: 44px; }
+/* Review drafts: each inline comment under the hunk lines it is on. */
+.review-drafts { padding: .75rem; }
+.review-draft { min-width: 0; overflow-wrap: anywhere; border-top: 1px solid var(--border, #8884); padding-top: 8px; }
+.review-draft-hunk div.add { background: var(--add); }
+.review-draft-hunk div.del { background: var(--del); }
+.review-draft-hunk div.at { background: var(--focus-row); }
+.review-draft-comment { margin-left: 8px; }
+.review-draft button, .review-draft-start button { min-height: 44px; }
 /* The summary at the top: a line each, wrapping, so it fits a phone. */
 .dashboard-summary ul { list-style: none; margin: 0 0 8px; padding: 0; font-size: 13px; }
 .dashboard-summary li { padding: 1px 0; overflow-wrap: anywhere; }
