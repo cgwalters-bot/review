@@ -226,6 +226,15 @@ only within that id. With `checkboxes: true` in `document` (off by default),
 an open entry's task list items, other than the lettered options the form
 answers, are checkboxes: a tap ticks or unticks that
 one line through the same write as Send, and done entries stay read-only.
+An entry names the issue or PR it is about with an `About: owner/repo#12`
+line, optionally `, asked 2026-10-15` (or a UTC time such as
+`2026-10-15T09:30Z`). With `resolve: true` in `document` (off by default),
+each refresh reads the items of the first ten open entries with an About
+line: an entry whose item is closed or merged moves, read-only, to a
+collapsed **Resolved** with a line saying so, however the document still
+reads; an entry whose item has comments since the ask stays, marked to be
+checked before answering. An item the viewer cannot read leaves its entry as
+it is.
 A fresh body comparison refuses stale forms and taps with
 “changed, reload”; GitHub has no atomic issue-body compare-and-swap, so an edit
 between that final read and write can still race. A refused Send redraws the
