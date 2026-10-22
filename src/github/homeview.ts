@@ -14,7 +14,7 @@ import type { PageState } from "./state.ts";
 import type { Renderer } from "../markdown.ts";
 import type { Active, AgentSummary } from "./agents.ts";
 import { agentsBody, agentsSummary } from "./agentsview.ts";
-import type { Item } from "./board.ts";
+import { blockedBy, type Item } from "./board.ts";
 import { diffBoard, type Snapshot } from "./boardfeed.ts";
 import { type FeedOptions, feedSection } from "./boardfeedview.ts";
 import type { QueueFilter } from "./filter.ts";
@@ -356,6 +356,28 @@ export function fillStatus(home: Home, status: ProjectStatus | null | undefined,
   age();
 }
 
+/**
+ * What Focus says of an epic in place of its raw Status. Once every
+ * sub-issue is closed the epic is ready to close, whatever its Status
+ * (often a stale Needs human), so say that and why it is still open: the
+ * open asks blocking it, else its Status. A missing Status is not a
+ * status but a board bug, flagged as one.
+ */
+export function focusStatus(epic: Item, board: readonly Item[]): { text: string; bug: boolean } {
+  const bug = !epic.status;
+  const status = epic.status ? `Status ${epic.status}` : "no Status on the board";
+  const s = epic.subIssues;
+  if (!s || s.total === 0 || s.completed < s.total) return { text: epic.status ?? "No Status on the board", bug };
+  const key = epic.ref ? refKey(epic.ref).toLowerCase() : undefined;
+  const blocks = (i: Item) => {
+    const ref = blockedBy(i);
+    return ref !== undefined && refKey(ref).toLowerCase() === key;
+  };
+  const asks = key ? board.filter((i) => i.state === "open" && blocks(i)).length : 0;
+  const why = asks ? `${asks} open ask${asks === 1 ? "" : "s"}${bug ? `; ${status}` : ""}` : status;
+  return { text: `Ready to close; still open: ${why}`, bug };
+}
+
 /** Active epics, with GitHub's progress and their running child work. */
 export function fillFocus(home: Home, board: readonly Item[] | undefined): void {
   const slot = home.slots.focus;
@@ -368,7 +390,8 @@ export function fillFocus(home: Home, board: readonly Item[] | undefined): void 
   const epics = board.filter((i) => live(i) && (i.labels.includes("epic") || i.subIssues) && i.status !== "Todo" && i.status !== "Draft").sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || a.title.localeCompare(b.title));
   for (const epic of epics) {
     const paused = epic.status === "Paused" || epic.verdict?.toLowerCase() === "park";
-    const row = h("article", { class: `focus-epic${paused ? " paused" : ""}` }, h("h3", {}, epic.priority ? `${epic.priority} · ` : "", h("a", { href: epic.url ?? "#" }, epic.title)), h("p", {}, epic.subIssues ? `${epic.subIssues.completed}/${epic.subIssues.total} complete` : "Progress not reported", ` · ${epic.status ?? "No status"}`));
+    const status = focusStatus(epic, board);
+    const row = h("article", { class: `focus-epic${paused ? " paused" : ""}` }, h("h3", {}, epic.priority ? `${epic.priority} · ` : "", h("a", { href: epic.url ?? "#" }, epic.title)), h("p", {}, epic.subIssues ? `${epic.subIssues.completed}/${epic.subIssues.total} complete` : "Progress not reported", " · ", h("span", { class: `focus-status${status.bug ? " state bug" : ""}` }, status.text)));
     if (epic.subIssues) row.append(h("progress", { max: String(epic.subIssues.total), value: String(epic.subIssues.completed), "aria-label": `${epic.title} progress` }));
     const children = board.filter((i) => live(i) && i.status === "In Progress" && i.parent && epic.ref && refKey(i.parent).toLowerCase() === refKey(epic.ref).toLowerCase());
     row.append(h("ul", {}, ...children.map((i) => h("li", {}, h("a", { href: i.url ?? "#" }, i.title), i.lead ? ` · ${i.lead}` : "", " · running"))));

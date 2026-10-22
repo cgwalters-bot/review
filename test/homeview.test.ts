@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { Active } from "../src/github/agents.ts";
 import type { Item } from "../src/github/board.ts";
-import { applyLimit, COUNT_CLASS, DECISION_LIMIT, fillAgents, fillFocus, fillStatus, fillNeeds, fillPriority, fillUsage, type Home, type HomeHooks, homeSkeleton, resetExpanded, reveal, setSectionOpen, stepRow, VIEW_ALL_CLASS, walkRows } from "../src/github/homeview.ts";
+import { applyLimit, COUNT_CLASS, DECISION_LIMIT, fillAgents, fillFocus, fillStatus, focusStatus, fillNeeds, fillPriority, fillUsage, type Home, type HomeHooks, homeSkeleton, resetExpanded, reveal, setSectionOpen, stepRow, VIEW_ALL_CLASS, walkRows } from "../src/github/homeview.ts";
 import { buildNeeds } from "../src/github/needs.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
 import { needsSignature } from "../src/github/needsview.ts";
@@ -290,6 +290,46 @@ describe("operator dashboard", () => {
     assert.match(text(home.slots.focus), /child · worker · running/);
     assert.ok(home.slots.focus.querySelector(".paused"));
   });
+
+  const done = { total: 9, completed: 9, percent_completed: 100 };
+  const half = { total: 4, completed: 2, percent_completed: 50 };
+  const FOCUS_STATUS: { name: string; epic: Partial<Item>; noStatus?: boolean; others?: (epic: Item) => Item[]; text: string; bug: boolean }[] = [
+    { name: "an epic in progress shows its Status", epic: { status: "In Progress", subIssues: half }, text: "In Progress", bug: false },
+    { name: "an unfinished Needs human epic stays Needs human", epic: { status: "Needs human", subIssues: half }, text: "Needs human", bug: false },
+    { name: "an epic without progress shows its Status", epic: { status: "Needs human" }, text: "Needs human", bug: false },
+    { name: "a missing Status is flagged as a board bug", noStatus: true, epic: { subIssues: half }, text: "No Status on the board", bug: true },
+    { name: "a finished Needs human epic is ready to close, open for its Status", epic: { status: "Needs human", subIssues: done }, text: "Ready to close; still open: Status Needs human", bug: false },
+    { name: "a finished 1/1 epic is ready to close", epic: { status: "In Progress", subIssues: { total: 1, completed: 1, percent_completed: 100 } }, text: "Ready to close; still open: Status In Progress", bug: false },
+    { name: "a finished epic without Status is ready to close and flagged", noStatus: true, epic: { subIssues: done }, text: "Ready to close; still open: no Status on the board", bug: true },
+    {
+      name: "a finished epic held open by asks names them, not its Status",
+      epic: { status: "Needs human", subIssues: done },
+      others: (epic) => [
+        tracked("q1", 11, { labels: ["question"], parent: epic.ref! }),
+        tracked("q2", 12, { labels: ["chore"], body: `Blocks: ${epic.url}\n` }),
+        tracked("closed", 13, { labels: ["question"], parent: epic.ref!, state: "closed" }),
+        tracked("elsewhere", 14, { labels: ["question"], body: `Blocks: ${TRACKER}/99\n` }),
+      ],
+      text: "Ready to close; still open: 2 open asks",
+      bug: false,
+    },
+    { name: "one open ask is singular", noStatus: true, epic: { subIssues: done }, others: (epic) => [tracked("q1", 11, { labels: ["question"], body: `Blocks: ${epic.url}\n` })], text: "Ready to close; still open: 1 open ask; no Status on the board", bug: true },
+  ];
+  for (const c of FOCUS_STATUS) {
+    it(`focus: ${c.name}`, () => {
+      const epic = tracked("epic", 1, { labels: ["epic"], ...c.epic });
+      if (c.noStatus) delete epic.status;
+      const board = [epic, ...(c.others?.(epic) ?? [])];
+      assert.deepEqual(focusStatus(epic, board), { text: c.text, bug: c.bug });
+      const home = homeSkeleton(hooks());
+      fillFocus(home, board);
+      const state = home.slots.focus.querySelector(".focus-epic .focus-status")!;
+      assert.equal(text(state), c.text);
+      // Only the bug is styled: a plain .state would paint any Status as an OK pill.
+      assert.equal(state.classList.contains("state"), c.bug);
+      assert.equal(state.classList.contains("bug"), c.bug);
+    });
+  }
 
   it("keeps overflow in collapsed Watching and reveals it for action continuation", () => {
     const home = homeSkeleton(hooks(["needs"]));
