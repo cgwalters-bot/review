@@ -601,6 +601,38 @@ token --hostname github.com`; the token needs `read:project` for the board. It o
 requests, so it never answers, reviews or reruns anything: the app does
 that.
 
+## Review drafts
+
+Agent-drafted reviews of other people's PRs wait as open issues in the
+tracker until the operator approves sending them
+(cgwalters-forge/tracker#848 specifies the format). The off-by-default
+**Review drafts** panel atop the queue lists them, reading only when it is
+opened: the newest draft by a configured author, shown as the review will
+look (event, body, each inline comment under its lines of the PR's diff at
+the draft's `head`), flagged when the PR closed, its head moved or a line
+is not on the diff. A draft with text outside its body and comments, or a
+malformed comment heading, is refused rather than shown in part. **Send**
+ticks the issue body's send box as you, with a line under it naming the
+draft you saw: its source, the SHA-256 of its text, its PR and head. It
+refuses if a newer draft arrived, the body changed, or the PR closed or
+moved since the draft was shown. The tracker's workflow posts the review
+and is what checks the approval: it must post only the newest draft, only
+if it matches that line and the PR is still open at that head.
+**Draft review** takes a PR, creates its draft issue assigned to you
+(refusing a PR that has an open one) and dispatches the tracker's drafting
+run on it. If the dispatch fails, the issue is marked so, unless its body
+changed meanwhile, and Draft review on the same PR dispatches again on
+that issue. Clicks racing from several tabs or viewers start one run: of
+issues created together the oldest dispatches and the rest close, and a
+retry dispatches only for the earliest claim comment on the failure.
+
+Enable it by editing `src/github/review-draft-config.json` on the default
+branch: `tracker` (`OWNER/REPO`), `label`, `authors` (the logins whose
+body or comments may hold a draft: the bot and the operator; the tracker
+is public), `sendBox` (the box's text, as the tracker's workflow reads it),
+and the dispatch `workflow` and `ref`, which takes `task`, `repo`, `item`
+and `kind` inputs. All empty leaves the panel off.
+
 ## Development
 
 The off-by-default [operator action panel](docs/operator-actions.md) shows
