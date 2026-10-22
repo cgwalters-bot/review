@@ -50,6 +50,37 @@ function markdownIt(): MarkdownIt {
     if (!md.validateLink(src)) return md.utils.escapeHtml(`[${alt}]`);
     return `<a href="${md.utils.escapeHtml(src)}">${md.utils.escapeHtml(`[image: ${alt}]`)}</a>`;
   };
+  // HTML comments are hidden, as GitHub hides them: with raw HTML off they
+  // would show as text, such as the bot's `<!-- bot-board-status-v1: … -->`
+  // marker. Code spans are consumed before this rule sees their contents, so
+  // a quoted comment still shows; so does one spanning a blank line, which
+  // markdown-it has already split into paragraphs. `<!-->` and `<!--->`
+  // close themselves, as in HTML. The first `-->` at or after the last search's
+  // start is remembered per inline run, so many unclosed `<!--` cost one
+  // scan, not one each; it is reused only from at or after that start, as
+  // markdown-it steps back after a `[` that is not a link.
+  const closes = new WeakMap<object, { from: number; end: number }>();
+  md.inline.ruler.before("html_inline", "html_comment", (state) => {
+    const pos = state.pos;
+    if (!state.src.startsWith("<!--", pos)) return false;
+    // `end` is where the closing `-->` starts.
+    let end: number;
+    if (state.src.startsWith("<!-->", pos)) {
+      end = pos + 2;
+    } else if (state.src.startsWith("<!--->", pos)) {
+      end = pos + 3;
+    } else {
+      let found = closes.get(state);
+      if (!found || pos + 4 < found.from || (found.end >= 0 && found.end < pos + 4)) {
+        found = { from: pos + 4, end: state.src.indexOf("-->", pos + 4) };
+        closes.set(state, found);
+      }
+      end = found.end;
+    }
+    if (end < 0 || end + 3 > state.posMax) return false;
+    state.pos = end + 3;
+    return true;
+  });
   return md;
 }
 
@@ -94,7 +125,13 @@ export function createRenderer(win: WindowLike): Renderer {
   return (source: string, repository?: string) => {
     const cut = source.length > MAX_SOURCE_CHARS;
     const text = cut ? `${source.slice(0, MAX_SOURCE_CHARS)}\n\n*(cut: too long to show here)*` : source;
-    const tokens = md.parse(text, {});
+    // A paragraph that held only a comment would be left as an empty <p>.
+    const parsed = md.parse(text, {});
+    const empty = new Set<number>();
+    parsed.forEach((token, i) => {
+      if (token.type === "paragraph_open" && parsed[i + 1]?.children?.length === 0 && parsed[i + 2]?.type === "paragraph_close") [i, i + 1, i + 2].forEach((n) => empty.add(n));
+    });
+    const tokens = parsed.filter((_, i) => !empty.has(i));
     tokens.forEach((token, i) => {
       const box = taskBox(tokens, i);
       const first = token.children?.[0];

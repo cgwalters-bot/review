@@ -321,7 +321,24 @@ export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks,
   return waiting;
 }
 
-export function fillStatus(home: Home, status: ProjectStatus | null | undefined, render: Renderer, error?: string, now = Date.now()): void {
+/**
+ * The status writer cuts each item's title to a fixed length ("Cross-check
+ * ostreedev/ostre…"); a link to a board item gets the item's full title
+ * back, and wraps. Only a cut label the full title starts with is replaced,
+ * so a link the writer labelled otherwise keeps its words. The text after
+ * the link and "+N more" are the writer's and cannot be recovered here.
+ */
+function fullTitles(slot: HTMLElement, board: readonly Item[] | undefined): void {
+  if (!board) return;
+  const titles = new Map(board.flatMap((i) => (i.url ? [[i.url.toLowerCase(), i.title] as const] : [])));
+  for (const a of slot.querySelectorAll("a[href]")) {
+    const title = titles.get(a.getAttribute("href")!.toLowerCase());
+    const cut = /^(.+?)(?:…|\.\.\.)$/s.exec(a.textContent ?? "");
+    if (title && cut && title !== a.textContent && title.startsWith(cut[1]!)) a.textContent = title;
+  }
+}
+
+export function fillStatus(home: Home, status: ProjectStatus | null | undefined, render: Renderer, error?: string, now = Date.now(), board?: readonly Item[]): void {
   const slot = home.slots.status;
   const timestamp = status ? Date.parse(status.createdAt) : NaN;
   const minutes = Math.max(0, Math.floor((now - timestamp) / 60_000));
@@ -335,7 +352,10 @@ export function fillStatus(home: Home, status: ProjectStatus | null | undefined,
     if (stale) el.append(" · stale");
   };
   age();
-  if (status && slot.dataset.signature === JSON.stringify(status)) return;
+  if (status && slot.dataset.signature === JSON.stringify(status)) {
+    fullTitles(slot, board);
+    return;
+  }
   slot.dataset.signature = JSON.stringify(status) ?? "";
   slot.replaceChildren(h("h2", {}, "Status"));
   if (!status) {
@@ -353,6 +373,7 @@ export function fillStatus(home: Home, status: ProjectStatus | null | undefined,
     button.textContent = open ? "Collapse" : "Expand";
   });
   slot.append(h("p", { class: "note status-age" }), body, button);
+  fullTitles(slot, board);
   age();
 }
 
