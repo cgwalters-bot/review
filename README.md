@@ -290,6 +290,9 @@ showing only its first paragraph until Expand. Issue references link to GitHub
 left alone. Its publication time and age update on refresh, with a stale warning
 after the Coordinator's configured `staleAfterMinutes` interval. **Focus** shows active epics by priority,
 sub-issue progress and running child items; paused or parked epics are gray.
+An epic whose sub-issues are all closed reads "Ready to close" with what keeps
+it open (its open asks, else its Status) rather than a stale Needs human, and a
+missing Status is flagged in red as a board bug.
 **Agents** shows remote/local placement, engine, item and age, the count
 against `AGENT_TARGET`, and OpenCode's share. Engines come from the optional
 board Engine field or heartbeat worker `engine`; absent engines stay unknown.
@@ -436,9 +439,13 @@ agent job's tailnet name, `agentic-job-RUN-ATTEMPT.TAILNET`. Start
 dispatches the workflow (`POST .../dispatches`; the token needs Actions read
 and write on that repository), unless a run is already live: then it
 attaches to that one, as Attach does. The pane shows its state: starting
-(polling the run with backoff, up to 20 minutes), connecting (retrying every
-5 s for up to 5 minutes while the bridge and its certificate come up),
-connected, or ended. Only a socket that never opened is retried: once one
+(polling the run with backoff, up to 20 minutes), connecting, connected, or
+ended. While it waits it says where the run is, from its jobs' steps:
+queued, joining the tailnet, or the agent probably still on its first turn
+(its step since HH:MM). The run serves the session only once that turn ends, and says so
+only in its job summary, which has no API, so the pane dials once and then
+backs off (5 s, doubling to a minute, for up to 30 minutes) instead of
+dialing every few seconds. Only a socket that never opened is retried: once one
 opens, the bridge has seen the client, so a close means the run ended or
 another client holds it, and attaching waits up to 2 minutes per request
 rather than closing early. Connecting uses the device's tailnet identity, never
