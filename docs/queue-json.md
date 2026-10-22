@@ -47,7 +47,7 @@ in the queue is nested in that item's `asks`, not listed twice.
 | `bug` | boolean | Needs human, but the bot asked nothing about it. |
 | `url` | string or null | The issue or PR on github.com. |
 | `appUrl` | string | The entry in the review app, where it can be acted on. |
-| `verdict` | object, optional | Forge PRs: `state` (`none`, `approved-older`, `changes-requested-older`, `promoted`), a `label`, and the review's `url`. |
+| `verdict` | object, optional | PRs: `state`, his latest review against the head (`none` when he hasn't reviewed, `approved`, `approved-older`, `changes-requested`, `changes-requested-older`, `promoted`), a `label`, and the review's `url`. A forge PR he approved at its head stays listed until he sends `/promote`; `wait`, not the state, says whose turn it is. |
 | `wait` | object, optional | PRs: whose turn it is beyond the verdict. `onBot`: he requested changes and the bot hasn't pushed or replied since, so its action is `wait` (not open), listed last. `reasons`: what he is asked to do, any of `review-requested`, `updated` (the bot responded to his change request), `resign` (approve the head so the bot can add his DCO sign-off), `rerun` (a required check failed). |
 | `blocks` | string, optional | For a top-level ask: the item it blocks, which isn't in the queue. |
 | `why` | string, optional | The board item's Why. |
@@ -62,8 +62,8 @@ in the queue is nested in that item's `asks`, not listed twice.
 - `review`: review a PR (a forge PR, one of the bot's PRs that requests it or needs approving to re-sign, or what a review ask names);
 - `answer`: answer a question;
 - `rerun`: rerun a chore's, or a PR's required, failed workflow jobs;
-- `comment`: do what a chore asks, then say so on it;
-- `read`: read a Draft item, usually a gist, and decide;
+- `comment`: do what a chore, or a review ask the app can't read (`reason` says why), asks, then say so on it; on an approved forge PR, send `/promote`;
+- `read`: read a Draft item, usually a gist, and decide; on an approved forge PR under a human-text policy, write its text for upstream;
 - `see-asks`: act on the nested asks;
 - `wait`: nothing to do, the bot acts next;
 - `act-on-github`: the app can't act on it (`reason` says why);
