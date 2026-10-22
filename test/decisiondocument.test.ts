@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GitHub } from "../src/github/api.ts";
-import { DECISIONS_CONFIG, DOCUMENT_CHANGED_NOTE, DOCUMENT_KEPT, answerDocument, documentView, parseDocument, refreshDocument, sendDocumentAnswer, toggleDocument } from "../src/github/decisiondocument.ts";
+import { DECISIONS_CONFIG, DOCUMENT_CHANGED_NOTE, DOCUMENT_KEPT, MAX_ABOUT, answerDocument, documentView, parseDocument, readMarks, refreshDocument, sendDocumentAnswer, toggleDocument } from "../src/github/decisiondocument.ts";
+import recorded from "./fixtures/decision-about.json" with { type: "json" };
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
 
@@ -339,3 +340,103 @@ test("checkboxes are off unless configured, and toggles refuse stale, option or 
   assert.throws(() => toggleDocument(tasks, "D20", 99, true), /no longer/);
 });
 
+
+// The shapes of D15 (asked for a step the bot answered on 17 Oct) and D19
+// (a PR since closed unmerged), with GitHub's answers in the fixture.
+const about = "### D15 Create the workflow-checker ruleset\nAbout: example/work#15, asked 2026-10-15\n- [ ] A) Create it\nReply:\n\n### D19 Merge with a bypass?\nAbout: example/actions#86\n- [ ] A) Merge\n- [ ] B) Close\nReply:\n\n### D21 Land it\nAbout: example/actions#90\n- [ ] Tell people\nReply:\n\n### D22 Still open\nAbout: example/work#20, asked 2026-10-19T09:30Z\n- [ ] A) Yes\nReply:\n\n### D23 Nothing named\n- [ ] A) Yes\nReply:\n\n## Done\n### D1 Old\nAbout: example/gone#1\n";
+
+function recordedGitHub(document: string, requests: string[] = []): GitHub {
+  return new GitHub(async () => "token", async (url) => {
+    const at = new URL(String(url));
+    const key = decodeURIComponent(at.pathname + at.search);
+    requests.push(key);
+    if (key === "/repos/example/private/issues/8") return new Response(JSON.stringify({ body: document }));
+    const found = (recorded as Record<string, unknown>)[key];
+    return found === undefined ? new Response("{}", { status: 404 }) : new Response(JSON.stringify(found));
+  });
+}
+
+test("About lines name the item an entry is about; malformed or path-like ones name none", () => {
+  const entries = parseDocument(about);
+  assert.deepEqual(entries.map((e) => e.about), [
+    { repo: "example/work", number: 15, asked: "2026-10-15T00:00:00.000Z" },
+    { repo: "example/actions", number: 86 },
+    { repo: "example/actions", number: 90 },
+    { repo: "example/work", number: 20, asked: "2026-10-19T09:30:00.000Z" },
+    undefined,
+    { repo: "example/gone", number: 1 },
+  ]);
+  for (const line of ["About: ../..#1", "About: example/..#1", "About: example/work#0", "About: example/work#3 or so", "About: example/work/issues#3", "About: example/work#3, asked 2026-13-45"]) {
+    assert.equal(parseDocument(`### D1 X\n${line}\n`)[0]!.about?.asked, undefined, line);
+    if (!line.includes("asked")) assert.equal(parseDocument(`### D1 X\n${line}\n`)[0]!.about, undefined, line);
+  }
+  assert.equal(parseDocument("### D1 X\n```\nAbout: example/work#3\n```\n")[0]!.about, undefined);
+});
+
+test("recorded states resolve closed and merged items, mark one answered since the ask, and leave the rest", async () => {
+  const requests: string[] = [];
+  const marks = await readMarks(recordedGitHub(about, requests), parseDocument(about));
+  assert.deepEqual(Object.fromEntries(marks), {
+    D15: { item: "example/work#15", state: "answered", comments: 1, url: "https://github.com/example/work/issues/15" },
+    D19: { item: "example/actions#86", state: "closed", url: "https://github.com/example/actions/pull/86" },
+    D21: { item: "example/actions#90", state: "merged", url: "https://github.com/example/actions/pull/90" },
+  });
+  // Done entries are not read, and a closed item needs no comment read.
+  assert.ok(!requests.some((r) => r.includes("gone") || r.includes("86/comments")));
+  // An open entry's item this viewer cannot read (404 here) leaves it unmarked.
+  const unreadable = "### D1 X\nAbout: example/gone#1\n";
+  assert.equal((await readMarks(recordedGitHub(unreadable), parseDocument(unreadable))).size, 0);
+});
+
+test("a mark read for one About line does not apply once the line names another item or is gone", () => {
+  const marks = new Map([["D19", { item: "example/actions#86", state: "closed" as const, url: "https://github.com/example/actions/pull/86" }]]);
+  for (const source of [about.replace("About: example/actions#86\n", ""), about.replace("example/actions#86", "example/actions#5")]) {
+    const view = documentView(source, async () => {}, render, undefined, undefined, marks);
+    assert.equal(view.querySelector(".decision-resolved"), null);
+    assert.ok(view.querySelector('form[data-id="D19"]'));
+  }
+  assert.ok(documentView(about, async () => {}, render, undefined, undefined, marks).querySelector(".decision-resolved"));
+});
+
+test("resolve is off unless configured, and on it moves resolved entries read-only under Resolved", async () => {
+  const requests: string[] = [];
+  const slot = document.createElement("div");
+  await refreshDocument(recordedGitHub(about, requests), slot, render, { repo: "example/private", number: 8 });
+  assert.equal(requests.length, 1);
+  assert.equal(slot.querySelector(".decision-resolved"), null);
+  assert.equal(DECISIONS_CONFIG.document?.resolve, false);
+
+  await refreshDocument(recordedGitHub(about), slot, render, { repo: "example/private", number: 8, resolve: true, checkboxes: true });
+  const resolved = slot.querySelector<HTMLDetailsElement>(".decision-resolved")!;
+  assert.equal(resolved.open, false);
+  assert.deepEqual([...resolved.querySelectorAll("h3")].map((e) => e.textContent), ["D19 Merge with a bypass?", "D21 Land it"]);
+  assert.equal(resolved.querySelectorAll("form, input").length, 0);
+  assert.match(resolved.textContent!, /example\/actions#86 is closed\./);
+  assert.match(resolved.textContent!, /example\/actions#90 is merged\./);
+  assert.deepEqual([...slot.querySelectorAll("form")].map((f) => f.dataset.id), ["D15", "D22", "D23"]);
+  const d15 = slot.querySelector('form[data-id="D15"]')!.closest("section")!;
+  assert.match(d15.querySelector(".decision-mark")!.textContent!, /example\/work#15 has a comment since the ask/);
+  assert.equal(d15.querySelector("a")!.getAttribute("href"), "https://github.com/example/work/issues/15");
+});
+
+test("an item closing redraws an unchanged document, and a bounded number of items is read", async () => {
+  let state: Record<string, unknown> = { "/repos/example/work/issues/3": { state: "open", html_url: "https://github.com/example/work/issues/3" } };
+  const doc = "### D1 X\nAbout: example/work#3\n- [ ] A) Yes\nReply:\n";
+  const gh = new GitHub(async () => "token", async (url) => {
+    const key = new URL(String(url)).pathname;
+    return new Response(JSON.stringify(key === "/repos/example/private/issues/8" ? { body: doc } : state[key]));
+  });
+  const slot = document.createElement("div");
+  const target = { repo: "example/private", number: 8, resolve: true };
+  await refreshDocument(gh, slot, render, target);
+  assert.equal(slot.querySelectorAll("form").length, 1);
+  state = { "/repos/example/work/issues/3": { state: "closed", html_url: "https://github.com/example/work/issues/3" } };
+  await refreshDocument(gh, slot, render, target);
+  assert.equal(slot.querySelectorAll("form").length, 0);
+  assert.match(slot.querySelector(".decision-resolved")!.textContent!, /D1 X/);
+
+  const many = Array.from({ length: MAX_ABOUT + 5 }, (_, i) => `### D${i + 1} X\nAbout: example/work#${i + 1}\n`).join("");
+  const requests: string[] = [];
+  await readMarks(recordedGitHub(many, requests), parseDocument(many));
+  assert.equal(requests.length, MAX_ABOUT);
+});
