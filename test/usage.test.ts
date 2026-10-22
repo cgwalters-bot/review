@@ -80,6 +80,17 @@ describe("parseUsage", () => {
     }
   });
 
+  it("keeps a held pool's next dispatch time, and none for a bad time or an unheld pool", () => {
+    const raw = fixture<{ pools: Record<string, Record<string, unknown>> }>("usage-pools.json");
+    const openai = (edit: Record<string, unknown>) => parseUsage(body({ ...raw, pools: { openai: { ...raw.pools.openai, ...edit } } }))?.pools?.openai;
+    assert.equal(openai({})?.nextDispatchAt, "2026-10-13T00:57:18.315Z");
+    for (const edit of [{ next_dispatch_at: "soon" }, { next_dispatch_at: null }, { hold: false }]) {
+      const pool = openai(edit);
+      assert.equal(pool?.usedPercent, 80, JSON.stringify(edit));
+      assert.equal(pool?.nextDispatchAt, undefined, JSON.stringify(edit));
+    }
+  });
+
   it("reads Mistral's counters when well formed, and shows nothing otherwise", () => {
     const raw = fixture<{ mistral?: unknown }>("usage-pools.json");
     assert.deepEqual(parseUsage(body(raw))?.mistral, { requests: 2500, tokens: 1234567 });

@@ -81,7 +81,10 @@ export interface UsagePool {
   allowedPercent: number;
   resetsAt: string;
   observedAt: string;
+  /** True when the scheduler dispatches no new work on this pool; running work goes on. */
   hold: boolean;
+  /** When the scheduler said it would dispatch on this pool again (next_dispatch_at), for a held pool that gave one. */
+  nextDispatchAt?: string;
   /** The window's length; a week when the snapshot doesn't say. */
   windowMinutes: number;
 }
@@ -243,7 +246,11 @@ function parsePool(raw: unknown): UsagePool | undefined {
   if (usedPercent === undefined || allowedPercent === undefined || !resetsAt || !observedAt || typeof raw.hold !== "boolean") return undefined;
   // A year at most: past that the "window" is no plan's.
   const minutes = count(raw.window_minutes, 366 * 24 * 60);
-  return { usedPercent, allowedPercent, resetsAt, observedAt, hold: raw.hold, windowMinutes: minutes && minutes >= 1 ? minutes : WEEK_MINUTES };
+  const pool: UsagePool = { usedPercent, allowedPercent, resetsAt, observedAt, hold: raw.hold, windowMinutes: minutes && minutes >= 1 ? minutes : WEEK_MINUTES };
+  // Only a held pool waits for it; a bad or missing time leaves the hold without an end.
+  const next = raw.hold ? time(raw.next_dispatch_at) : undefined;
+  if (next) pool.nextDispatchAt = next;
+  return pool;
 }
 
 /**
