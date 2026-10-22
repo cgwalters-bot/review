@@ -163,7 +163,9 @@ decisions beyond the first fifteen are in collapsed **Watching**.
 A **summary** comes first on the dashboard, a line each: the agents running
 by pool (engine), each linked; the agent runs queued; the board scheduler's
 mode (dispatching or previewing) and the coordinator's and poll's last passes,
-once the ops detail has read them; and each pool's line as below, with held.
+once the ops detail has read them; and each pool's line as below, with held
+and stale spelt out. Agents claimed on the board or last seen, with no current
+run or heartbeat behind them, are counted as not confirmed running.
 Its names open the section with the detail. It is made from what the sections
 already read, so it adds no GitHub request (its Scheduler link opens the ops
 detail, whose reads then start as if opened by hand). Merge queues and the broker's
@@ -176,8 +178,10 @@ thin bar of the percent used with a tick at the scheduler's allowance by now
 such as "50% used · 8% of week gone · ~636% at reset": the share of the window
 gone is worked out from the pool's `resets_at` and `window_minutes` (a week by
 default) at the time it was observed, and the projection is the rate so far
-carried to the window's end (none before 5% of it). The label also says held
-or stale. Each row expands to the exact percentages, reset time and when it was
+carried to the window's end (none before 5% of it). The label also says when
+the scheduler holds new work on the pool (`hold`; running work goes on), until
+`next_dispatch_at` when the snapshot gives it, and when a stale reading was
+taken. Each row expands to the exact percentages, reset time and when it was
 observed. When the snapshot has a `mistral` object (the broker's requests and
 tokens since it started; it has no plan window, so no pace) a Mistral row
 follows them. If the publisher configures an `allowance` in it (`limit_usd`,

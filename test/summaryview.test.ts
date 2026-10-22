@@ -8,6 +8,7 @@ import { fillSummary, homeSkeleton } from "../src/github/homeview.ts";
 import type { ActionRun, RunsData } from "../src/github/runs.ts";
 import { pageState } from "../src/github/state.ts";
 import { parseUsage, USAGE_MARKER } from "../src/github/usage.ts";
+import { time } from "../src/github/view.ts";
 import { fixture, installDom } from "./helpers.ts";
 
 const win = installDom();
@@ -34,14 +35,31 @@ describe("the summary", () => {
     const lines = [...home.slots.summary.querySelectorAll("li")].map(text);
     assert.match(lines[0]!, /^Agents \d+ running/);
     assert.match(lines[1]!, /^Queued 1 run · Agent: review example\/work#4$/);
-    assert.equal(lines[2], "Scheduler open the ops detail to read it");
+    assert.equal(lines[2], "Scheduler mode and last passes not read: they are read when the ops detail is opened");
     assert.deepEqual(lines.slice(3), [
-      "Claude 42% used · 52% of week gone · ~81% at reset",
-      "OpenAI 80% used · 32% of week gone · ~253% at reset · held",
+      "Claude 42% used · 52% of week gone · ~81% at reset · stale: read 23m ago",
+      `OpenAI 80% used · 32% of week gone · ~253% at reset · new work held until ${time("2026-10-13T00:57:18.315Z")}`,
       "Mistral spend not published · $300 a month, 28% gone",
     ]);
     assert.ok(home.slots.summary.querySelectorAll("li")[4]!.classList.contains("hot"));
     assert.equal(home.slots.summary.querySelector<HTMLAnchorElement>("li:nth-child(2) a:not(.sum-jump)")?.href, "https://github.com/example/runs/actions/runs/2");
+  });
+
+  it("says what unconfirmed agents are, and a hold with no end given", () => {
+    const home = homeSkeleton(noHooks);
+    const openai = { ...usage.pools!.openai! };
+    delete openai.nextDispatchAt;
+    const held = pageState({ active: { warnings: [], at: NOW, usage: { state: "ok", usage: { ...usage, pools: { openai } } } }, runs }, NOW);
+    fillSummary(home, { ...held, agents: { ...held.agents, executionKnown: true, unconfirmed: 7 } }, undefined, NOW);
+    const lines = [...home.slots.summary.querySelectorAll("li")].map(text);
+    assert.match(lines[0]!, /^Agents \d+ running.* · 7 claimed or last seen, not confirmed running/);
+    assert.equal(lines[3], "OpenAI 80% used · 32% of week gone · ~253% at reset · new work held");
+
+    // A dispatch time already past promises no end, and the reading's age says why.
+    const later = Date.parse("2026-10-13T12:00:00Z");
+    fillSummary(home, pageState({ active: { warnings: [], at: later, usage: { state: "ok", usage } }, runs }, later), undefined, later);
+    const openaiLine = [...home.slots.summary.querySelectorAll("li")].map(text).find((l) => l.startsWith("OpenAI"));
+    assert.equal(openaiLine, `OpenAI 80% used · 32% of week gone · ~253% at reset · new work held (was due to end ${time("2026-10-13T00:57:18.315Z")}) · stale: read 94h 01m ago`);
   });
 
   it("keeps its lines while what they say is unchanged, and says when usage can't be read", () => {

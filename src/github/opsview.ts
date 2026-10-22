@@ -391,6 +391,23 @@ export function poolWords(pool: UsagePool): { short: string; long: string } {
   };
 }
 
+/** A reading older than this is stale: the usage publisher has not reported since. */
+export const poolStale = (pool: UsagePool, now: number): boolean => now - Date.parse(pool.observedAt) > HEARTBEAT_STALE_MS;
+
+/**
+ * What a bare "held" and "stale" left to be guessed: that the scheduler
+ * starts no new work on the pool (running work goes on), until when if
+ * the snapshot said, and how old a stale reading is. "" for neither.
+ */
+export function poolStateWords(pool: UsagePool, now: number): { held: string; stale: string } {
+  // A time already past (a reading from before it, not since updated) is no end to promise.
+  const next = pool.nextDispatchAt && (Date.parse(pool.nextDispatchAt) > now ? ` until ${time(pool.nextDispatchAt)}` : ` (was due to end ${time(pool.nextDispatchAt)})`);
+  return {
+    held: !pool.hold ? "" : ` · new work held${next || ""}`,
+    stale: poolStale(pool, now) ? ` · stale: read ${duration(now - Date.parse(pool.observedAt), false)} ago` : "",
+  };
+}
+
 /**
  * One pool as a compact row: its name, a thin bar of the percent used
  * with a tick at what the scheduler allows by now, and a short label of
@@ -402,8 +419,9 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
   const used = pool.usedPercent.toFixed(1);
   const allowed = pool.allowedPercent.toFixed(1);
   const over = pool.usedPercent > pool.allowedPercent;
-  const stale = now - Date.parse(pool.observedAt) > HEARTBEAT_STALE_MS;
-  const flags = `${over ? " · over pace" : ""}${pool.hold ? " · held" : ""}`;
+  const stale = poolStale(pool, now);
+  const state = poolStateWords(pool, now);
+  const flags = `${over ? " · over pace" : ""}${state.held}`;
   const words = poolWords(pool);
   const clamp = (n: number, max: number) => String(Math.max(0, Math.min(max, n)));
   const y = String((POOL_BAR.height - POOL_BAR.track) / 2);
@@ -434,7 +452,7 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
       h("span", { class: "pool-name" }, label),
       " ",
       bar,
-      h("span", { class: "pool-label" }, words.short, pool.hold ? " · held" : "", stale && h("span", { class: "pool-stale" }, " · stale")),
+      h("span", { class: "pool-label" }, words.short, state.held, stale && h("span", { class: "pool-stale" }, state.stale)),
     ),
     h(
       "div",

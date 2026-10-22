@@ -106,7 +106,7 @@ describe("operator dashboard", () => {
     const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-pools.json"))}\n\`\`\``)!;
     fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-09T14:00:00Z"));
     assert.match(text(home.slots.weekly), /Claude.*42\.0% used with 51\.5% of the week gone, so ~81% by its end at this rate\. The tick is what the scheduler allows by now: 49\.2%\./);
-    assert.match(text(home.slots.weekly), /OpenAI.*80\.0% used with 31\.7% of the week gone.*allows by now: 30\.1% · over pace · held/);
+    assert.match(text(home.slots.weekly), /OpenAI.*80\.0% used with 31\.7% of the week gone.*allows by now: 30\.1% · over pace · new work held until /);
     assert.match(text(home.slots.weekly), /Publication time unknown/);
     assert.match(text(home.slots.weekly.querySelector(".pool-sum.mistral")), /^Mistral 2,500 requests · 1,234,567 tokens since the broker started$/);
     assert.equal(home.slots.weekly.querySelector(".mistral [role=progressbar]"), null, "counters have no bar");
@@ -155,7 +155,7 @@ describe("operator dashboard", () => {
     // pool, its label, over pace or held, [valuenow, valuetext], the fill's width and the tick's x
     const cases = [
       ["claude", "42% used · 52% of week gone · ~81% at reset", false, ["42", "42.0% used, 49.2% allowed by pace"], "42", "48.7129230406746"],
-      ["openai", "80% used · 32% of week gone · ~253% at reset · held", true, ["80", "80.0% used, 30.1% allowed by pace, over pace, held"], "80", "29.60736748511905"],
+      ["openai", `80% used · 32% of week gone · ~253% at reset · new work held until ${time("2026-10-13T00:57:18.315Z")}`, true, ["80", `80.0% used, 30.1% allowed by pace, over pace, new work held until ${time("2026-10-13T00:57:18.315Z")}`], "80", "29.60736748511905"],
     ] as const;
     for (const [name, label, over, aria, fill, tick] of cases) {
       const d = pool(name);
@@ -173,7 +173,7 @@ describe("operator dashboard", () => {
     pool("openai").open = true;
     at("2026-10-10T14:00:00Z");
     assert.deepEqual([pool("claude").open, pool("openai").open], [false, true], "a redraw keeps his expander open");
-    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% used · 52% of week gone · ~81% at reset · stale");
+    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% used · 52% of week gone · ~81% at reset · stale: read 24h 23m ago");
     assert.match(pool("claude").querySelector("[role=progressbar]")!.getAttribute("aria-valuetext")!, /, stale$/);
     assert.match(text(pool("claude").querySelector(".pool-detail")), /Observed .*, 24h 23m ago · stale: the usage publisher has not reported since\.$/);
 
@@ -184,7 +184,7 @@ describe("operator dashboard", () => {
 
     // Two hours into a week: the share gone, but too early to project.
     fillUsage(home, { state: "ok", usage: { ...usage, pools: { openai: { ...usage.pools!.openai!, observedAt: "2026-10-07T10:47:12.000Z", usedPercent: 3 } } } }, undefined, Date.parse("2026-10-07T10:50:00Z"));
-    assert.equal(text(pool("openai").querySelector(".pool-label")), "3% used · 1% of week gone · held");
+    assert.equal(text(pool("openai").querySelector(".pool-label")), `3% used · 1% of week gone · new work held until ${time("2026-10-13T00:57:18.315Z")}`);
     assert.match(text(pool("openai").querySelector(".pool-detail")), /too early to project/);
   });
 
