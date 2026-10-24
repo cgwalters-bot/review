@@ -66,7 +66,12 @@ function ago(at: string | undefined, now: number): string {
   return Number.isFinite(t) ? `${duration(Math.max(0, now - t), false)} ago` : "time unknown";
 }
 
-/** The board scheduler's mode (what BOARD_DISPATCH makes it do), the coordinator's and the poll's last passes. */
+/**
+ * The board scheduler's mode (what BOARD_DISPATCH makes it do), the poll's
+ * last pass and the broker probe's last run (it has only a schedule, so
+ * every run is the default branch's). The probe's job runs only
+ * while tracker's BROKER_OUTAGE is apply, so otherwise it reads "skipped".
+ */
 function schedulerLine(controller: ControllerData | undefined, now: number, targets: SummaryTargets): HTMLElement {
   const line = h("li", {}, jump("ops", "Scheduler", targets), " ");
   if (!controller) return (line.append("mode and last passes not read: they are read when the ops detail is opened"), line);
@@ -76,8 +81,8 @@ function schedulerLine(controller: ControllerData | undefined, now: number, targ
   const mode = board?.scheduler?.mode;
   line.append(
     `board ${mode === "acting" ? "dispatching" : mode === "preview" ? "previewing (dry run)" : "mode unknown"}`,
-    ` · coordinator ${pass(piece("Coordinator"))}`,
     ` · poll ${pass(piece("Poll"))}`,
+    ` · broker ${pass(piece("Broker probe"))}`,
   );
   return line;
 }
@@ -89,7 +94,9 @@ function resourcesLines(state: PageState, now: number, targets: SummaryTargets):
     const pool = usage.pools?.[name];
     if (!pool) return [];
     const { held, stale } = poolStateWords(pool, now);
-    return [h("li", pool.hold ? { class: "hot" } : {}, jump("weekly-usage", label, targets), ` ${poolWords(pool).short}${held}${stale}`)];
+    // Over pace as the pool's row has it: used beyond what the scheduler allows by now, held or not yet.
+    const over = pool.usedPercent > pool.allowedPercent ? ` · over pace: ${Math.round(pool.allowedPercent)}% allowed by now` : "";
+    return [h("li", pool.hold || over ? { class: "hot" } : {}, jump("weekly-usage", label, targets), ` ${poolWords(pool).short}${over}${held}${stale}`)];
   });
   const m = usage.mistral;
   if (m?.allowance) lines.push(h("li", {}, jump("weekly-usage", "Mistral", targets), ` $${m.allowance.spentUsd.toFixed(2)}${m.allowance.estimated ? " est." : ""} of $${m.allowance.limitUsd} this month`));

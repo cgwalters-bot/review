@@ -47,7 +47,8 @@ export const VIEW_ALL_CLASS = "view-all";
 
 function statusInterval(): number | undefined {
   try {
-    return parseControllerConfig(CONTROLLER).hosted.find((p) => p.label === "Coordinator")?.staleAfterMinutes;
+    // The poll's pass took over the coordinator's (tracker has no coordinator.yml), so its interval.
+    return parseControllerConfig(CONTROLLER).hosted.find((p) => p.label === "Poll")?.staleAfterMinutes;
   } catch {
     // Invalid ops configuration must not prevent the dashboard rendering.
     return undefined;
