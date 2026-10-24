@@ -162,14 +162,16 @@ decisions beyond the first fifteen are in collapsed **Watching**.
 
 A **summary** comes first on the dashboard, a line each: the agents running
 by pool (engine), each linked; the agent runs queued; the board scheduler's
-mode (dispatching or previewing) and the coordinator's and poll's last passes,
-once the ops detail has read them; and each pool's line as below, with held
-and stale spelt out. Agents claimed on the board or last seen, with no current
-run or heartbeat behind them, are counted as not confirmed running.
+mode (dispatching or previewing), the poll's last pass and the broker
+probe's last run (`broker ok 12m ago`, or its conclusion: `skipped` while
+tracker's `BROKER_OUTAGE` isn't `apply`), once the ops detail has read them;
+and each pool's line as below, with held, over pace and stale spelt out.
+Agents claimed on the board or last seen, with no current run or heartbeat
+behind them, are counted as not confirmed running.
 Its names open the section with the detail. It is made from what the sections
 already read, so it adds no GitHub request (its Scheduler link opens the ops
-detail, whose reads then start as if opened by hand). Merge queues and the broker's
-probe are not in it: nothing on the page reads them yet.
+detail, whose reads then start as if opened by hand). Merge queues are not in
+it: nothing on the page reads them yet.
 
 **Weekly subscription usage** follows, always visible. It
 reads Claude and OpenAI from `bot-usage/v1`'s `pools`, one compact row each: a
@@ -294,7 +296,7 @@ showing only its first paragraph until Expand. Issue references link to GitHub
 left alone. HTML comments, such as the writer's marker, are hidden as on
 GitHub, and a link to a board item whose title the writer cut short shows
 the item's full title. Its publication time and age update on refresh, with a
-stale warning after the Coordinator's configured `staleAfterMinutes` interval. **Focus** shows active epics by priority,
+stale warning after the Poll's configured `staleAfterMinutes` interval. **Focus** shows active epics by priority,
 sub-issue progress and running child items; paused or parked epics are gray.
 An epic whose sub-issues are all closed reads "Ready to close" with what keeps
 it open (its open asks, else its Status) rather than a stale Needs human, and a
@@ -471,17 +473,18 @@ the transcript display is bounded.
 interactive session down would stop anything. Its hosted pieces are the
 workflows, or jobs of one, listed in `src/github/controller.json`: each
 with its last finished run (conclusion, age, link) and one running now.
-Poll and Coordinator show a linked **last pass N minutes ago**, derived
+Poll and Broker probe show a linked **last pass N minutes ago**, derived
 from Actions runs (and the configured job for Poll), never the heartbeat
 comment. Their `staleAfterMinutes: 60` warns after an hour without a
-completed pass; queued or running successors do not hide that warning,
+completed pass (both are scheduled every 10–15 minutes, which GitHub may
+start late or drop); queued or running successors do not hide that warning,
 and failed passes retain their failure status. The age and warning update
 while the page stays open. This setting is opt-in per hosted piece, accepts
 1–10080 minutes, and adds no reads beyond the existing bounded run/job lists.
 Missing workflows, unreadable sources and no completed pass remain explicit,
-not evidence of a live controller. The configured `coordinator.yml` is not
-deployed yet; this does not infer a coordinator step's success from its parent
-job or implement the broader agent-run/usage migration in tracker#422.
+not evidence of a live controller. Tracker has no `coordinator.yml`: the
+poll's pass plans the epics now, so there is no Coordinator piece. This does
+not implement the broader agent-run/usage migration in tracker#422.
 A workflow with no runs yet shows as not built; a job missing from its
 last few runs, as not seen. The board scheduler's mode (preview or
 acting) and how many items its last pass would start or started are read

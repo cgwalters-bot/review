@@ -10,7 +10,7 @@
     { "label": "Board scheduler", "what": "starts Ready items", "repo": "cgwalters-forge/tracker", "workflow": "poll.yml", "job": "board", "read": "scheduler" },
     { "label": "agent-board", "what": "previews its poll", "repo": "cgwalters-forge/tracker", "workflow": "poll.yml", "job": "agent-board" },
     { "label": "Usage", "what": "publishes the usage snapshot", "repo": "cgwalters-forge/tracker", "workflow": "usage.yml" },
-    { "label": "Coordinator", "what": "breaks epics into sub-issues (tracker#572)", "repo": "cgwalters-forge/tracker", "workflow": "coordinator.yml", "staleAfterMinutes": 60 },
+    { "label": "Broker probe", "what": "checks the broker answers", "repo": "cgwalters-forge/tracker", "workflow": "broker-probe.yml", "staleAfterMinutes": 60 },
     { "label": "Dispatch", "what": "agent runs", "repo": "cgwalters-forge/tracker", "workflow": "dispatch.yml", "read": "in-flight" }
   ]
 }
