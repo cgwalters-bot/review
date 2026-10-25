@@ -39,7 +39,7 @@ import {
   viewedKey,
 } from "./store.ts";
 import type { RunStatus } from "./backend.ts";
-import { type ContextHooks, pill, runView, time } from "./view.ts";
+import { ageLabel, type ContextHooks, pill, runView, time } from "./view.ts";
 import type { PrReason, PrWait } from "./waiting.ts";
 
 export { FILE_CLASS };
@@ -286,7 +286,7 @@ function reviewForm(d: PrDetail, opts: PrViewOptions, handlers: PrViewHandlers, 
     for (const c of list) {
       const go = h("button", { type: "button", class: "linkish" }, `${c.path}:${c.start_line !== undefined ? `${c.start_line}–` : ""}${c.line}${c.side === "LEFT" ? " (old)" : ""}${c.commit !== d.head ? ` @${c.commit.slice(0, 7)}` : ""}`);
       go.addEventListener("click", () => hooks.jump(c));
-      ul.append(h("li", {}, go, h("span", { class: "tag" }, ` ${c.body.replace(/\s+/g, " ").slice(0, 80)}`)));
+      ul.append(h("li", {}, go, h("span", { class: "tag" }, ` ${c.body.replace(/\s+/g, " ")}`)));
     }
     drafts.append(h("p", { class: "tag" }, `${list.length} line comment${list.length > 1 ? "s" : ""} will go out with your review:`), ul);
   };
@@ -370,7 +370,7 @@ function commitsSection(d: PrDetail): HTMLElement {
     const det = h(
       "details",
       { class: "commit" },
-      h("summary", {}, h("code", {}, short(c.sha)), " ", h("span", { class: "subject" }, subject), h("span", { class: "tag" }, ` ${c.author}${c.date ? ` · ${time(c.date)}` : ""}`)),
+      h("summary", {}, h("code", {}, short(c.sha)), " ", h("span", { class: "subject" }, subject), h("span", { class: "tag" }, ` ${c.author}`, c.date ? h("span", {}, " · ", ageLabel(c.date, Date.now())) : null)),
       body ? h("pre", { class: "msg" }, body) : h("p", { class: "note" }, "(no body)"),
       h("p", { class: "note" }, link(c.url, "commit on GitHub")),
     );

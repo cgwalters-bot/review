@@ -19,7 +19,7 @@ describe("firstParagraph", () => {
     ["<!-- a comment -->\n\n## Heading\n---\n\nThe text.\n\nMore.", "The text."],
     ["<!-- unterminated", ""],
     ["\r\n\r\nWindows\r\nlines\r\n\r\nnext", "Windows\nlines"],
-    [`${"x".repeat(500)}`, `${"x".repeat(399)}…`],
+    [`${"x".repeat(500)}`, `${"x".repeat(500)}`],
   ];
   for (const [body, want] of cases) it(JSON.stringify(body.slice(0, 30)), () => assert.equal(firstParagraph(body), want));
 });

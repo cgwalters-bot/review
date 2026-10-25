@@ -3,8 +3,9 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createRenderer, MAX_SOURCE_CHARS } from "../src/markdown.ts";
+import { createRenderer, MAX_SOURCE_CHARS, taskItemLines } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
+import { readFileSync } from "node:fs";
 
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
@@ -124,11 +125,12 @@ describe("rendering", () => {
     it(name, () => assert.equal(html(source), want));
   }
 
-  it("hides HTML comments, as GitHub does, but not in code or when unclosed", () => {
+  it("strips complete HTML comments before Markdown, including code and multiline metadata", () => {
     assert.equal(html("before <!-- hidden *x* [y](https://e.example) --> after\n\n<!-- marker: abc -->"), "<p>before  after</p>\n");
     assert.equal(html("- a <!--\nb --> c"), "<ul>\n<li>a  c</li>\n</ul>\n");
-    assert.equal(html("`<!-- shown -->`"), "<p><code>&lt;!-- shown --&gt;</code></p>\n");
-    assert.equal(html("```\n<!-- shown -->\n```"), "<pre><code>&lt;!-- shown --&gt;\n</code></pre>\n");
+    assert.doesNotMatch(html("`<!-- hidden -->`"), /hidden/);
+    assert.equal(html("```\n<!-- hidden -->\n```"), "<pre><code>\n</code></pre>\n");
+    assert.equal(html("before <!-- metadata\n\n## not a heading\n\n[hidden](https://e.example) --> after"), "<p>before  after</p>\n");
     assert.equal(html("a <!-- open"), "<p>a &lt;!-- open</p>\n");
     assert.equal(html("a <!--> b <!---> c -->"), "<p>a  b  c --&gt;</p>\n");
   });
@@ -145,10 +147,18 @@ describe("rendering", () => {
     assert.equal(dom(`${"<!--".repeat(MAX_SOURCE_CHARS / 8)}-->x`).textContent?.trim(), "x");
   });
 
-  it("cuts very long sources", () => {
-    const root = dom("x".repeat(MAX_SOURCE_CHARS + 10));
-    assert.match(root.textContent ?? "", /cut: too long/);
-    assert.ok((root.textContent ?? "").length < MAX_SOURCE_CHARS + 100);
+  it("does not cut long sources", () => {
+    const source = "x".repeat(MAX_SOURCE_CHARS + 10);
+    assert.equal(dom(source).textContent?.trim(), source);
+  });
+
+  it("renders the recorded status body without its metadata marker", () => {
+    const { body } = JSON.parse(readFileSync(new URL("./fixtures/project-status.json", import.meta.url), "utf8"));
+    assert.match(body, /bot-board-status-v1/);
+    const root = dom(body);
+    assert.doesNotMatch(root.textContent ?? "", /bot-board-status-v1|<!--|-->/);
+    assert.ok(root.querySelector("h2"));
+    assertSafe(root);
   });
 });
 
@@ -157,4 +167,11 @@ it("shows task list items as ☑/☐, also when the list interrupts a paragraph,
   assert.deepEqual([...root.querySelectorAll("li")].map((li) => li.textContent), ["☑ A) An org ruleset x", "☐ B) Not a [ ] box"]);
   assert.equal(root.querySelector("p:last-child")!.textContent, "[x] not in a list");
   assertSafe(root);
+});
+
+it("keeps task source lines aligned when multiline metadata hides tasks", () => {
+  const source = "<!-- metadata\n\n- [ ] hidden\n-->\n\n- [ ] visible\n- [x] done";
+  const root = dom(source);
+  assert.deepEqual([...root.querySelectorAll("li")].map((li) => li.textContent), ["☐ visible", "☑ done"]);
+  assert.deepEqual(taskItemLines(source), [5, 6]);
 });

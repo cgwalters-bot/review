@@ -14,7 +14,6 @@ import { decisionLabel, shortRef } from "./triage.ts";
 import { age, answerForm, askText, excerpt, KIND_LABEL, KIND_TITLE, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, rowText, SINCE_ATTR, sinceTitle, STATE_LABEL } from "./view.ts";
 
 /** Characters of the ask shown on a row before "The whole question". */
-const ASK_EXCERPT = 240;
 /** The prefix the bot puts before a question in the board's Why field. */
 const WHY_ASK_RE = /^Q:\s*/;
 /** Rows of the answer text box in a row: a short note, not the item view's four. */
@@ -210,10 +209,10 @@ function headline(n: Need, asked: string | undefined, fallback: string | undefin
   const why = n.why?.trim();
   if (n.action === "answer") {
     const lead = asked ?? (why && WHY_ASK_RE.test(why) ? why.replace(WHY_ASK_RE, "") : undefined);
-    if (lead && lead !== n.title) return { lead: excerpt(lead, ASK_EXCERPT), under: n.title };
+    if (lead && lead !== n.title) return { lead: excerpt(lead), under: n.title };
   }
   const under = why || fallback;
-  return under && under !== n.title ? { lead: n.title, under: excerpt(under, ASK_EXCERPT) } : { lead: n.title };
+  return under && under !== n.title ? { lead: n.title, under: excerpt(under) } : { lead: n.title };
 }
 
 export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
@@ -245,7 +244,7 @@ export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
       tracks ? " · tracks " : null,
       tracks ? link(tracks, shortRef(tracks)) : null,
       // The board's Org, unless it is the PR's owner, already in its reference.
-      [pr && item?.org?.toLowerCase() === pr.ref.owner.toLowerCase() ? undefined : item?.org, n.parent ? `for ${excerpt(n.parent.title, 48)}` : undefined].filter(Boolean).map((t) => ` · ${t}`).join(""),
+      [pr && item?.org?.toLowerCase() === pr.ref.owner.toLowerCase() ? undefined : item?.org, n.parent ? `for ${excerpt(n.parent.title)}` : undefined].filter(Boolean).map((t) => ` · ${t}`).join(""),
       " · ",
       h("span", { class: "age", title: since ? sinceTitle(e, since, "asked") : "ask date not available", ...(since ? { [SINCE_ATTR]: since } : {}) }, age(since, hooks.now) || "age unknown"),
     ),

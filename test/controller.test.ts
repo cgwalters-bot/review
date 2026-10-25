@@ -140,7 +140,7 @@ describe("loadController", () => {
     }
     const panel = opsDetail({ at: NOW, warnings: [], controller: data }, NOW);
     assert.equal(panel.querySelectorAll(".ctl-pass-age.warn").length, 2);
-    assert.match(panel.querySelector(".ctl-list")?.textContent ?? "", /last pass 80 minutes ago · stale/);
+    assert.match(panel.querySelector(".ctl-list")?.textContent ?? "", /last pass 1h ago · stale/);
   });
 
   it("reads each piece's latest run, the scheduler's pass and the runs in flight", async () => {
@@ -298,12 +298,12 @@ describe("the controller panel", () => {
     for (const local of [undefined, null, hb("2026-10-14T19:20:00Z"), hb("2026-10-14T17:00:00Z")]) {
       const el = opsDetail({ at: NOW, warnings: [], ...(local !== undefined ? { local } : {}), controller: { pieces: [{ piece, state: "ok", last }] } }, NOW);
       const pass = el.querySelector(".ctl-pass-age")!;
-      assert.equal(pass.textContent, "last pass 10 minutes ago");
+      assert.equal(pass.textContent, "last pass 10m ago");
       assert.equal(pass.parentElement?.getAttribute("href"), last.url);
       assert.equal(pass.classList.contains("warn"), false);
       assert.equal(el.querySelector(".ctl .st")?.textContent, "failure");
       tickOps(el, NOW + 60_000);
-      assert.equal(pass.textContent, "last pass 11 minutes ago · stale");
+      assert.equal(pass.textContent, "last pass 11m ago · stale");
       assert.equal(pass.classList.contains("warn"), true);
     }
   });

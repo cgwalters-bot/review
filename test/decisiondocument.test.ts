@@ -264,6 +264,24 @@ test("tapping a checkbox toggles only that item's line in the document", async (
   }
 });
 
+test("comment line endings never redirect checkbox edits to hidden tasks", async () => {
+  for (const ending of ["\n", "\r\n", "\r"]) {
+    const body = `### D1 Tasks\n<!--${ending}- [ ] hidden${ending}-->${ending}- [ ] visible`;
+    let server = body;
+    const gh = new GitHub(async () => "token", async (_, init) => {
+      if (init?.method === "PATCH") server = JSON.parse(String(init.body)).body;
+      return new Response(JSON.stringify({ body: server }));
+    });
+    const slot = document.createElement("div");
+    await refreshDocument(gh, slot, render, target);
+    const boxes = slot.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    assert.equal(boxes.length, 1);
+    assert.equal(boxes[0]!.closest("li")!.textContent!.trim(), "visible");
+    await tap(boxes[0]!);
+    assert.equal(server, body.replace("- [ ] visible", "- [x] visible"));
+  }
+});
+
 test("a checkbox refuses to write over a document changed since it was read, and says so", async () => {
   let server = tasks;
   let patches = 0;

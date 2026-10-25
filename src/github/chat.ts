@@ -378,11 +378,11 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
 
     const render = (u: any) => {
       if (!u || chars >= 1024 * 1024 || log.childElementCount >= 1000) { say("Transcript display limit reached"); return; }
-      const text = (v: unknown) => typeof v === "string" ? v.slice(0, 65536) : "";
+      const text = (v: unknown) => typeof v === "string" ? v : "";
       let node: HTMLElement | undefined;
       if (u.sessionUpdate === "agent_message_chunk" || u.sessionUpdate === "user_message_chunk") {
         if (u.content?.type === "text") {
-          const chunk = text(u.content.text).slice(0, 1024 * 1024 - chars);
+          const chunk = text(u.content.text);
           if (!chunk) return;
           if (!current || currentKind !== u.sessionUpdate) {
             current = h("p", { class: u.sessionUpdate === "user_message_chunk" ? "chat-user" : "chat-agent" }); currentKind = u.sessionUpdate; log.append(current);

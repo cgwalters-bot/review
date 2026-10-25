@@ -64,7 +64,8 @@ describe("operator dashboard", () => {
     assert.match(shown, /OpenAI.*1\.0% used.*allows by now: 15\.4%\./);
     assert.doesNotMatch(shown, /held|stale/);
     assert.match(text(home.slots.weekly.querySelector(".mistral .pool-sum")), /\$41\.25 \/ \$300/);
-    assert.ok(shown.includes(`Published ${time("2026-10-18T14:42:00Z")}.`), shown);
+    assert.ok(shown.includes("Published 2m ago."), shown);
+    assert.ok([...home.slots.weekly.querySelectorAll(".age")].some((el) => el.getAttribute("title") === time("2026-10-18T14:42:00Z")));
   });
 
   it("lists the day's runs under the pools, largest first, with totals by kind and repository", () => {
@@ -81,7 +82,8 @@ describe("operator dashboard", () => {
       ["OpenAI", "review", "cgwalters-forge/tracker", "cgwalters-forge/tracker#797", "3.1M"],
       ["Mistral", "unknown", "cgwalters-forge/agentic-job", "—", "520k"],
     ]);
-    assert.equal(rows[0]?.[5], time("2026-10-18T13:30:00Z"));
+    assert.equal(rows[0]?.[5], "1h");
+    assert.equal(spend.querySelector("tbody .when .age")?.getAttribute("title"), time("2026-10-18T13:30:00Z"));
     const links = [...spend.querySelectorAll("tbody tr:first-child a")].map((a) => a.getAttribute("href"));
     assert.deepEqual(links, ["https://github.com/cgwalters-forge/review/issues/99", "https://github.com/cgwalters-forge/review/actions/runs/19876543210"]);
     assert.equal(spend.querySelector("tbody td.num")?.getAttribute("title"), "120k input, 310k output, 41.0M cache read, 2.6M cache write, in 412 requests");
@@ -173,9 +175,9 @@ describe("operator dashboard", () => {
     pool("openai").open = true;
     at("2026-10-10T14:00:00Z");
     assert.deepEqual([pool("claude").open, pool("openai").open], [false, true], "a redraw keeps his expander open");
-    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% used · 52% of week gone · ~81% at reset · stale: read 24h 23m ago");
+    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% used · 52% of week gone · ~81% at reset · stale: read 1d ago");
     assert.match(pool("claude").querySelector("[role=progressbar]")!.getAttribute("aria-valuetext")!, /, stale$/);
-    assert.match(text(pool("claude").querySelector(".pool-detail")), /Observed .*, 24h 23m ago · stale: the usage publisher has not reported since\.$/);
+    assert.match(text(pool("claude").querySelector(".pool-detail")), /Observed 1d ago · stale: the usage publisher has not reported since\.$/);
 
     fillUsage(home, { state: "ok", usage: { ...usage, pools: { claude: { ...usage.pools!.claude!, usedPercent: 130, allowedPercent: 100 } } } }, undefined, Date.parse("2026-10-09T13:50:00Z"));
     const full = pool("claude").querySelector("[role=progressbar]")!;
@@ -259,13 +261,12 @@ describe("operator dashboard", () => {
     assert.ok([...home.el.children].indexOf(home.sections.needs.details) < [...home.el.children].indexOf(home.slots.status));
     const status = { body: "First paragraph\n\nSecond paragraph", createdAt: "2026-10-15T10:00:00Z" };
     fillStatus(home, status, render, undefined, Date.parse("2026-10-15T10:30:00Z"));
-    // The locale's clock, as every other time on the page: 12 or 24 hours as it prefers.
-    const at = new Date("2026-10-15T10:00:00Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    assert.equal(text(home.slots.status.querySelector(".status-age")), `As of ${at}, 30 min ago`);
+    assert.equal(text(home.slots.status.querySelector(".status-age")), "Published 30m ago");
+    assert.match(home.slots.status.querySelector<HTMLElement>(".status-age .age")!.title, /2026/);
     assert.equal(home.slots.status.querySelector(".status-age.hot"), null);
     home.slots.status.querySelector<HTMLButtonElement>("button")!.click();
     fillStatus(home, status, render, undefined, Date.parse("2026-10-15T11:01:00Z"));
-    assert.match(text(home.slots.status.querySelector(".status-age.hot")), /61 min ago · stale/);
+    assert.match(text(home.slots.status.querySelector(".status-age.hot")), /1h ago · stale/);
     assert.equal(home.slots.status.querySelector("button")?.getAttribute("aria-expanded"), "true");
     fillStatus(home, { ...status, createdAt: "invalid" }, render);
     assert.match(text(home.slots.status), /Status age unknown/);

@@ -5,7 +5,7 @@
 import { h, link } from "../dom.ts";
 import type { Item } from "./board.ts";
 import { type Change, diffBoard, groupByTime, isUrgent, type ItemChanges, type Snapshot } from "./boardfeed.ts";
-import { age, pill, time } from "./view.ts";
+import { ageLabel, pill } from "./view.ts";
 
 export interface FeedOptions {
   now: number;
@@ -57,7 +57,7 @@ export function feedRow(c: ItemChanges, now: number): HTMLElement {
       pill(c.priority),
       h("span", { class: "feed-chips" }, ...c.changes.map(chip)),
       h("span", { class: "feed-title" }, link(c.url, c.title)),
-      c.at ? h("span", { class: "age", title: time(c.at) }, age(c.at, now)) : null,
+      c.at ? ageLabel(c.at, now) : null,
     ),
     news?.to ? h("p", { class: "feed-news" }, news.to) : null,
   );
@@ -86,7 +86,7 @@ export function feedSection(board: readonly Item[] | undefined, seen: Snapshot |
     h(
       "div",
       { class: "feed-bar" },
-      h("span", { class: "note" }, `Since ${time(new Date(seen.at).toISOString())} · ${all.length} item${all.length === 1 ? "" : "s"} changed`),
+      h("span", { class: "note" }, "Since ", ageLabel(new Date(seen.at).toISOString(), opts.now), ` ago · ${all.length} item${all.length === 1 ? "" : "s"} changed`),
       h("label", {}, toggle, " P0/P1 only"),
       seenBtn,
     ),
