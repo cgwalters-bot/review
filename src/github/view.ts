@@ -4,6 +4,8 @@
 import { type Answer, parseAnswer, parseBlocks, type Question, unfencedLines } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
+import { age, time } from "../time.ts";
+export { age, clock, time } from "../time.ts";
 import { commentNote, type ItemAction, parseAskBody } from "./asks.ts";
 import { authorLabel } from "./authors.ts";
 import { ASK_LABELS, askKind, type IssueRef, isAsk, isQuestion, type Item, questionOf, type SubIssueSummary } from "./board.ts";
@@ -12,46 +14,18 @@ import { BOARD_URL, OPERATOR } from "./config.ts";
 import { ALL, applyFilter, type Chip, chips, filterText, filterToken, type QueueFilter } from "./filter.ts";
 import { type Entry, type EntryKind, groupRanked, onBot } from "./queue.ts";
 
-/** Characters of Why shown on a queue row. */
-const WHY_EXCERPT = 160;
-
 function refLabel(item: Item): string {
   if (item.ref) return `${item.ref.owner}/${item.ref.repo}#${item.ref.number}`;
   return item.kind === "draft" ? "draft item" : "item";
 }
 
-export function excerpt(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+export function excerpt(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
-/** A time of day, hours and minutes, the locale's way (12 or 24 h): the one format every clock time uses. "" for a bad time. */
-export function clock(ms: number): string {
-  return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-}
-
-export function time(iso: string | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? ""
-    : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-const AGE_UNITS: [number, string][] = [
-  [7 * 24 * 3600_000, "w"],
-  [24 * 3600_000, "d"],
-  [3600_000, "h"],
-  [60_000, "m"],
-];
-
-/** A compact age, e.g. "3d", or "" for no or a bad date. */
-export function age(iso: string | undefined, now: number): string {
-  const t = iso ? Date.parse(iso) : Number.NaN;
-  if (Number.isNaN(t)) return "";
-  const ms = Math.max(0, now - t);
-  for (const [unit, suffix] of AGE_UNITS) if (ms >= unit) return `${Math.floor(ms / unit)}${suffix}`;
-  return "now";
+/** An in-place ticking relative time; the full timestamp stays in its tooltip. */
+export function ageLabel(iso: string | undefined, now: number, title = time(iso)): HTMLElement {
+  return h("span", { class: "age", title, ...(iso && Number.isFinite(Date.parse(iso)) ? { [SINCE_ATTR]: iso } : {}) }, age(iso, now) || "age unknown");
 }
 
 /**
@@ -128,7 +102,7 @@ export function askText(item: Item): string | undefined {
 /** The row's one-line summary: what an ask asks, else Why. */
 export function rowText(e: Entry): string {
   const text = (e.item ? askText(e.item) : undefined) ?? e.item?.why ?? "";
-  return text ? excerpt(text, WHY_EXCERPT) : "";
+  return text ? excerpt(text) : "";
 }
 
 function row(e: Entry, labelOf: (e: Entry) => RowLabel | undefined, now: number, child: boolean): HTMLElement {
@@ -154,7 +128,7 @@ function row(e: Entry, labelOf: (e: Entry) => RowLabel | undefined, now: number,
       ),
       why ? h("span", { class: "why" }, why) : null,
     ),
-    h("span", { class: "age", title: sinceTitle(e, e.since), ...(e.since ? { [SINCE_ATTR]: e.since } : {}) }, age(e.since, now)),
+    ageLabel(e.since, now, sinceTitle(e, e.since)),
   );
 }
 
@@ -427,7 +401,7 @@ function commentView(c: Context["comments"][number], render: Renderer, onAsk: "q
   return h(
     "article",
     { class: `comment${isAnswer ? " your-answer" : ""}` },
-    h("div", { class: "meta" }, link(c.url, `${authorLabel(c.author)} · ${time(c.createdAt)}`), label),
+    h("div", { class: "meta" }, link(c.url, authorLabel(c.author)), " · ", ageLabel(c.createdAt, Date.now()), label),
     h("div", { class: "md" }, render(c.body)),
   );
 }

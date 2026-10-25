@@ -219,7 +219,7 @@ describe("agentsBody", () => {
     const t = text(el);
     assert.match(t, /harness 0 · upstream 0/);
     assert.match(t, /\+3 unconfirmed/);
-    assert.match(t, /heartbeat 3h old/);
+    assert.match(t, /heartbeat 3h ago/);
     assert.deepEqual([...el.querySelectorAll(`.${AGENT_ROW_CLASS} strong`)].map((s) => s.textContent), ["wfc", "fsck", "old"]);
     assert.equal(el.querySelectorAll(`.${AGENT_ROW_CLASS}.stale`).length, 3);
     assert.deepEqual(agentsSummary(data, NOW), { count: "0/4", title: "0 working, aiming for about 4", under: true });
@@ -240,7 +240,7 @@ describe("agentsBody", () => {
       [{ board, local: null, warnings: [], at: NOW }, /no heartbeat/],
       [{ local: heartbeat([]), warnings: [], at: NOW }, /board unread/],
       [{ board: [], local: heartbeat([]), warnings: [], at: NOW }, /No agent is working right now/],
-      [{ board: [], local: heartbeat([], 2 * 24 * 60 * MIN, { loopState: "stopped" }), warnings: [], at: NOW }, /coordinator stopped · heartbeat 2d old/],
+      [{ board: [], local: heartbeat([], 2 * 24 * 60 * MIN, { loopState: "stopped" }), warnings: [], at: NOW }, /coordinator stopped · heartbeat 2d ago/],
     ];
     for (const [data, want] of cases) assert.match(text(agentsBody(data, NOW)), want);
     const failed = agentsBody({ local: heartbeat([]), warnings: ["Couldn't read the board: 502"], at: NOW }, NOW);

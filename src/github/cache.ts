@@ -10,6 +10,7 @@
 // persisted. Without a store the cache is memory only, as it always was.
 
 import { CACHE_MAX_AGE_MS, CACHE_MAX_BYTES } from "./config.ts";
+import { age } from "../time.ts";
 
 /** A cached response, as the client uses it. */
 export interface CachedResponse {
@@ -68,11 +69,10 @@ export interface CacheOptions {
   now?: () => number;
 }
 
-/** How a view marks cached data, e.g. "cached · 5 min ago". */
+/** How a view marks cached data, e.g. "cached · 5m ago". */
 export function cachedLabel(fetchedAt: number, now: number): string {
-  const min = Math.max(0, Math.floor((now - fetchedAt) / 60_000));
-  const age = min < 1 ? "just now" : min < 120 ? `${min} min ago` : min < 48 * 60 ? `${Math.floor(min / 60)} h ago` : `${Math.floor(min / 1440)} d ago`;
-  return `cached · ${age}`;
+  const text = age(Number.isFinite(fetchedAt) ? new Date(fetchedAt).toISOString() : undefined, now);
+  return `cached · ${text === "now" ? "just now" : text ? `${text} ago` : "age unknown"}`;
 }
 
 /** The hex SHA-256 of a token, or undefined where WebCrypto is missing. */

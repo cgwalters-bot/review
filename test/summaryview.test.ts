@@ -61,7 +61,7 @@ describe("the summary", () => {
     const later = Date.parse("2026-10-13T12:00:00Z");
     fillSummary(home, pageState({ active: { warnings: [], at: later, usage: { state: "ok", usage } }, runs }, later), undefined, later);
     const openaiLine = [...home.slots.summary.querySelectorAll("li")].map(text).find((l) => l.startsWith("OpenAI"));
-    assert.equal(openaiLine, `OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · new work held (was due to end ${time("2026-10-13T00:57:18.315Z")}) · stale: read 94h 01m ago`);
+    assert.equal(openaiLine, `OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · new work held (was due to end ${time("2026-10-13T00:57:18.315Z")}) · stale: read 3d ago`);
   });
 
   it("keeps its lines while what they say is unchanged, and says when usage can't be read", () => {

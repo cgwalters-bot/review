@@ -531,7 +531,7 @@ describe("opsDetail and usageSection", () => {
     const top = [...sec.querySelectorAll(".uc")].map((r) => [r.querySelector(".name strong")?.textContent, r.querySelector(".tok")?.textContent]);
     assert.deepEqual(top, [["coordinator", "9.2M"], ["ops-v2", "4.2M"], ["bootc-2482", "899k"]]);
     assert.equal(sec.querySelector(".uc a")?.getAttribute("href"), "https://github.com/cgwalters-forge/review/pull/16");
-    assert.match(sec.querySelector(".fine")?.textContent ?? "", /status line .* as of/);
+    assert.match(sec.querySelector(".fine")?.textContent ?? "", /status line .* observed 8m ago/);
     assert.equal(sec.querySelector(".stale"), null);
 
     // A window near its cap turns red; one without a percent shows tokens only.
@@ -581,7 +581,7 @@ describe("opsDetail and usageSection", () => {
     const fresh = await view("missing", heartbeat(), Date.parse("2026-09-28T15:29:00Z"));
     assert.equal(fresh.querySelector(".ops-sec .warn"), null);
     const stale = await view("missing", heartbeat(), Date.parse("2026-09-28T15:31:00Z"));
-    assert.match(stale.querySelector(".ops-sec .warn")?.textContent ?? "", /^Stale: no heartbeat since .* \(26m ago\)/);
+    assert.match(stale.querySelector(".ops-sec .warn")?.textContent ?? "", /^Stale: last heartbeat 26m ago\./);
     assert.ok(stale.querySelector(".past-list.stale .lw"));
   });
 

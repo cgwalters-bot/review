@@ -36,12 +36,9 @@ export interface RawNewsPull {
   labels?: { name?: string }[];
 }
 
-/** Characters of a first paragraph shown at most. */
-const SUMMARY_MAX = 400;
-
 /**
  * The first paragraph of a PR body: HTML comments and leading headings,
- * rules and blank lines skipped, cut at a blank line or SUMMARY_MAX.
+ * rules and blank lines skipped, ending at a blank line.
  */
 export function firstParagraph(body: string): string {
   const text = body.replace(/\r\n?/g, "\n").replace(/<!--[\s\S]*?(?:-->|$)/g, "");
@@ -51,7 +48,7 @@ export function firstParagraph(body: string): string {
   const para: string[] = [];
   for (; i < lines.length && (lines[i] ?? "").trim() !== ""; i++) para.push(lines[i] ?? "");
   const out = para.join("\n").trim();
-  return out.length > SUMMARY_MAX ? `${out.slice(0, SUMMARY_MAX - 1).trimEnd()}…` : out;
+  return out;
 }
 
 export function isHarnessPath(path: string): boolean {

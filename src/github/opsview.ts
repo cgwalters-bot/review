@@ -24,7 +24,7 @@ import {
   type WorkGroup,
 } from "./ops.ts";
 import { type MistralBudget, type MistralUsage, poolPace, type RunUsage, spendByRun, type SpendTotal, type Tokens, tokenTotal, UNKNOWN_KIND, type Usage, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
-import { age, clock, pill, time } from "./view.ts";
+import { age, ageLabel, clock, pill, time } from "./view.ts";
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -194,7 +194,7 @@ function pastRow(d: Devspace, now: number): HTMLElement {
     h("span", { class: "name" }, d.name),
     h("span", { class: "cores" }, d.cores ? `${d.cores}c` : "?c"),
     h("span", { class: "ran", title: "time on the runner" }, ran),
-    h("span", { class: "age", title: `ended ${time(d.endedAt)}` }, `${age(d.endedAt ?? d.createdAt, now)} ago`),
+    ageLabel(d.endedAt ?? d.createdAt, now, `ended ${time(d.endedAt ?? d.createdAt)}`),
     link(d.url, "run ↗"),
   );
 }
@@ -238,7 +238,7 @@ function agentRow(r: AgentRun, now: number): HTMLElement {
     st,
     h("span", { class: "name" }, link(r.url, r.title)),
     h("span", { class: "tag" }, r.actor ?? ""),
-    h("span", { class: "age", title: `started ${time(r.startedAt)}` }, `${age(r.startedAt, now)} ago`),
+    ageLabel(r.startedAt, now, `started ${time(r.startedAt)}`),
   );
 }
 
@@ -301,12 +301,12 @@ function localSection(hb: Heartbeat | null | undefined, devspaces: DevspaceData 
       h("code", { title: hb.session }, hb.session.slice(0, 8)),
       " ",
       h("span", { class: "loop", title: LOOP_TITLE[hb.loopState] ?? "" }, hb.loopState),
-      ` · heartbeat ${age(hb.updatedAt, now)} ago${wake} · `,
+      " · heartbeat ", ageLabel(hb.updatedAt, now), ` ago${wake} · `,
       hb.commentUrl ? link(hb.commentUrl, "source ↗") : `${TRACKER_REPO}#${HEARTBEAT_ISSUE}`,
     ),
   );
   if (stale) {
-    sec.append(h("p", { class: "warn" }, `Stale: no heartbeat since ${time(hb.updatedAt)} (${age(hb.updatedAt, now)} ago). The coordinator's session may have ended or be stuck, so this list may be out of date.`));
+    sec.append(h("p", { class: "warn" }, "Stale: last heartbeat ", ageLabel(hb.updatedAt, now), " ago. The coordinator's session may have ended or be stuck, so this list may be out of date."));
   }
   if (hb.workers.length === 0) sec.append(h("p", { class: "note" }, hb.loopState === "stopped" ? "The coordinator stopped." : "No local workers running."));
   else {
@@ -404,7 +404,7 @@ export function poolStateWords(pool: UsagePool, now: number): { held: string; st
   const next = pool.nextDispatchAt && (Date.parse(pool.nextDispatchAt) > now ? ` until ${time(pool.nextDispatchAt)}` : ` (was due to end ${time(pool.nextDispatchAt)})`);
   return {
     held: !pool.hold ? "" : ` · new work held${next || ""}`,
-    stale: poolStale(pool, now) ? ` · stale: read ${duration(now - Date.parse(pool.observedAt), false)} ago` : "",
+    stale: poolStale(pool, now) ? ` · stale: read ${age(pool.observedAt, now)} ago` : "",
   };
 }
 
@@ -415,7 +415,7 @@ export function poolStateWords(pool: UsagePool, now: number): { held: string; st
  * replaces (exact percents, reset, observation time) is in its expander.
  */
 function poolRow(name: string, label: string, pool: UsagePool | undefined, now: number, snapshotAt: string): HTMLElement {
-  if (!pool) return h("div", { class: "pool-sum none" }, h("span", { class: "pool-name" }, label), " ", h("span", { class: "pool-label" }, `No reading · ${snapshotAt ? `snapshot ${age(snapshotAt, now)} ago` : "snapshot age unknown"}.`));
+  if (!pool) return h("div", { class: "pool-sum none" }, h("span", { class: "pool-name" }, label), " ", h("span", { class: "pool-label" }, "No reading · ", snapshotAt ? h("span", {}, "snapshot ", ageLabel(snapshotAt, now), " ago") : "snapshot age unknown", "."));
   const used = pool.usedPercent.toFixed(1);
   const allowed = pool.allowedPercent.toFixed(1);
   const over = pool.usedPercent > pool.allowedPercent;
@@ -452,7 +452,7 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
       h("span", { class: "pool-name" }, label),
       " ",
       bar,
-      h("span", { class: "pool-label" }, words.short, state.held, stale && h("span", { class: "pool-stale" }, state.stale)),
+      h("span", { class: "pool-label" }, words.short, state.held, stale && h("span", { class: "pool-stale" }, " · stale: read ", ageLabel(pool.observedAt, now), " ago")),
     ),
     h(
       "div",
@@ -460,7 +460,7 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
       h("p", {}, `${words.long}. The tick is what the scheduler allows by now: ${allowed}%${flags}.`),
       h("p", {}, `${resetText(pool.resetsAt, now)} (${time(pool.resetsAt)}).`),
       // The snapshot is the Usage workflow's (see the controller panel): stale means it has not published since.
-      h("p", {}, `Observed ${time(pool.observedAt)}${stale ? `, ${duration(now - Date.parse(pool.observedAt), false)} ago · stale: the usage publisher has not reported since` : ""}.`),
+      h("p", {}, "Observed ", ageLabel(pool.observedAt, now), ` ago${stale ? " · stale: the usage publisher has not reported since" : ""}.`),
     ),
   );
 }
@@ -582,7 +582,7 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
         { class: "pools" },
         ...POOLS.map(([name, label]) => poolRow(name, label, usage.pools?.[name], now, usage.updatedAt || usage.observedAt || "")),
         ...(usage.mistral ? [mistralRow(usage.mistral, now)] : []),
-        h("p", { class: "fine" }, usage.updatedAt ? `Published ${time(usage.updatedAt)}. ` : "Publication time unknown. ", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""),
+        h("p", { class: "fine" }, usage.updatedAt ? h("span", {}, "Published ", ageLabel(usage.updatedAt, now), " ago. ") : "Publication time unknown. ", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""),
       ),
       spendRows(usage, now),
     );
@@ -600,7 +600,7 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
   } else sec.append(h("p", { class: "note" }, "Weekly usage not reported."));
   sec.append(h("h3", {}, "OpenAI"), h("p", { class: "note" }, "Weekly usage not reported in the available bot-usage/v1 data."));
   const observed = usage.observedAt;
-  sec.append(h("p", { class: observed && now - Date.parse(observed) <= HEARTBEAT_STALE_MS ? "fine" : "warn" }, observed ? `Observed ${time(observed)}${now - Date.parse(observed) > HEARTBEAT_STALE_MS ? " · stale" : ""}.` : "Observation time unknown; publication does not confirm a fresh subscription reading.", ` Published ${time(usage.updatedAt)}.`, usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""));
+  sec.append(h("p", { class: observed && now - Date.parse(observed) <= HEARTBEAT_STALE_MS ? "fine" : "warn" }, observed ? h("span", {}, "Observed ", ageLabel(observed, now), ` ago${now - Date.parse(observed) > HEARTBEAT_STALE_MS ? " · stale" : ""}.`) : "Observation time unknown; publication does not confirm a fresh subscription reading.", " Published ", ageLabel(usage.updatedAt, now), " ago.", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""));
   return sec;
 }
 
@@ -612,7 +612,7 @@ function totalsText(totals: readonly SpendTotal[]): string {
   return totals.map((t) => `${t.name} ${tokensText(t.tokens)} (${t.runs} ${t.runs === 1 ? "run" : "runs"})`).join(" · ");
 }
 
-function runRow(r: RunUsage): HTMLElement {
+function runRow(r: RunUsage, now: number): HTMLElement {
   // Both links are built from parts the parser matched, never from a URL the snapshot gave.
   const item = r.item ? /^([^#]+)#(\d+)$/.exec(r.item) : null;
   const requests = r.requests === undefined ? "" : `, in ${r.requests} ${r.requests === 1 ? "request" : "requests"}`;
@@ -624,7 +624,7 @@ function runRow(r: RunUsage): HTMLElement {
     h("td", {}, r.repository),
     h("td", {}, item ? link(`https://github.com/${item[1]}/issues/${item[2]}`, r.item ?? "") : h("span", { class: "unknown" }, "—")),
     h("td", { class: "num", title: `${tokensTitle(r.tokens)}${requests}` }, tokensText(tokenTotal(r.tokens))),
-    h("td", { class: "when" }, link(`https://github.com/${r.repository}/actions/runs/${r.runId}`, time(r.finishedAt))),
+    h("td", { class: "when" }, h("a", { href: `https://github.com/${r.repository}/actions/runs/${r.runId}` }, ageLabel(r.finishedAt, now))),
   );
 }
 
@@ -648,7 +648,7 @@ function spendRows(usage: Usage, now: number): HTMLElement {
       "table",
       { class: "spend-runs" },
       h("thead", {}, h("tr", {}, h("th", {}, "Pool"), h("th", {}, "Kind"), h("th", {}, "Repository"), h("th", {}, "Item"), h("th", { class: "num" }, "Tokens"), h("th", {}, "Finished"))),
-      h("tbody", {}, ...spend.runs.map(runRow)),
+      h("tbody", {}, ...spend.runs.map((r) => runRow(r, now))),
     ),
     h("p", { class: "fine" }, "By kind: ", totalsText(spend.byKind), "."),
     h("p", { class: "fine" }, "By repository: ", totalsText(spend.byRepository), "."),
@@ -711,9 +711,9 @@ export function usageSection(data: UsageData | undefined, hb: Heartbeat | null |
     h(
       "p",
       { class: "fine" },
-      usage.observedAt ? `Percent used: Claude Code's status line on the coordinator's machine, as of ${time(usage.observedAt)}. ` : "Percent used: not reported yet; it comes from the coordinator's status line (bot-heartbeat statusline). ",
+      usage.observedAt ? h("span", {}, "Percent used: Claude Code's status line on the coordinator's machine, observed ", ageLabel(usage.observedAt, now), " ago. ") : "Percent used: not reported yet; it comes from the coordinator's status line (bot-heartbeat statusline). ",
       "Tokens: that machine's transcripts, cache reads included; a worker's are all of its subagents'. ",
-      usage.updatedAt ? `Published at ${time(usage.updatedAt)} to ` : "Publication time unknown; source: ",
+      usage.updatedAt ? h("span", {}, "Published ", ageLabel(usage.updatedAt, now), " ago to ") : "Publication time unknown; source: ",
       usage.commentUrl ? link(usage.commentUrl, USAGE_REPO) : USAGE_REPO,
       ", private.",
     ),
@@ -732,9 +732,8 @@ function conclusionStatus(c: string | undefined): HTMLElement {
 /** A queued or stuck successor must not make an old completed pass look fresh. */
 function updatePassAge(el: Element, now: number): void {
   const at = Date.parse(el.getAttribute(ATTR_T) ?? "");
-  const minutes = Math.max(0, Math.floor((now - at) / MINUTE));
   const stale = !Number.isFinite(at) || at > now || now - at > Number(el.getAttribute("data-stale-ms"));
-  el.textContent = Number.isFinite(at) && at <= now ? `last pass ${minutes} minutes ago${stale ? " · stale" : ""}` : "last pass time unknown · stale";
+  el.textContent = Number.isFinite(at) && at <= now ? `last pass ${age(el.getAttribute(ATTR_T) ?? undefined, now)} ago${stale ? " · stale" : ""}` : "last pass time unknown · stale";
   el.classList.toggle("warn", stale);
 }
 
@@ -761,7 +760,7 @@ function pieceRow(p: PieceState, now: number): HTMLElement {
     h(
       "span",
       { class: "when" },
-      lastPass ?? (p.last ? h("span", { title: `finished ${time(p.last.at)}` }, `${age(p.last.at, now)} ago `) : ""),
+      lastPass ?? (p.last ? ageLabel(p.last.at, now, `finished ${time(p.last.at)}`) : ""),
       lastPass ? "" : p.last ? link(p.last.url, "run ↗") : piece.staleAfterMinutes !== undefined ? h("span", { class: "warn" }, "No completed pass") : "",
       p.running ? h("span", { class: "now", title: `started ${time(p.running.at)}` }, p.last ? " · " : "", link(p.running.url, `${p.running.status && p.running.status !== "in_progress" ? p.running.status.replace(/_/g, " ") : "running"} now ↗`)) : "",
     ),
@@ -789,7 +788,7 @@ function pieceRow(p: PieceState, now: number): HTMLElement {
   if (p.inFlight) {
     li.append(
       p.inFlight.length
-        ? h("ul", { class: "detail flight" }, ...p.inFlight.map((r) => h("li", {}, link(r.url, r.title), h("span", { class: "age", title: `started ${time(r.since)}` }, ` ${r.status === "in_progress" ? "" : `${r.status.replace(/_/g, " ")} · `}${age(r.since, now)}`))))
+        ? h("ul", { class: "detail flight" }, ...p.inFlight.map((r) => h("li", {}, link(r.url, r.title), ` ${r.status === "in_progress" ? "" : `${r.status.replace(/_/g, " ")} · `}`, ageLabel(r.since, now, `started ${time(r.since)}`))))
         : h("span", { class: "detail" }, "none in flight"),
     );
   }
@@ -809,7 +808,7 @@ function controllerSection(data: ControllerData | undefined, hb: Heartbeat | nul
   if (hb === undefined) {
     sec.append(h("p", { class: "ctl-session" }, status("s-unknown", "unknown", "the heartbeat wasn't read"), " Heartbeat not read, so whether a session is there is unknown."));
   } else if (hb && sessionPresent(hb, now)) {
-    sec.append(h("p", { class: "ctl-session" }, status("s-ready", "present", "its heartbeat is fresh"), " Controller chat · heartbeat ", `${age(hb.updatedAt, now)} ago · `, hb.commentUrl ? link(hb.commentUrl, "source ↗") : `${TRACKER_REPO}#${HEARTBEAT_ISSUE}`));
+    sec.append(h("p", { class: "ctl-session" }, status("s-ready", "present", "its heartbeat is fresh"), " Controller chat · heartbeat ", ageLabel(hb.updatedAt, now), " ago · ", hb.commentUrl ? link(hb.commentUrl, "source ↗") : `${TRACKER_REPO}#${HEARTBEAT_ISSUE}`));
   } else {
     sec.append(
       h(
@@ -817,7 +816,7 @@ function controllerSection(data: ControllerData | undefined, hb: Heartbeat | nul
         { class: "ctl-session none" },
         status("s-unknown", "absent", hb ? `last heartbeat ${time(hb.updatedAt)}` : "no heartbeat read"),
         " No interactive session: new work starts only from the board scheduler.",
-        hb ? h("span", { class: "fine" }, ` Last heartbeat ${age(hb.updatedAt, now)} ago${hb.loopState === "stopped" ? ", stopped" : ""}.`) : "",
+        hb ? h("span", { class: "fine" }, " Last heartbeat ", ageLabel(hb.updatedAt, now), ` ago${hb.loopState === "stopped" ? ", stopped" : ""}.`) : "",
       ),
     );
   }
@@ -843,7 +842,7 @@ function workItem(item: Item, now: number): HTMLElement {
       { class: "hdr" },
       pill(item.priority),
       h("span", { class: "title" }, item.url ? link(item.url, item.title) : item.title),
-      h("span", { class: "age", title: `updated ${time(item.updatedAt)}` }, item.updatedAt ? `${age(item.updatedAt, now)} ago` : ""),
+      ageLabel(item.updatedAt, now, `updated ${time(item.updatedAt)}`),
     ),
     item.branch.length ? h("div", { class: "links" }, ...item.branch.map((u) => link(u, refLabel(u)))) : null,
     item.why ? h("p", { class: "why" }, item.why) : null,
@@ -877,7 +876,7 @@ function eventRow(e: BotEvent, now: number): HTMLElement {
   return h(
     "li",
     { class: "ev" },
-    h("span", { class: "age", title: time(e.at) }, age(e.at, now)),
+    ageLabel(e.at, now),
     h("span", { class: `kind ev-${e.kind}` }, EVENT_KIND_LABEL[e.kind]),
     h(
       "span",

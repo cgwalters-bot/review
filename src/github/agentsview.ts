@@ -7,7 +7,7 @@ import { h, link } from "../dom.ts";
 import { type Active, type ActiveAgent, activeAgents, type AgentSummary, type Lane } from "./agents.ts";
 import { HEARTBEAT_ISSUE, TRACKER_REPO } from "./config.ts";
 import { workerStatus } from "./opsview.ts";
-import { age, pill, time } from "./view.ts";
+import { age, ageLabel, pill, time } from "./view.ts";
 
 /** The class of the agents list's rows, which the section shows a few of before "View all". */
 export const AGENT_ROW_CLASS = "as-agent";
@@ -38,7 +38,7 @@ function agentRow(a: ActiveAgent, now: number): HTMLElement {
       a.title ? h("span", { class: "as-title" }, ` ${a.title}`) : null,
     ),
     a.runUrl ? link(a.runUrl, "run ↗") : null,
-    h("span", { class: "age", title: a.since ? sinceTitle : "" }, a.since ? age(a.since, now) : ""),
+    ageLabel(a.since, now, sinceTitle),
   );
 }
 
@@ -84,7 +84,7 @@ export function agentsBody(data: Active | undefined, now: number, summary?: Agen
       { class: "as-head" },
       h("span", { class: "as-lanes" }, `${s.running}/${s.target} agents · remote ${s.locations.remote} · local ${s.locations.local} · OpenCode ${s.running ? Math.round(100 * s.opencode / s.running) : 0}% (${s.opencode}/${s.running})${s.unknownEngine ? ` · ${s.unknownEngine} engine unknown` : ""} · ${lanes.join(" · ")}`),
       s.unconfirmed ? h("span", { class: "as-unconfirmed warn", title: "claims or sightings without current execution evidence" }, `+${s.unconfirmed} unconfirmed`) : null,
-      h("span", { class: `as-hb ${hb.cls}`, title: hb.title }, hb.text),
+      h("span", { class: `as-hb ${hb.cls}`, title: hb.title }, ...(s.heartbeat ? [s.heartbeat.stopped ? "coordinator stopped · heartbeat " : "heartbeat ", ageLabel(s.heartbeat.updatedAt, now), " ago"] : [hb.text])),
       data?.board ? null : h("span", { class: "warn", title: `The board couldn't be read; Actions runs and heartbeat jobs can still be counted.${why}` }, "board unread"),
     ),
   );

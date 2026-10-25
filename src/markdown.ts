@@ -18,8 +18,29 @@ import MarkdownIt from "markdown-it";
 import Token from "markdown-it/lib/token.mjs";
 import createDOMPurify, { type Config, type WindowLike } from "dompurify";
 
-/** Sources larger than this are cut, with a note, to keep a phone responsive. */
+/** Task editing is disabled above this size to bound its source-line mapping. */
 export const MAX_SOURCE_CHARS = 200_000;
+
+/** Strip complete HTML comments before Markdown, including multiline metadata.
+ * One forward scan also bounds the work for many unclosed openers.
+ */
+export function stripComments(source: string, preserveLines = false): string {
+  const parts: string[] = [];
+  let from = 0;
+  for (;;) {
+    const start = source.indexOf("<!--", from);
+    if (start < 0) break;
+    const end = source.startsWith("<!-->", start) ? start + 2
+      : source.startsWith("<!--->", start) ? start + 3
+      : source.indexOf("-->", start + 4);
+    if (end < 0) break;
+    parts.push(source.slice(from, start));
+    from = end + 3;
+    if (preserveLines) parts.push(source.slice(start, from).replace(/[^\r\n]/g, ""));
+  }
+  parts.push(source.slice(from));
+  return parts.join("");
+}
 
 const ALLOWED_TAGS = [
   "a", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6",
@@ -50,37 +71,6 @@ function markdownIt(): MarkdownIt {
     if (!md.validateLink(src)) return md.utils.escapeHtml(`[${alt}]`);
     return `<a href="${md.utils.escapeHtml(src)}">${md.utils.escapeHtml(`[image: ${alt}]`)}</a>`;
   };
-  // HTML comments are hidden, as GitHub hides them: with raw HTML off they
-  // would show as text, such as the bot's `<!-- bot-board-status-v1: … -->`
-  // marker. Code spans are consumed before this rule sees their contents, so
-  // a quoted comment still shows; so does one spanning a blank line, which
-  // markdown-it has already split into paragraphs. `<!-->` and `<!--->`
-  // close themselves, as in HTML. The first `-->` at or after the last search's
-  // start is remembered per inline run, so many unclosed `<!--` cost one
-  // scan, not one each; it is reused only from at or after that start, as
-  // markdown-it steps back after a `[` that is not a link.
-  const closes = new WeakMap<object, { from: number; end: number }>();
-  md.inline.ruler.before("html_inline", "html_comment", (state) => {
-    const pos = state.pos;
-    if (!state.src.startsWith("<!--", pos)) return false;
-    // `end` is where the closing `-->` starts.
-    let end: number;
-    if (state.src.startsWith("<!-->", pos)) {
-      end = pos + 2;
-    } else if (state.src.startsWith("<!--->", pos)) {
-      end = pos + 3;
-    } else {
-      let found = closes.get(state);
-      if (!found || pos + 4 < found.from || (found.end >= 0 && found.end < pos + 4)) {
-        found = { from: pos + 4, end: state.src.indexOf("-->", pos + 4) };
-        closes.set(state, found);
-      }
-      end = found.end;
-    }
-    if (end < 0 || end + 3 > state.posMax) return false;
-    state.pos = end + 3;
-    return true;
-  });
   return md;
 }
 
@@ -101,7 +91,7 @@ const taskParser = markdownIt();
  */
 export function taskItemLines(source: string): number[] {
   if (source.length > MAX_SOURCE_CHARS) return [];
-  const tokens = taskParser.parse(source, {});
+  const tokens = taskParser.parse(stripComments(source, true), {});
   return tokens.flatMap((token, i) => (taskBox(tokens, i) && token.map ? [token.map[0]] : []));
 }
 
@@ -123,8 +113,7 @@ export function createRenderer(win: WindowLike): Renderer {
     }
   });
   return (source: string, repository?: string) => {
-    const cut = source.length > MAX_SOURCE_CHARS;
-    const text = cut ? `${source.slice(0, MAX_SOURCE_CHARS)}\n\n*(cut: too long to show here)*` : source;
+    const text = stripComments(source);
     // A paragraph that held only a comment would be left as an empty <p>.
     const parsed = md.parse(text, {});
     const empty = new Set<number>();

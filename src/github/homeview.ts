@@ -39,7 +39,7 @@ import type { UsageData } from "./usage.ts";
 import { summaryView } from "./summaryview.ts";
 import type { ControllerData } from "./controller.ts";
 import { triageView, type TriageHooks } from "./triageview.ts";
-import { CAUGHT_UP_CLASS, clock, type ListExtras, priorityList, ROW_CLASS, type RowLabel, rowText } from "./view.ts";
+import { ageLabel, CAUGHT_UP_CLASS, type ListExtras, priorityList, ROW_CLASS, type RowLabel, rowText } from "./view.ts";
 
 /** The class of the page, of a section, and of its count. */
 export const HOME_CLASS = "home";
@@ -197,6 +197,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
 }
 
 export function fillState(home: Home, state: PageState): void {
+  const now = Date.now();
   const signature = JSON.stringify([state.runs, state.sources.runs]);
   if (home.slots.runs.dataset.signature !== signature) {
     const open = new Set([...home.slots.runs.querySelectorAll<HTMLDetailsElement>("details[open]")].map((el) => el.dataset.runId));
@@ -204,7 +205,13 @@ export function fillState(home: Home, state: PageState): void {
     home.slots.runs.dataset.signature = signature;
     for (const el of home.slots.runs.querySelectorAll<HTMLDetailsElement>("details")) el.open = open.has(el.dataset.runId);
   }
-  home.slots.freshness.textContent = Object.entries(state.sources).map(([name, source]) => `${name}: ${source.state}${source.checkedAt ? ` (checked ${new Date(source.checkedAt).toLocaleTimeString()})` : source.fetchedAt ? ` (cached ${new Date(source.fetchedAt).toLocaleString()})` : ""}${source.publishedAt ? ` · published ${source.publishedAt}` : ""}${source.error ? ` — ${source.error}` : ""}`).join(" · ");
+  home.slots.freshness.replaceChildren(...Object.entries(state.sources).flatMap(([name, source], i) => [
+    i ? " · " : "", `${name}: ${source.state}`,
+    source.checkedAt ? h("span", {}, " (checked ", ageLabel(new Date(source.checkedAt).toISOString(), now), " ago)")
+      : source.fetchedAt ? h("span", {}, " (cached ", ageLabel(new Date(source.fetchedAt).toISOString(), now), " ago)") : "",
+    source.publishedAt ? h("span", {}, " · published ", ageLabel(source.publishedAt, now), " ago") : "",
+    source.error ? ` — ${source.error}` : "",
+  ]));
 }
 
 /**
@@ -368,12 +375,11 @@ function fullTitles(slot: HTMLElement, board: readonly Item[] | undefined): void
 export function fillStatus(home: Home, status: ProjectStatus | null | undefined, render: Renderer, error?: string, now = Date.now(), board?: readonly Item[]): void {
   const slot = home.slots.status;
   const timestamp = status ? Date.parse(status.createdAt) : NaN;
-  const minutes = Math.max(0, Math.floor((now - timestamp) / 60_000));
   const interval = STATUS_INTERVAL;
   const age = () => {
     const el = slot.querySelector<HTMLElement>(".status-age");
     if (!el) return;
-    el.textContent = Number.isFinite(timestamp) ? `As of ${clock(timestamp)}, ${minutes} min ago` : "Status age unknown";
+    el.replaceChildren(...(status && Number.isFinite(timestamp) ? ["Published ", ageLabel(status.createdAt, now), " ago"] : ["Status age unknown"]));
     const stale = interval !== undefined && now - timestamp > interval * 60_000;
     el.classList.toggle("hot", stale);
     if (stale) el.append(" · stale");

@@ -336,10 +336,10 @@ describe("cachedLabel", () => {
   const cases: [number, string][] = [
     [0, "cached · just now"],
     [59_000, "cached · just now"],
-    [5 * 60_000, "cached · 5 min ago"],
-    [119 * 60_000, "cached · 119 min ago"],
-    [3 * 3600_000, "cached · 3 h ago"],
-    [3 * DAY, "cached · 3 d ago"],
+    [5 * 60_000, "cached · 5m ago"],
+    [119 * 60_000, "cached · 1h ago"],
+    [3 * 3600_000, "cached · 3h ago"],
+    [3 * DAY, "cached · 3d ago"],
     [-60_000, "cached · just now"],
   ];
   for (const [ago, want] of cases) it(want, () => assert.equal(cachedLabel(T0 - ago, T0), want));
