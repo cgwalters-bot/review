@@ -4,7 +4,7 @@ import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import { authorLabel } from "./authors.ts";
 import type { News } from "./news.ts";
-import { ageLabel, time } from "./view.ts";
+import { agoLabel, time } from "./view.ts";
 
 /** The class of a merged PR's article, which the section shows a few of before "View all". */
 export const NEWS_ITEM_CLASS = "news-item";
@@ -27,8 +27,7 @@ export function newsList(news: News | undefined, render: Renderer, now: number =
           { class: "sub" },
           n.harness ? h("span", { class: "kind k-harness" }, "harness") : null,
           h("span", { class: "tag" }, `${n.repo}#${n.number} · ${authorLabel(n.author)}`),
-          ageLabel(n.mergedAt, now, `merged ${time(n.mergedAt)}`),
-          " ago",
+          agoLabel(n.mergedAt, now, `merged ${time(n.mergedAt)}`),
         ),
         h("h3", {}, link(n.url, n.title)),
         n.summary ? h("div", { class: "md" }, render(n.summary)) : null,

@@ -21,25 +21,25 @@ import createDOMPurify, { type Config, type WindowLike } from "dompurify";
 /** Task editing is disabled above this size to bound its source-line mapping. */
 export const MAX_SOURCE_CHARS = 200_000;
 
-/** Strip complete HTML comments before Markdown, including multiline metadata.
- * One forward scan also bounds the work for many unclosed openers.
+/** The first `-->` searched for at or after `from` in a parse state, or -1 for none. */
+type Close = { from: number; end: number };
+
+/**
+ * Where the `-->` closing the comment opened at `pos` starts, or -1.
+ * `<!-->` and `<!--->` close themselves, as in HTML. The last search is
+ * remembered per parse state, so many unclosed `<!--` cost one scan, not
+ * one each; it is reused only from at or after its start, as markdown-it
+ * steps back after a `[` that is not a link.
  */
-export function stripComments(source: string, preserveLines = false): string {
-  const parts: string[] = [];
-  let from = 0;
-  for (;;) {
-    const start = source.indexOf("<!--", from);
-    if (start < 0) break;
-    const end = source.startsWith("<!-->", start) ? start + 2
-      : source.startsWith("<!--->", start) ? start + 3
-      : source.indexOf("-->", start + 4);
-    if (end < 0) break;
-    parts.push(source.slice(from, start));
-    from = end + 3;
-    if (preserveLines) parts.push(source.slice(start, from).replace(/[^\r\n]/g, ""));
+function commentEnd(closes: WeakMap<object, Close>, state: object, src: string, pos: number): number {
+  if (src.startsWith("<!-->", pos)) return pos + 2;
+  if (src.startsWith("<!--->", pos)) return pos + 3;
+  let found = closes.get(state);
+  if (!found || pos + 4 < found.from || (found.end >= 0 && found.end < pos + 4)) {
+    found = { from: pos + 4, end: src.indexOf("-->", pos + 4) };
+    closes.set(state, found);
   }
-  parts.push(source.slice(from));
-  return parts.join("");
+  return found.end;
 }
 
 const ALLOWED_TAGS = [
@@ -71,6 +71,65 @@ function markdownIt(): MarkdownIt {
     if (!md.validateLink(src)) return md.utils.escapeHtml(`[${alt}]`);
     return `<a href="${md.utils.escapeHtml(src)}">${md.utils.escapeHtml(`[image: ${alt}]`)}</a>`;
   };
+  // HTML comments are hidden, as GitHub hides them: with raw HTML off they
+  // would show as text, such as the bot's `<!-- bot-board-status-v1: … -->`
+  // marker. Fences, code blocks and code spans are consumed before these
+  // rules see their contents, so a quoted comment still shows, and an
+  // unclosed one shows as text. A comment opening a line hides the lines
+  // through the one it closes on, across blank lines, as GitHub's HTML
+  // block does; text after its `-->` still shows. Elsewhere a comment
+  // hides within its paragraph. Lines are consumed, not rewritten, so the
+  // token line map stays the source's (taskItemLines relies on it).
+  const closes = new WeakMap<object, Close>();
+  // The last search for a comment block's closing line, per state: an
+  // opener after its start and before its stop gets the same answer, so
+  // many openers ahead of one outdent cost one scan, not one each.
+  const scans = new WeakMap<object, { from: number; close: number; endLine: number; indent: number; stop: number; closed: boolean }>();
+  md.block.ruler.before("html_block", "html_comment_block", (state, startLine, endLine, silent) => {
+    if (state.sCount[startLine]! - state.blkIndent >= 4) return false;
+    const pos = state.bMarks[startLine]! + state.tShift[startLine]!;
+    if (!state.src.startsWith("<!--", pos)) return false;
+    const end = commentEnd(closes, state, state.src, pos);
+    // A close past this container (a blockquote or list item) is none here.
+    if (end < 0 || end + 3 > state.eMarks[endLine - 1]!) return false;
+    let scan = scans.get(state);
+    if (!scan || startLine <= scan.from || startLine >= scan.stop || scan.close !== end + 3 || scan.endLine !== endLine || scan.indent !== state.blkIndent) {
+      // As markdown-it's html_block, a line indented less than the container
+      // (say, text after a list item) ends it unclosed.
+      let line = startLine;
+      let closed = true;
+      while (state.eMarks[line]! < end + 3) {
+        line++;
+        if (!state.isEmpty(line) && state.sCount[line]! < state.blkIndent) { closed = false; break; }
+      }
+      scan = { from: startLine, close: end + 3, endLine, indent: state.blkIndent, stop: line, closed };
+      scans.set(state, scan);
+    }
+    if (!scan.closed) return false;
+    const line = scan.stop;
+    if (silent) return true;
+    // A tight list drops its paragraphs' tags: keep the words either side apart.
+    state.push("text", "", 0).content = "\n";
+    const rest = state.src.slice(end + 3, state.eMarks[line]).trim();
+    if (rest) {
+      state.push("paragraph_open", "p", 1).map = [line, line + 1];
+      const inline = state.push("inline", "", 0);
+      inline.content = rest;
+      inline.map = [line, line + 1];
+      inline.children = [];
+      state.push("paragraph_close", "p", -1);
+    }
+    state.line = line + 1;
+    return true;
+  }, { alt: ["paragraph", "reference", "blockquote", "list"] });
+  md.inline.ruler.before("html_inline", "html_comment", (state) => {
+    const pos = state.pos;
+    if (!state.src.startsWith("<!--", pos)) return false;
+    const end = commentEnd(closes, state, state.src, pos);
+    if (end < 0 || end + 3 > state.posMax) return false;
+    state.pos = end + 3;
+    return true;
+  });
   return md;
 }
 
@@ -91,7 +150,7 @@ const taskParser = markdownIt();
  */
 export function taskItemLines(source: string): number[] {
   if (source.length > MAX_SOURCE_CHARS) return [];
-  const tokens = taskParser.parse(stripComments(source, true), {});
+  const tokens = taskParser.parse(source, {});
   return tokens.flatMap((token, i) => (taskBox(tokens, i) && token.map ? [token.map[0]] : []));
 }
 
@@ -113,9 +172,8 @@ export function createRenderer(win: WindowLike): Renderer {
     }
   });
   return (source: string, repository?: string) => {
-    const text = stripComments(source);
     // A paragraph that held only a comment would be left as an empty <p>.
-    const parsed = md.parse(text, {});
+    const parsed = md.parse(source, {});
     const empty = new Set<number>();
     parsed.forEach((token, i) => {
       if (token.type === "paragraph_open" && parsed[i + 1]?.children?.length === 0 && parsed[i + 2]?.type === "paragraph_close") [i, i + 1, i + 2].forEach((n) => empty.add(n));

@@ -525,3 +525,24 @@ it("renders malicious message/tool/plan text without HTML and disables duplicate
   assert.equal(slot.childElementCount, 0);
   assert.equal(slot.hidden, true);
 });
+
+it("draws one oversized update only up to the transcript bound, the rest on request", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const { slot, panel, sockets, button, state } = mount(t.gh);
+  await until("the live run", () => button(/Attach/)?.disabled === false);
+  button(/Attach/).click();
+  await until("connected", () => state() === "connected");
+  // A frame is at most 512 KiB, so it is the last of several that crosses the bound.
+  const chunk = "y".repeat(400_000);
+  for (let i = 0; i < 3; i++) sockets[0]!.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: chunk } } } });
+  const p = slot.querySelector<HTMLElement>(".chat-log p")!;
+  assert.equal(p.firstChild!.textContent!.length, 1024 * 1024);
+  const more = p.querySelector<HTMLButtonElement>("button.chat-more")!;
+  assert.equal(more.textContent, `Show ${(1_200_000 - 1024 * 1024).toLocaleString()} more characters`);
+  sockets[0]!.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session", update: { sessionUpdate: "plan", entries: [{ content: "later", status: "pending" }] } } });
+  assert.equal(slot.querySelector(".chat-log ul"), null);
+  more.click();
+  assert.equal(p.textContent, chunk.repeat(3));
+  assert.equal(p.querySelector("button"), null);
+  panel.dispose();
+});

@@ -101,7 +101,8 @@ describe("the summary", () => {
       { piece: piece("Broker probe"), state: "ok", last: { url: "https://github.com/x", at: "2026-10-09T12:00:00Z", conclusion: "failure" } },
     ] };
     fillSummary(home, state, controller, NOW);
-    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run) · poll ok 5m ago · broker failure 2h 00m ago");
+    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run) · poll ok 5m ago · broker failure 2h ago");
+    assert.match(home.slots.summary.querySelectorAll("li")[2]!.querySelector<HTMLElement>(".age")!.title, /^finished .*2026/);
     controller.pieces[2] = { ...controller.pieces[2]!, last: { url: "https://github.com/x", at: "2026-10-09T13:45:00Z", conclusion: "success" } };
     fillSummary(home, state, controller, NOW);
     assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run) · poll ok 5m ago · broker ok 15m ago");

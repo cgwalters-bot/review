@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { ageLabel, tickAges, time } from "../src/github/view.ts";
+import { ageLabel, ago, agoLabel, tickAges, time } from "../src/github/view.ts";
+import { cachedLabel } from "../src/github/cache.ts";
 import { newsList } from "../src/github/newsview.ts";
 import { feedRow } from "../src/github/boardfeedview.ts";
 import { installDom } from "./helpers.ts";
@@ -30,9 +31,21 @@ it("ticks news and board-feed ages without redrawing their full titles", () => {
   const labels = [...root.querySelectorAll<HTMLElement>(".age")];
   assert.equal(labels.length, 2);
   tickAges(root, now + 3600_000);
-  for (const label of labels) {
-    assert.equal(label.textContent, "1h");
-    assert.match(label.title, /2026/);
-  }
+  assert.deepEqual(labels.map((l) => l.textContent), ["1h ago", "1h"]);
+  for (const label of labels) assert.match(label.title, /2026/);
   assert.equal(root.querySelector("h3 a")?.textContent, title);
+});
+
+it("phrases sub-minute ages in prose as just now, never now ago", () => {
+  assert.equal(ago(since, Date.parse(since) + 30_000), "just now");
+  assert.equal(ago(since, now), "30m ago");
+  assert.equal(ago("bad date", now), "");
+  assert.equal(cachedLabel(Date.parse(since), Date.parse(since) + 30_000), "cached · just now");
+  const label = agoLabel(since, Date.parse(since) + 30_000);
+  assert.equal(label.textContent, "just now");
+  const root = document.createElement("div");
+  root.append(label);
+  tickAges(root, now);
+  assert.equal(label.textContent, "30m ago");
+  assert.equal(agoLabel(undefined, now).textContent, "at an unknown time");
 });

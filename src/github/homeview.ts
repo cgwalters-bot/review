@@ -39,7 +39,7 @@ import type { UsageData } from "./usage.ts";
 import { summaryView } from "./summaryview.ts";
 import type { ControllerData } from "./controller.ts";
 import { triageView, type TriageHooks } from "./triageview.ts";
-import { ageLabel, CAUGHT_UP_CLASS, type ListExtras, priorityList, ROW_CLASS, type RowLabel, rowText } from "./view.ts";
+import { agoLabel, CAUGHT_UP_CLASS, type ListExtras, priorityList, ROW_CLASS, type RowLabel, rowText } from "./view.ts";
 
 /** The class of the page, of a section, and of its count. */
 export const HOME_CLASS = "home";
@@ -207,9 +207,9 @@ export function fillState(home: Home, state: PageState): void {
   }
   home.slots.freshness.replaceChildren(...Object.entries(state.sources).flatMap(([name, source], i) => [
     i ? " · " : "", `${name}: ${source.state}`,
-    source.checkedAt ? h("span", {}, " (checked ", ageLabel(new Date(source.checkedAt).toISOString(), now), " ago)")
-      : source.fetchedAt ? h("span", {}, " (cached ", ageLabel(new Date(source.fetchedAt).toISOString(), now), " ago)") : "",
-    source.publishedAt ? h("span", {}, " · published ", ageLabel(source.publishedAt, now), " ago") : "",
+    source.checkedAt ? h("span", {}, " (checked ", agoLabel(new Date(source.checkedAt).toISOString(), now), ")")
+      : source.fetchedAt ? h("span", {}, " (cached ", agoLabel(new Date(source.fetchedAt).toISOString(), now), ")") : "",
+    source.publishedAt ? h("span", {}, " · published ", agoLabel(source.publishedAt, now)) : "",
     source.error ? ` — ${source.error}` : "",
   ]));
 }
@@ -379,7 +379,7 @@ export function fillStatus(home: Home, status: ProjectStatus | null | undefined,
   const age = () => {
     const el = slot.querySelector<HTMLElement>(".status-age");
     if (!el) return;
-    el.replaceChildren(...(status && Number.isFinite(timestamp) ? ["Published ", ageLabel(status.createdAt, now), " ago"] : ["Status age unknown"]));
+    el.replaceChildren(...(status && Number.isFinite(timestamp) ? ["Published ", agoLabel(status.createdAt, now)] : ["Status age unknown"]));
     const stale = interval !== undefined && now - timestamp > interval * 60_000;
     el.classList.toggle("hot", stale);
     if (stale) el.append(" · stale");
