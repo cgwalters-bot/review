@@ -14,7 +14,6 @@ import {
   HUMAN_TEXT_LINE,
   type Identity,
   identityProblem,
-  lineDiff,
   type MineEdit,
   mineRefusal,
   type MineResult,
@@ -23,6 +22,7 @@ import {
   WORKFLOWS_DIR,
   workflowScopeProblem,
 } from "./mine.ts";
+import { lineDiff } from "./diff.ts";
 import type { PrDetail } from "./prs.ts";
 import { load, save } from "./store.ts";
 
