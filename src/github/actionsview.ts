@@ -1,27 +1,7 @@
 import { h, link } from "../dom.ts";
 import type { GitHub } from "./api.ts";
-import { execute, loadProposals, plan, type Action, type ActionConfig, type Fact, type Mutation, type Offered, type Plan, type Variable } from "./actions.ts";
+import { execute, plan, type Action, type ActionConfig, type Fact, type Mutation, type Offered, type Plan, type Variable } from "./actions.ts";
 import { lineDiffView } from "./diffview.ts";
-
-/** Explicit reads only; mounting the page never discovers or executes proposals. */
-export function actionsPanel(gh: GitHub, config: ActionConfig): HTMLElement {
-  const body = h("div");
-  const status = h("p", { role: "status" });
-  const load = h("button", { type: "button" }, "Load proposals");
-  const panel = h("details", { class: "operator-actions sec" }, h("summary", {}, "Proposed operator actions (opt in)"),
-    h("p", { class: "note" }, "Reads only the 20 most recently updated open tracker issues, at most 100 comments each. Execution uses your own token; interrupted or failed batches cannot be retried here."), load, status, body);
-  let busy = false;
-  load.addEventListener("click", () => {
-    if (busy) return;
-    busy = true; load.disabled = true; body.replaceChildren(); status.textContent = "Reading proposals…";
-    void loadProposals(gh, config).then(async ({ offers, warnings }) => {
-      for (const offer of offers) body.append(await proposalCard(gh, config, offer, () => busy, (v) => { busy = v; load.disabled = v; }));
-      status.textContent = offers.length ? `${offers.length} open proposals in this bounded window.` : "No open proposals in this bounded window.";
-      for (const warning of warnings) body.append(h("p", { class: "note" }, `Refused issue: ${warning}`));
-    }).catch((e: unknown) => { status.textContent = String(e); }).finally(() => { busy = false; load.disabled = false; });
-  });
-  return panel;
-}
 
 /** Where an action lands: its issue or PR, or the organisation and a ruleset's source file at its commit. */
 function target(a: Action): Node {
@@ -62,11 +42,11 @@ export async function proposalCard(gh: GitHub, config: ActionConfig, o: Offered,
     const m = shown?.mutations[i];
     rows.append(h("li", {}, target(action), h("pre", {}, JSON.stringify(action, null, 2)), h("p", { class: "note" }, shown?.states[i] ?? ""), ...(m ? orgChange(action, shown!.expected[i]!, m) : []), result));
   }
-  const button = h("button", { type: "button" }, "Execute proposal as yourself");
+  const button = h("button", { type: "button", class: "primary" }, "Run as yourself");
   button.disabled = !shown;
   button.addEventListener("click", () => {
     if (button.disabled || isBusy()) return;
-    if (!window.confirm(`Execute ${o.proposal.actions.length} actions as ${config.operator}? Stops at the first failure. This proposal cannot be retried after reservation.`)) return;
+    if (!window.confirm(`Run ${o.proposal.actions.length} actions as ${config.operator}? Stops at the first failure. This proposal cannot be retried after reservation.`)) return;
     setBusy(true); button.disabled = true; status.textContent = "Executing…";
     void execute(gh, config, o, shown!.expected, (i, result) => { results[i]!.textContent = result; })
       .then(() => { status.textContent = "Executed; result recorded on the proposal issue."; })

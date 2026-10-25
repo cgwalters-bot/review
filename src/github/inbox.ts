@@ -9,20 +9,25 @@
 //   tracker's workflow closes the issue.
 // - Rerun: the newest dispatch run of an item, failed or cancelled in the
 //   last day, while the item is open; a newer run overtakes it.
-// - Do: an operator-action proposal whose preconditions still hold.
+// - Do: an open operator-action proposal no decision or ask carries.
 // - Document entry: an open decisions document entry; ticking an option dims
 //   it, its About item closing or merging resolves it, and comments on the
 //   item since the ask mark it as changed.
 //
 // Each predicate takes what the page already read and returns the card, or
-// undefined when the thing has left.
+// undefined when the thing has left. A proposal whose issue a decision or
+// ask is about, or links to, rides on that card (attachOffers): many
+// decisions are exactly an operator action. Cards are listed by board
+// Priority, then age; the view draws the first screen of them, and a
+// proposal's live preconditions are read only once its card is drawn.
 
 import type { GitHub } from "./api.ts";
-import type { Offered, Plan } from "./actions.ts";
+import type { Offered } from "./actions.ts";
 import { FAILED_CONCLUSIONS } from "./asks.ts";
 import { OPERATOR, TRACKER_REPO } from "./config.ts";
 import type { DocumentEntry, Mark } from "./decisiondocument.ts";
 import type { Need } from "./needs.ts";
+import { priorityRank } from "./queue.ts";
 import type { DraftIssue } from "./reviewdrafts.ts";
 
 export type CardKind = "document" | "answer" | "approve" | "send" | "rerun" | "do";
@@ -52,13 +57,17 @@ interface CardBase {
   answered?: boolean;
   /** A line under the title: what changed, or why it waits. */
   note?: string;
+  /** The board Priority of the item it is about, when the board gives one. */
+  priority?: string;
+  /** Proposals this decision or ask carries, each with its exact mutations and a Run button. */
+  offers?: readonly Offered[];
 }
 
 export type Card = CardBase & (
   | { kind: "answer" | "approve"; need: Need }
   | { kind: "send"; draft: DraftIssue }
   | { kind: "rerun"; run: DispatchRun }
-  | { kind: "do"; offer: Offered; plan: Plan }
+  | { kind: "do"; offer: Offered }
   | { kind: "document"; entry: DocumentEntry; mark?: Mark }
 );
 
@@ -151,10 +160,44 @@ export function rerunCards(runs: readonly DispatchRun[], now: number, itemState:
   });
 }
 
-/** A Do card for a proposal whose plan (its live preconditions) held when read; without one, a precondition no longer holds. */
-export function doCard(o: Offered, plan: Plan | undefined): Card | undefined {
-  if (!plan) return undefined;
-  return { kind: "do", offer: o, plan, key: `do:${o.comment.databaseId}`, title: o.proposal.title, where: `#${o.issue}`, note: o.proposal.why, since: o.comment.updatedAt };
+/** A Do card for a proposal no decision carries; its live preconditions are read when it is drawn. */
+export function doCard(o: Offered): Card {
+  return { kind: "do", offer: o, key: `do:${o.comment.databaseId}`, title: o.proposal.title, where: `${TRACKER_REPO}#${o.issue}`, note: o.proposal.why, since: o.comment.updatedAt };
+}
+
+/** `owner/repo#n`, lowercased: how a card and a proposal name the same issue. */
+const refOf = (repo: string, number: number): string => `${repo}#${number}`.toLowerCase();
+
+/** The issue a decision or ask is about, and the text that may link to another. */
+function decisionOf(c: Card): { ref?: string; text: string } | undefined {
+  if (c.kind === "document") return { ...(c.entry.about ? { ref: refOf(c.entry.about.repo, c.entry.about.number) } : {}), text: c.entry.text };
+  if (c.kind !== "answer") return undefined;
+  const item = c.need.decision?.item ?? c.need.entry?.item;
+  return { ...(item?.ref ? { ref: refOf(`${item.ref.owner}/${item.ref.repo}`, item.ref.number) } : {}), text: item?.body ?? "" };
+}
+
+/** Whether `text` links to issue `number` of `repo`, as `owner/repo#n` or its URL. */
+export function linksTo(text: string, repo: string, number: number): boolean {
+  const name = repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:(?<![\\w./-])${name}#|https://github\\.com/${name}/(?:issues|pull)/)${number}(?!\\d)`, "i").test(text);
+}
+
+/**
+ * Put each proposal on the first card, in order, of a decision or ask
+ * about its tracker issue, else of one whose text links to it; a proposal
+ * no card takes is a Do card of its own. A proposal rides on one card only,
+ * so it has one Run button.
+ */
+export function attachOffers(cards: readonly Card[], offers: readonly Offered[]): Card[] {
+  const out = cards.map((c) => ({ ...c }));
+  const loose: Card[] = [];
+  for (const o of offers) {
+    const ref = refOf(TRACKER_REPO, o.issue);
+    const about = out.find((c) => decisionOf(c)?.ref === ref) ?? out.find((c) => linksTo(decisionOf(c)?.text ?? "", TRACKER_REPO, o.issue));
+    if (about) about.offers = [...about.offers ?? [], o];
+    else loose.push(doCard(o));
+  }
+  return [...out, ...loose];
 }
 
 /**
@@ -188,22 +231,45 @@ export interface InboxInput {
   drafts?: readonly DraftIssue[];
   runs?: readonly DispatchRun[];
   itemState?: (item: string) => string | undefined;
-  /** Proposals as loaded, each with its plan when its preconditions held. */
-  offers?: readonly { offer: Offered; plan?: Plan }[];
+  /** The board Priority of an item, by its lowercased `owner/repo#n`. */
+  priorityOf?: (item: string) => string | undefined;
+  /** The open proposals, as loaded. */
+  offers?: readonly Offered[];
   now: number;
 }
 
-/** Every card, by kind, the ones still waiting on him before those he did. */
+/**
+ * Every card, the ones still waiting on him before those he did, each part
+ * by board Priority, then oldest first, then kind. Proposals ride on their
+ * decisions (attachOffers), the earliest such card first.
+ */
 export function inboxCards(input: InboxInput): Card[] {
+  const priorityOf = input.priorityOf ?? (() => undefined);
   const cards = [
     ...(input.document?.entries ?? []).map((e) => documentCard(e, input.document?.marks.get(e.id))),
     ...(input.needs ?? []).map(needCard),
     ...(input.drafts ?? []).map(sendCard),
     ...rerunCards(input.runs ?? [], input.now, input.itemState ?? (() => undefined)),
-    ...(input.offers ?? []).map((o) => doCard(o.offer, o.plan)),
   ].filter((c): c is Card => c !== undefined);
-  const rank = (c: Card) => Number(c.answered === true) * CARD_KINDS.length + CARD_KINDS.indexOf(c.kind);
-  return cards.map((c, i) => ({ c, i })).sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i).map(({ c }) => c);
+  const loose = attachOffers(sortCards(cards, priorityOf), input.offers ?? []);
+  return sortCards(loose, priorityOf);
+}
+
+/** Cards in the inbox's order, each given its Priority: a need's own, else the board's for the item it names. */
+export function sortCards(cards: readonly Card[], priorityOf: (item: string) => string | undefined): Card[] {
+  const ranked = cards.map((c, i) => {
+    const priority = c.kind === "answer" || c.kind === "approve" ? c.need.priority : priorityOf(c.where.toLowerCase());
+    return { c: priority ? { ...c, priority } : c, i };
+  });
+  const since = (c: Card) => {
+    const t = Date.parse(c.since ?? "");
+    return Number.isFinite(t) ? t : Infinity;
+  };
+  return ranked.sort((a, b) => Number(a.c.answered === true) - Number(b.c.answered === true)
+    || priorityRank(a.c.priority) - priorityRank(b.c.priority)
+    || since(a.c) - since(b.c)
+    || CARD_KINDS.indexOf(a.c.kind) - CARD_KINDS.indexOf(b.c.kind)
+    || a.i - b.i).map(({ c }) => c);
 }
 
 /** The dispatch workflow whose failed runs are offered for a rerun. */

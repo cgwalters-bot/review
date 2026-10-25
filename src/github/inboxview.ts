@@ -12,6 +12,7 @@ import { TRACKER_REPO } from "./config.ts";
 import { DECISIONS_CONFIG } from "./decisiondocument.ts";
 import { questionOf } from "./board.ts";
 import type { DocumentEntry } from "./decisiondocument.ts";
+import type { Offered } from "./actions.ts";
 import { type Card, CARD_LABEL, type DispatchRun } from "./inbox.ts";
 import { ACTION_LABEL, ACTION_TITLE, type Need } from "./needs.ts";
 import { age, answerForm, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
@@ -40,19 +41,24 @@ export interface InboxHooks {
   rerun(run: DispatchRun): Promise<string>;
   /** The body of a Send card: the draft as its review will look, with Send. */
   draftBody?(card: Card & { kind: "send" }): Promise<HTMLElement>;
-  /** The body of a Do card: the proposal's facts, with Execute. */
-  offerBody?(card: Card & { kind: "do" }): Promise<HTMLElement>;
+  /** A proposal's body, on a Do card or the decision carrying it: its live facts and exact mutations, with Run. */
+  offerBody?(offer: Offered): Promise<HTMLElement>;
 }
+
+/** Cards drawn at first, about a phone's screen; "Show more" draws as many again. */
+export const INBOX_PAGE = 5;
+const MORE_CLASS = "inbox-more";
+const LIMIT_ATTR = "data-limit";
 
 /** What a card shows, so an unchanged card is not redrawn. Its age is left out: the ticker moves it in place. */
 export function cardSignature(c: Card): string {
-  const base = [c.kind, c.key, c.title, c.where, c.url, c.since, c.answered === true, c.note];
+  const base = [c.kind, c.key, c.title, c.where, c.url, c.since, c.answered === true, c.note, c.priority, (c.offers ?? []).map((o) => [o.comment.databaseId, o.comment.updatedAt])];
   switch (c.kind) {
     case "answer":
     case "approve": return JSON.stringify([...base, c.need.action, c.need.href, c.need.inPlace, c.need.priority, c.need.decision?.item.body, c.need.entry?.item?.body]);
     case "send": return JSON.stringify([...base, c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused]);
     case "rerun": return JSON.stringify([...base, c.run.id, c.run.status, c.run.conclusion]);
-    case "do": return JSON.stringify([...base, c.offer.comment.updatedAt, c.plan.states]);
+    case "do": return JSON.stringify([...base, c.offer.comment.databaseId, c.offer.comment.updatedAt]);
     case "document": return JSON.stringify([...base, c.entry.text, c.mark]);
   }
 }
@@ -134,11 +140,17 @@ function action(c: Card, hooks: InboxHooks): Node | null {
   }
 }
 
+/** A slot filled with `body` when it arrives (it reads its targets on drawing). */
+function bodySlot(body: Promise<HTMLElement>): HTMLElement {
+  const slot = h("div", { class: "card-body" }, h("p", { class: "note" }, "Reading…"));
+  body.then((b) => slot.replaceChildren(b), (e: unknown) => slot.replaceChildren(h("p", { class: "warn" }, String(e))));
+  return slot;
+}
+
 export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
-  const priority = c.kind === "answer" || c.kind === "approve" ? c.need.priority : undefined;
   const head = h("div", { class: "card-head" },
     h("span", { class: `kind c-${c.kind}` }, CARD_LABEL[c.kind]),
-    priority ? pill(priority) : null,
+    c.priority ? pill(c.priority) : null,
     h("span", { class: "title" }, c.url ? link(c.url, c.title) : c.title),
     h("span", { class: "age", ...(c.since ? { [SINCE_ATTR]: c.since, title: c.since } : {}) }, age(c.since, hooks.now)));
   const el = h("article", {
@@ -150,15 +162,13 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
     [SIG_ATTR]: cardSignature(c),
   }, head, h("p", { class: "card-where" }, c.where), c.note ? h("p", { class: "card-note" }, c.note) : null);
   if (c.kind === "document" && c.entry.text.trim()) el.append(h("details", { class: "dec-body" }, h("summary", {}, "The whole entry"), h("div", { class: "md" }, hooks.render(c.entry.text, c.entry.about?.repo))));
-  const body = c.kind === "send" ? hooks.draftBody?.(c) : c.kind === "do" ? hooks.offerBody?.(c) : undefined;
-  if (body) {
-    // Read on drawing (the draft's PR, the proposal's targets): filled in when it arrives.
-    const slot = h("div", { class: "card-body" }, h("p", { class: "note" }, "Reading…"));
-    el.append(slot);
-    body.then((b) => slot.replaceChildren(b), (e: unknown) => slot.replaceChildren(h("p", { class: "warn" }, String(e))));
-  }
+  // Read on drawing (the draft's PR, the proposal's targets): filled in when it arrives.
+  const body = c.kind === "send" ? hooks.draftBody?.(c) : c.kind === "do" ? hooks.offerBody?.(c.offer) : undefined;
+  if (body) el.append(bodySlot(body));
   const act = action(c, hooks);
   if (act) el.append(act);
+  // The operator action a decision comes down to, under its answer.
+  if (hooks.offerBody) for (const o of c.offers ?? []) el.append(bodySlot(hooks.offerBody(o)));
   const target = c.kind === "document" ? c.entry.about ? `https://github.com/${c.entry.about.repo}/issues/${c.entry.about.number}` : DECISIONS_CONFIG.document ? `https://github.com/${DECISIONS_CONFIG.document.repo}/issues/${DECISIONS_CONFIG.document.number}` : undefined
     : c.kind === "do" ? `https://github.com/${TRACKER_REPO}/issues/${c.offer.issue}`
     : c.kind === "rerun" && c.run.item ? `https://github.com/${c.run.item.replace("#", "/issues/")}` : c.url;
@@ -174,16 +184,42 @@ function staleNote(el: Element, text: string): void {
   note.textContent = text;
 }
 
+/** The "Show more" button after `list`, for `hidden` cards not drawn yet; none when there are none. */
+function moreButton(list: HTMLElement, hidden: number, more: () => void): void {
+  const next = list.nextElementSibling;
+  const old = next?.classList.contains(MORE_CLASS) ? next : null;
+  if (hidden <= 0) {
+    old?.remove();
+    return;
+  }
+  const button = h("button", { type: "button", class: `small ${MORE_CLASS}` }, `Show ${Math.min(hidden, INBOX_PAGE)} more of ${hidden}`);
+  button.addEventListener("click", more);
+  if (old) old.replaceWith(button);
+  else list.after(button);
+}
+
 /**
  * Show `cards` in `list`, in order, keeping each card that didn't change
  * (or, unless `force`, holds an unsent form) as the node it is. A kept
  * draft is never moved either, since moving a node takes the focus out of
- * it: the other cards are placed around it.
+ * it: the other cards are placed around it. Only the first INBOX_PAGE cards
+ * (more after "Show more") are drawn, so the ones further down read
+ * nothing; a drawn card holding a draft stays however far it moved.
  */
 export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: InboxHooks, force = false): void {
   const shown = new Map([...list.querySelectorAll<HTMLElement>(`:scope > .${CARD_CLASS}`)].map((el) => [el.getAttribute(ROW_KEY_ATTR)!, el]));
   const keep = (el: HTMLElement): boolean => !force && holdsDraft(el);
-  const wanted = cards.map((c) => {
+  const limit = Number(list.getAttribute(LIMIT_ATTR)) || INBOX_PAGE;
+  const drawn = cards.filter((c, i) => {
+    if (i < limit) return true;
+    const el = shown.get(c.key);
+    return el !== undefined && keep(el);
+  });
+  moreButton(list, cards.length - drawn.length, () => {
+    list.setAttribute(LIMIT_ATTR, String(limit + INBOX_PAGE));
+    fillInbox(list, cards, hooks);
+  });
+  const wanted = drawn.map((c) => {
     const el = shown.get(c.key);
     shown.delete(c.key);
     if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS)) return el;

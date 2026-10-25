@@ -74,7 +74,7 @@ export interface SectionEls {
 
 /** The places the sections' data goes. */
 export interface Slots {
-  /** The summary above everything else. */
+  /** The summary's status lines, atop Usage. */
   summary: HTMLElement;
   people: HTMLElement;
   peopleCount: HTMLElement;
@@ -191,7 +191,8 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     priority: section("priority", ctx, hooks, priority, themes.box),
     usage: section("usage", ctx, hooks, usage),
   };
-  // Each part in the view that shows it (shell.ts); the summary and the freshness line show in all.
+  // Each part in the view that shows it (shell.ts); the freshness line shows in all. The
+  // summary's status lines head Usage, so the Inbox opens straight onto its first card.
   const inView = (view: ViewId, el: HTMLElement) => {
     el.setAttribute(VIEW_ATTR, view);
     return el;
@@ -200,7 +201,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const el = h(
     "div",
     { class: HOME_CLASS },
-    summary,
+    inView("usage", summary),
     inView("usage", weekly),
     sections.needs.details,
     inView("board", status),

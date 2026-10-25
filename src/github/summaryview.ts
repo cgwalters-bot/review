@@ -1,4 +1,4 @@
-// The summary at the top of the page: one line each for the agents
+// The summary atop the Usage view: one line each for the agents
 // running, the runs queued, the scheduler and the pools, each linking to
 // the section with the detail. It reads nothing of its own: it is made
 // from what the sections already read, so it adds no GitHub request and
@@ -13,6 +13,7 @@ import type { ActiveAgent } from "./agents.ts";
 import type { ControllerData, PieceState } from "./controller.ts";
 import { monthGone, poolStateWords, poolWords } from "./opsview.ts";
 import type { PageState } from "./state.ts";
+import { poolLimit } from "./usage.ts";
 import { agoLabel, time } from "./view.ts";
 
 /** Agents linked by name on the line; the rest are counted. */
@@ -58,7 +59,8 @@ function agentsLine(state: PageState, targets: SummaryTargets): HTMLElement {
 
 function queuedLine(state: PageState, targets: SummaryTargets): HTMLElement {
   const runs = state.runs?.runs;
-  const queued = runs?.filter((r) => r.active && QUEUED.has(r.status)) ?? [];
+  // agent.yml's runs that haven't started, and dispatch.yml's.
+  const queued = [...runs?.filter((r) => r.active && QUEUED.has(r.status)) ?? [], ...state.agents.queued];
   return h("li", {}, jump("live-runs", "Queued", targets), " ", runs ? `${queued.length} run${queued.length === 1 ? "" : "s"}` : "not read yet", ...queued.slice(0, AGENTS_LINKED).flatMap((r) => [" · ", link(r.url, r.title)]));
 }
 
@@ -89,10 +91,9 @@ function resourcesLines(state: PageState, now: number, targets: SummaryTargets):
   const lines = POOLS.flatMap(([name, label]) => {
     const pool = usage.pools?.[name];
     if (!pool) return [];
-    const { held, stale } = poolStateWords(pool, now);
-    // Over pace as the pool's row has it: used beyond what the scheduler allows by now, held or not yet.
-    const over = pool.usedPercent > pool.allowedPercent ? ` · over pace: ${Math.round(pool.allowedPercent)}% allowed by now` : "";
-    return [h("li", pool.hold || over ? { class: "hot" } : {}, jump("weekly-usage", label, targets), ` ${poolWords(pool).short}${over}${held}`, stale)];
+    // What the pass does with it: held, else its headroom or that it is over pace and not held yet.
+    const { held, room, stale } = poolStateWords(pool, now);
+    return [h("li", pool.hold || pool.usedPercent > poolLimit(pool) ? { class: "hot" } : {}, jump("weekly-usage", label, targets), ` ${poolWords(pool).short}${room}${held}`, stale)];
   });
   const m = usage.mistral;
   if (m?.allowance) lines.push(h("li", {}, jump("weekly-usage", "Mistral", targets), ` $${m.allowance.spentUsd.toFixed(2)}${m.allowance.estimated ? " est." : ""} of $${m.allowance.limitUsd} this month`));

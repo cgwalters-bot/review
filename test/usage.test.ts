@@ -40,7 +40,7 @@ describe("findUsage", () => {
       assert.equal(u?.commentUrl, "https://github.com/cgwalters-forge/bot-ops/issues/1#issuecomment-11");
       assert.equal(u?.updatedAt, "2026-10-18T14:42:00Z");
       assert.deepEqual(u?.windows, []);
-      assert.deepEqual(u?.pools?.claude, { usedPercent: 73, allowedPercent: 73.2, resetsAt: "2026-10-19T23:00:00.000Z", observedAt: "2026-10-18T14:40:00.000Z", hold: false, windowMinutes: 10080 });
+      assert.deepEqual(u?.pools?.claude, { usedPercent: 73, allowedPercent: 73.2, resetsAt: "2026-10-19T23:00:00.000Z", observedAt: "2026-10-18T14:40:00.000Z", hold: false, windowMinutes: 10080, burst: 3, targetPercent: 95 });
       assert.deepEqual([u?.pools?.openai?.usedPercent, u?.pools?.openai?.hold], [1, false]);
       assert.deepEqual(u?.mistral?.allowance, { limitUsd: 300, resetsAt: "2026-11-01T00:00:00Z", spentUsd: 41.25, estimated: false, unpriced: [], lowerBound: false });
     }

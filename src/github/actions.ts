@@ -136,15 +136,46 @@ export function proposals(all: Comment[], issue: number, c: ActionConfig): Offer
   return out;
 }
 
-export async function loadProposals(gh: GitHub, c: ActionConfig): Promise<Discovery> {
-  // Deliberately manual and bounded: no polling fan-out over tracker history.
-  const issues = await gh.send<{ number: number; pull_request?: unknown }[]>("GET", `/repos/${c.tracker}/issues?state=open&sort=updated&direction=desc&per_page=20`);
+/**
+ * The index of pending proposals: agent-board sets this label on a tracker
+ * issue when it posts a proposal there and clears it once the receipt is
+ * posted, so the inbox reads the comments of those issues only.
+ */
+export const PROPOSAL_LABEL = "operator-action";
+/**
+ * Labelled issues read, most recently updated first. Anyone who can triage
+ * the tracker can label an issue; past this many, a poll would spend one
+ * GraphQL read per issue with the operator's token.
+ */
+export const PROPOSAL_ISSUES = 20;
+
+/** Each labelled issue's proposals as last read, kept while the issue's updated_at is unchanged. */
+export type ProposalCache = Map<number, { updatedAt: string; offers: Offered[] }>;
+
+/**
+ * The open proposals on the labelled tracker issues: one conditional read
+ * of the index, then the comments of each issue updated since `cache` read
+ * it. A proposal edited without the issue moving is caught by execute(),
+ * which re-reads the comment before anything is written.
+ */
+export async function loadProposals(gh: GitHub, c: ActionConfig, cache: ProposalCache = new Map()): Promise<Discovery> {
+  const { data: issues } = await gh.get<{ number: number; updated_at: string; pull_request?: unknown }[]>(`/repos/${c.tracker}/issues?state=open&labels=${PROPOSAL_LABEL}&sort=updated&direction=desc&per_page=${PROPOSAL_ISSUES}`);
   const out: Offered[] = [];
   const warnings: string[] = [];
+  if (issues.length >= PROPOSAL_ISSUES) warnings.push(`${PROPOSAL_ISSUES} or more issues carry the ${PROPOSAL_LABEL} label; only the ${PROPOSAL_ISSUES} updated last are read.`);
+  const listed = new Set<number>();
   for (const issue of issues) if (!issue.pull_request) {
-    try { out.push(...proposals(await comments(gh, c, issue.number), issue.number, c)); }
-    catch (e) { warnings.push(`${c.tracker}#${issue.number}: ${String(e)}`); }
+    listed.add(issue.number);
+    const known = cache.get(issue.number);
+    if (known && known.updatedAt === issue.updated_at) { out.push(...known.offers); continue; }
+    cache.delete(issue.number);
+    try {
+      const offers = proposals(await comments(gh, c, issue.number), issue.number, c);
+      cache.set(issue.number, { updatedAt: issue.updated_at, offers });
+      out.push(...offers);
+    } catch (e) { warnings.push(`${c.tracker}#${issue.number}: ${String(e)}`); }
   }
+  for (const n of cache.keys()) if (!listed.has(n)) cache.delete(n);
   return { offers: out, warnings };
 }
 

@@ -160,14 +160,18 @@ priority, then the newest ask. Missing request timestamps are shown as
 unknown rather than using the PR's creation date. Other queue entries and
 decisions beyond the first fifteen are in collapsed **Watching**.
 
-A **summary** comes first on the dashboard, a line each: the agents running
-by pool (engine), each linked; the agent runs queued; the board scheduler's
+A **summary** heads the Usage view (not the Inbox, which opens on its first
+card), a line each: the agents running by pool (engine), each linked; the
+agent runs queued; the board scheduler's
 mode (dispatching or previewing), the poll's last pass and the broker
 probe's last run (`broker ok 12m ago`, or its conclusion: `skipped` while
 tracker's `BROKER_OUTAGE` isn't `apply`), once the ops detail has read them;
-and each pool's line as below, with held, over pace and stale spelt out.
-Agents claimed on the board or last seen, with no current run or heartbeat
-behind them, are counted as not confirmed running.
+and each pool's line as below, with held, headroom, over pace and stale spelt out.
+Agents running are the in-progress runs of `agent.yml` in the devspace
+repository and of tracker's `dispatch.yml` (read while Agents, Usage or the
+open Activity stream shows), and fresh heartbeat jobs; queued runs of either
+workflow are counted as queued. Agents claimed on the board or last seen,
+with no current run or heartbeat behind them, are counted as not confirmed running.
 Its names open the section with the detail. It is made from what the sections
 already read, so it adds no GitHub request (its Scheduler link opens the ops
 detail, whose reads then start as if opened by hand). Merge queues are not in
@@ -175,13 +179,17 @@ it: nothing on the page reads them yet.
 
 **Weekly subscription usage** heads the Usage view, always open. It
 reads Claude and OpenAI from `bot-usage/v1`'s `pools`, one compact row each: a
-thin bar of the percent used with a tick at the scheduler's allowance by now
-(`allowed_percent`), coloured as a warning when over it or held, and a label
+thin bar of the percent used with a tick at what the pass allows by now
+(the pace, `allowed_percent`, plus the pool's `burst` points, never past
+`target_percent`, as agent-board's pass holds a pool), coloured as a warning
+when over it or held, and a label
 such as "50% used · 8% of week gone · ~636% at reset": the share of the window
 gone is worked out from the pool's `resets_at` and `window_minutes` (a week by
 default) at the time it was observed, and the projection is the rate so far
-carried to the window's end (none before 5% of it). The label also says when
-the scheduler holds new work on the pool (`hold`): "held: no new runs until
+carried to the window's end (none before 5% of it). The label also says what
+the pass does: an unheld pool's headroom under that limit ("not held: 35 points
+of headroom"), or "over pace" past it until the pass holds it, and when the
+pass holds new work on the pool (`hold`): "held: no new runs until
 HH:MM" with the date from `next_dispatch_at` when the snapshot gives it,
 and "running runs continue". A missing resume time is explicit; a past one
 says it was due to end and awaits a new reading, never promises a restart.
@@ -257,8 +265,8 @@ for entries still open. No private contents ship in
 the build. Configuration and migration are left to the operator.
 
 **Inbox cards**, with `inbox: true` in `src/github/decisions-config.json`
-(off by default), replace the Decisions rows, the document and the review
-draft and operator action panels with one card per thing only you can do,
+(on for this site), replace the Decisions rows, the document and the review
+draft panel with one prioritized list of cards, one per thing only you can do,
 each leaving by its own rule. **Decide** is an open document entry: an
 option ticked dims it until the bot acts, its About item closing or
 merging removes it, and comments on the item since the ask say it changed.
@@ -266,14 +274,24 @@ merging removes it, and comments on the item since the ask say it changed.
 dimmed once answered and gone once the issue closes, and a review request
 at an unreviewed head, gone once that head is reviewed or the PR closes or
 merges. **Send** is an open review-draft issue (when the review drafts are
-configured; Draft review heads the list), dimmed once ticked and gone once
+configured; Draft review follows the list), dimmed once ticked and gone once
 the tracker's workflow closes it. **Rerun** is an item's newest run of
 tracker's `dispatch.yml`, its title `KIND OWNER/REPO#N (POOL)`, when it
 failed or was cancelled in the last day and the board doesn't show the
 item closed; a newer run overtakes it. Its button first reads the runs and
 the item again, and reruns the failed jobs only if the card still holds.
-**Do** is an operator-action proposal whose preconditions hold, read only on
-Load proposals, as the panel did. The inbox adds one conditional read a
+An operator-action proposal rides on the Decide or Answer card of the
+tracker issue it was posted on, or else of the first card whose text links
+to that issue (`owner/repo#N` or its URL), with its exact mutations and Run
+(see [operator actions](docs/operator-actions.md)); **Do** is a proposal no
+decision carries. Proposals are found through the `operator-action` label,
+which agent-board sets on a tracker issue when it posts one there and clears
+on the receipt: one conditional read of at most 20 labelled issues a
+minute, and the comments of one only once it moved.
+Cards are listed by board Priority (a card's item's), then oldest first,
+those you did last. The first five are drawn and the rest on Show more, so a
+card's reads (a proposal's targets, a Send card's PR) happen only once it is.
+The inbox adds one conditional read a
 minute (the last day's dispatch runs, at most 100), plus with review drafts
 configured their issues and comments (at most 20) and each drawn Send
 card's PR, only while the Inbox view shows; the document's `resolve` reads
@@ -436,7 +454,7 @@ wide screen and from tabs at the bottom on a phone or tablet: **Inbox** (`#inbox
 Decisions and From people), **Agents** (`#agents`: live runs, Agents and the
 ops detail), **Board** (`#board`: Status, Focus and By priority, also what a
 filter in the URL opens), **Activity** (`#activity`: Changes) and **Usage**
-(`#usage`). The summary shows in every view. A bare `#`, as Back and `u`
+(`#usage`: the summary and the plan's usage). A bare `#`, as Back and `u`
 go to, is the view last shown. Switching views keeps the page as it was,
 half-written answers included. `q`, `d`, `n`, `t`, `s` switch to Decisions,
 Agents, Changes, By priority, Usage and open that section; `j`/`k`/`o`
@@ -770,8 +788,8 @@ and `kind` inputs. All empty leaves the panel off.
 
 ## Development
 
-The off-by-default [operator action panel](docs/operator-actions.md) shows
-typed proposals with live target preconditions and executes them sequentially
+The Inbox's [operator action](docs/operator-actions.md) cards show
+typed proposals with live target preconditions and run them sequentially
 with the operator's own token. agent-board's
 [operator actions](https://github.com/cgwalters-forge/agent-board/blob/main/docs/operator-actions.md)
 document is the contract; its schema and fixtures are vendored at a pinned commit.

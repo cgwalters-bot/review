@@ -8,6 +8,7 @@ import { loadActive } from "./ops.ts";
 import { buildEntries, type Entry } from "./queue.ts";
 import { loadForgePrs, loadOtherPrs, loadWaiting, refreshVerdicts, searchBotPrs } from "./prs.ts";
 import { loadActionRuns, runTotals, type RunsData } from "./runs.ts";
+import type { DispatchData } from "./dispatch.ts";
 import { parseDecision, sortDecisions, type Decision } from "./triage.ts";
 
 export interface StateInput {
@@ -17,6 +18,8 @@ export interface StateInput {
   decisionsAnswered?: Set<string>;
   answeredHere?: Set<string>;
   runs?: RunsData | undefined;
+  /** The tracker's dispatch runs, whose in-progress ones are agents too. */
+  dispatch?: DispatchData | undefined;
   sources?: Sources;
 }
 
@@ -48,7 +51,7 @@ export function pageState(input: StateInput, now = Date.now()) {
     schema: "review-state/v1", generatedAt: new Date(now).toISOString(),
     status: active?.status ?? null,
     people, decisions: input.decisions ?? [],
-    agents: activeAgents(active?.board ?? [], active?.local, now, undefined, { runs: input.runs, sources }),
+    agents: activeAgents(active?.board ?? [], active?.local, now, undefined, { runs: input.runs, dispatch: input.dispatch, sources }),
     focus: active?.board ?? [],
     runs: input.runs && totals ? { ...input.runs, totals } : null,
     usage: active?.usage ?? null,

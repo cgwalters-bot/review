@@ -23,7 +23,7 @@ import {
   workGroups,
   type WorkGroup,
 } from "./ops.ts";
-import { type MistralBudget, type MistralUsage, poolPace, type RunUsage, spendByRun, type SpendTotal, type Tokens, tokenTotal, UNKNOWN_KIND, type Usage, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
+import { type MistralBudget, type MistralUsage, poolLimit, poolPace, type RunUsage, spendByRun, type SpendTotal, type Tokens, tokenTotal, UNKNOWN_KIND, type Usage, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
 import { age, ageLabel, ago, agoLabel, clock, pill, time } from "./view.ts";
 
 const SECOND = 1000;
@@ -398,12 +398,17 @@ export const poolStale = (pool: UsagePool, now: number): boolean => now - Date.p
  * What a bare "held" and "stale" left to be guessed: that the scheduler
  * starts no new work on the pool (running work goes on), until when if
  * the snapshot said, and how old a stale reading is. "" for neither.
+ * An unheld pool says its headroom under what the pass allows (poolLimit),
+ * or, past it, that it is over pace: the pass holds it on its next reading.
  */
-export function poolStateWords(pool: UsagePool, now: number): { held: string; stale: HTMLElement | null } {
+export function poolStateWords(pool: UsagePool, now: number): { held: string; room: string; stale: HTMLElement | null } {
   // A time already past (a reading from before it, not since updated) is no end to promise.
   const next = pool.nextDispatchAt && (Date.parse(pool.nextDispatchAt) > now ? ` until ${clock(Date.parse(pool.nextDispatchAt))} (${time(pool.nextDispatchAt)})` : ` (was due to end ${time(pool.nextDispatchAt)}; awaiting a new reading)`);
+  const limit = poolLimit(pool);
+  const room = limit - pool.usedPercent;
   return {
     held: !pool.hold ? "" : ` · held: no new runs${next || "; resume time not published"}; running runs continue`,
+    room: pool.hold ? "" : room >= 0 ? ` · not held: ${Math.round(room)} points of headroom` : ` · over pace: ${Math.round(limit)}% allowed by now`,
     stale: poolStale(pool, now) ? h("span", { class: "pool-stale" }, " · stale: read ", agoLabel(pool.observedAt, now)) : null,
   };
 }
@@ -417,11 +422,12 @@ export function poolStateWords(pool: UsagePool, now: number): { held: string; st
 function poolRow(name: string, label: string, pool: UsagePool | undefined, now: number, snapshotAt: string): HTMLElement {
   if (!pool) return h("div", { class: "pool-sum none" }, h("span", { class: "pool-name" }, label), " ", h("span", { class: "pool-label" }, "No reading · ", snapshotAt ? h("span", {}, "snapshot ", agoLabel(snapshotAt, now)) : "snapshot age unknown", "."));
   const used = pool.usedPercent.toFixed(1);
-  const allowed = pool.allowedPercent.toFixed(1);
-  const over = pool.usedPercent > pool.allowedPercent;
+  const limit = poolLimit(pool);
+  const allowed = `${limit.toFixed(1)}%${pool.burst ? ` (pace ${pool.allowedPercent.toFixed(1)}% + ${pool.burst} burst${limit < pool.allowedPercent + pool.burst ? ", capped at the target" : ""})` : ""}`;
+  const over = pool.usedPercent > limit;
   const stale = poolStale(pool, now);
   const state = poolStateWords(pool, now);
-  const flags = `${over ? " · over pace" : ""}${state.held}`;
+  const flags = `${state.room}${state.held}`;
   const words = poolWords(pool);
   const clamp = (n: number, max: number) => String(Math.max(0, Math.min(max, n)));
   const y = String((POOL_BAR.height - POOL_BAR.track) / 2);
@@ -437,11 +443,11 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
       "aria-valuemin": "0",
       "aria-valuemax": "100",
       "aria-valuenow": clamp(pool.usedPercent, 100),
-      "aria-valuetext": `${used}% used, ${allowed}% allowed by pace${flags.replaceAll(" ·", ",")}${stale ? ", stale" : ""}`,
+      "aria-valuetext": `${used}% used, ${allowed} allowed by now${flags.replaceAll(" ·", ",")}${stale ? ", stale" : ""}`,
     },
     svg("rect", { class: "track", ...track, width: String(POOL_BAR.width) }),
     svg("rect", { class: "fill", ...track, width: clamp(pool.usedPercent, POOL_BAR.width) }),
-    svg("rect", { class: "tick", x: clamp(pool.allowedPercent - POOL_BAR.tick / 2, POOL_BAR.width - POOL_BAR.tick), y: "0", width: String(POOL_BAR.tick), height: String(POOL_BAR.height) }),
+    svg("rect", { class: "tick", x: clamp(limit - POOL_BAR.tick / 2, POOL_BAR.width - POOL_BAR.tick), y: "0", width: String(POOL_BAR.tick), height: String(POOL_BAR.height) }),
   );
   return h(
     "details",
@@ -452,12 +458,12 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
       h("span", { class: "pool-name" }, label),
       " ",
       bar,
-      h("span", { class: "pool-label" }, words.short, state.held, state.stale),
+      h("span", { class: "pool-label" }, words.short, flags, state.stale),
     ),
     h(
       "div",
       { class: "pool-detail" },
-      h("p", {}, `${words.long}. The tick is what the scheduler allows by now: ${allowed}%${flags}.`),
+      h("p", {}, `${words.long}. The tick is what the pass allows by now: ${allowed}${flags}.`),
       h("p", {}, `${resetText(pool.resetsAt, now)} (${time(pool.resetsAt)}).`),
       // The snapshot is the Usage workflow's (see the controller panel): stale means it has not published since.
       h("p", {}, "Observed ", agoLabel(pool.observedAt, now), `${stale ? " · stale: the usage publisher has not reported since" : ""}.`),

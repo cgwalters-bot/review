@@ -61,9 +61,9 @@ describe("operator dashboard", () => {
     const usage = findUsage(fixture<RawComment[]>("usage-snapshot.json"))!;
     fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-18T14:44:00Z"));
     const shown = text(home.slots.weekly);
-    assert.match(shown, /Claude.*73\.0% used.*allows by now: 73\.2%\./);
-    assert.match(shown, /OpenAI.*1\.0% used.*allows by now: 15\.4%\./);
-    assert.doesNotMatch(shown, /held|stale/);
+    assert.match(shown, /Claude.*73\.0% used.*allows by now: 76\.2% \(pace 73\.2% \+ 3 burst\) · not held: 3 points of headroom\./);
+    assert.match(shown, /OpenAI.*1\.0% used.*allows by now: 18\.4% \(pace 15\.4% \+ 3 burst\) · not held: 17 points of headroom\./);
+    assert.doesNotMatch(shown, /· held|stale/);
     assert.match(text(home.slots.weekly.querySelector(".mistral .pool-sum")), /\$41\.25 \/ \$300/);
     assert.ok(shown.includes("Published 2m ago."), shown);
     assert.ok([...home.slots.weekly.querySelectorAll(".age")].some((el) => el.getAttribute("title") === time("2026-10-18T14:42:00Z")));
@@ -108,8 +108,8 @@ describe("operator dashboard", () => {
     const home = homeSkeleton(hooks());
     const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-pools.json"))}\n\`\`\``)!;
     fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-09T14:00:00Z"));
-    assert.match(text(home.slots.weekly), /Claude.*42\.0% used with 51\.5% of the week gone, so ~81% by its end at this rate\. The tick is what the scheduler allows by now: 49\.2%\./);
-    assert.match(text(home.slots.weekly), /OpenAI.*80\.0% used with 31\.7% of the week gone.*allows by now: 30\.1% · over pace · held: no new runs until /);
+    assert.match(text(home.slots.weekly), /Claude.*42\.0% used with 51\.5% of the week gone, so ~81% by its end at this rate\. The tick is what the pass allows by now: 52\.2% \(pace 49\.2% \+ 3 burst\) · not held: 10 points of headroom\./);
+    assert.match(text(home.slots.weekly), /OpenAI.*80\.0% used with 31\.7% of the week gone.*allows by now: 33\.1% \(pace 30\.1% \+ 3 burst\) · held: no new runs until /);
     assert.match(text(home.slots.weekly), /Publication time unknown/);
     assert.match(text(home.slots.weekly.querySelector(".pool-sum.mistral")), /^Mistral 2,500 requests · 1,234,567 tokens since the broker started$/);
     assert.equal(home.slots.weekly.querySelector(".mistral [role=progressbar]"), null, "counters have no bar");
@@ -157,8 +157,8 @@ describe("operator dashboard", () => {
     at("2026-10-09T13:50:00Z");
     // pool, its label, over pace or held, [valuenow, valuetext], the fill's width and the tick's x
     const cases = [
-      ["claude", "42% used · 52% of week gone · ~81% at reset", false, ["42", "42.0% used, 49.2% allowed by pace"], "42", "48.7129230406746"],
-      ["openai", `80% used · 32% of week gone · ~253% at reset · held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`, true, ["80", `80.0% used, 30.1% allowed by pace, over pace, held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`], "80", "29.60736748511905"],
+      ["claude", "42% used · 52% of week gone · ~81% at reset · not held: 10 points of headroom", false, ["42", "42.0% used, 52.2% (pace 49.2% + 3 burst) allowed by now, not held: 10 points of headroom"], "42", "51.7129230406746"],
+      ["openai", `80% used · 32% of week gone · ~253% at reset · held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`, true, ["80", `80.0% used, 33.1% (pace 30.1% + 3 burst) allowed by now, held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`], "80", "32.60736748511905"],
     ] as const;
     for (const [name, label, over, aria, fill, tick] of cases) {
       const d = pool(name);
@@ -168,7 +168,7 @@ describe("operator dashboard", () => {
       const bar = d.querySelector("summary [role=progressbar]");
       assert.deepEqual(attrs(bar, "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"), ["0", "100", ...aria]);
       assert.deepEqual([attrs(bar!.querySelector(".fill"), "width")[0], attrs(bar!.querySelector(".tick"), "x")[0]], [fill, tick]);
-      assert.match(text(d.querySelector(".pool-detail")), /scheduler allows by now: .*resets .*Observed [^·]*\.$/);
+      assert.match(text(d.querySelector(".pool-detail")), /pass allows by now: .*resets .*Observed [^·]*\.$/);
       assert.doesNotMatch(text(d.querySelector(".pool-detail")), /stale/);
     }
     assert.equal(home.slots.weekly.querySelector(".warn"), null, "no warning boxes");
@@ -176,11 +176,11 @@ describe("operator dashboard", () => {
     pool("openai").open = true;
     at("2026-10-10T14:00:00Z");
     assert.deepEqual([pool("claude").open, pool("openai").open], [false, true], "a redraw keeps his expander open");
-    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% used · 52% of week gone · ~81% at reset · stale: read 1d ago");
+    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% used · 52% of week gone · ~81% at reset · not held: 10 points of headroom · stale: read 1d ago");
     assert.match(pool("claude").querySelector("[role=progressbar]")!.getAttribute("aria-valuetext")!, /, stale$/);
     assert.match(text(pool("claude").querySelector(".pool-detail")), /Observed 1d ago · stale: the usage publisher has not reported since\.$/);
 
-    fillUsage(home, { state: "ok", usage: { ...usage, pools: { claude: { ...usage.pools!.claude!, usedPercent: 130, allowedPercent: 100 } } } }, undefined, Date.parse("2026-10-09T13:50:00Z"));
+    fillUsage(home, { state: "ok", usage: { ...usage, pools: { claude: { ...usage.pools!.claude!, usedPercent: 130, allowedPercent: 100, targetPercent: 200 } } } }, undefined, Date.parse("2026-10-09T13:50:00Z"));
     const full = pool("claude").querySelector("[role=progressbar]")!;
     assert.deepEqual([attrs(full, "aria-valuenow")[0], attrs(full.querySelector(".fill"), "width")[0], attrs(full.querySelector(".tick"), "x")[0]], ["100", "100", "99"]);
     assert.match(text(home.slots.weekly.querySelector(".pool-sum.none")), /OpenAI No reading · snapshot age unknown/);

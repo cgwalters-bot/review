@@ -32,12 +32,12 @@ describe("views", () => {
     hidden = false;
   });
 
-  it("shows each section in its view only, and the summary and freshness line in all", () => {
+  it("shows each section in its view only, the summary on Usage and the freshness line in all", () => {
     const home = mounted();
     for (const view of VIEWS) {
       showView(home.el, view);
       for (const id of SECTIONS) assert.equal(home.sections[id].details.hidden, SECTION_VIEW[id] !== view, `${id} in ${view}`);
-      assert.equal(home.slots.summary.hidden, false);
+      assert.equal(home.slots.summary.hidden, view !== "usage");
       assert.equal(home.slots.freshness.hidden, false);
       assert.equal(home.slots.weekly.hidden, view !== "usage");
       assert.equal(home.slots.runs.hidden, view !== "agents");
