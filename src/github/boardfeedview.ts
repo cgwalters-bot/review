@@ -12,6 +12,8 @@ export interface FeedOptions {
   urgentOnly: boolean;
   /** The board was read from the cache only, so it may be behind. */
   fromCache?: boolean;
+  /** The unified stream renders the rows, leaving the snapshot controls here. */
+  controlsOnly?: boolean;
   onUrgentOnly: (on: boolean) => void;
   onSeen: () => void;
 }
@@ -91,6 +93,7 @@ export function feedSection(board: readonly Item[] | undefined, seen: Snapshot |
       seenBtn,
     ),
   );
+  if (opts.controlsOnly) return sec;
   if (!shown.length) {
     sec.append(h("p", { class: "note" }, all.length ? "No P0/P1 changes." : "Nothing changed since then."));
     return sec;

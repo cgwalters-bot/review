@@ -365,7 +365,8 @@ closest view of the agent. A run that finished in the last 6 hours stays
 with its result, as the bot's status comment about that run on the item
 says it, and a link to the PR or comment it handed back. A concluded run's
 item comments are read once per page load. These are read every 60
-seconds, only while Agents is on screen; each list is one page of 100.
+seconds while Agents is on screen or Activity's Changes section is open;
+each list is one page of 100, shared between the views.
 
 **Live Actions runs** is visible outside the Agents and ops disclosures. It
 reads `agent.yml` independently of the heartbeat, conditionally every 60 seconds
@@ -460,15 +461,24 @@ priority, status and verdict chip, and for merge and close the
 target it points at; an item that is in the queue opens there. The
 verdict chips above filter every group.
 
-**Merged PRs**, in Changes, are recently merged PRs in the bot
+**Activity**, in Changes, is one newest-first stream of bot public events,
+board transitions since Mark all seen, merged harness-repository PRs and
+dispatch runs finished in the last six hours. Relative times tick in place
+with absolute times on hover; board removals with no known timestamp sort
+last. The existing P0/P1 filter and Mark all seen apply only to board changes.
+Opening Changes starts its reads; closing it stops them. Public events use
+one conditional page shared with the ops detail, no more often than a minute
+or GitHub's `X-Poll-Interval` if longer (including on a 304). Merged PR lists
+are read every five minutes; dispatch runs share the Agents source.
+
+**Merged PRs**, in the stream, are recently merged PRs in the bot
 (cgwalters-bot/homegit), its runner (cgwalters-devspace-sandbox, both
 copies), agentic-job, agent-board and this app, newest first, with the first paragraph of each
 description. Harness changes stand out: PRs labeled `harness`, or
 touching `agent.yml`, `bot-harness` or a `harness/` tree.
 
-**Board changes**, in Changes, are the
-items that changed since you last pressed "Mark all seen", newest first
-and grouped by day, with a chip per change (new, ↑/↓ priority, a
+**Board changes**, in the stream, are the
+items that changed since you last pressed "Mark all seen", with a chip per change (new, ↑/↓ priority, a
 Status transition, Done, gone from the board, a Lead claimed or
 released) and an optional P0/P1-only filter. GitHub keeps no history of
 project fields, so the app keeps its own: a snapshot of each item's
@@ -628,7 +638,8 @@ The board is polled every minute with ETags while the tab is visible
 (never while it is hidden), the bot's PRs with two searches every
 minute, and a PR's reviews only when it changed. Everything else a view
 shows is one of a list of sources, each with what it reads, a cadence
-(a minute for all of them today) and the views that show it, and is
+(a minute except merged PRs, every five minutes, and public events when
+GitHub requests a longer interval) and the views that show it, and is
 read only while one of those views is on screen, at the poll, or at
 once on switching to a view whose sources are older than their cadence
 (unless the rate budget slowed the poll: they then wait for it). The

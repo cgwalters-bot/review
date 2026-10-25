@@ -83,7 +83,8 @@ import { draftCard, draftReviewForm, reviewDraftsPanel } from "./reviewdraftsvie
 import { loadProjectStatus } from "./backend.ts";
 import { botWaitingCount, filterNeeds, type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
-import { activeFromOps, type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
+import { activeFromOps, type BotEvent, type JobCache, loadActive, loadEvents, loadOps, type Ops } from "./ops.ts";
+import { NEWS_POLL_MS } from "./activity.ts";
 import { tickOps } from "./opsview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
@@ -128,6 +129,8 @@ interface State {
   runsRunning: boolean;
   /** The tracker's dispatch runs as last read, and the finished ones' results read so far. */
   dispatch?: DispatchData;
+  activityEvents?: BotEvent[];
+  activityEventsError?: string;
   dispatchResults: ResultCache;
   dispatchRunning?: boolean;
   /** What the views show and when each is read (see newLayer). */
@@ -717,6 +720,23 @@ async function refreshActionRuns(state: State): Promise<boolean> {
   }
 }
 
+async function refreshActivityEvents(state: State): Promise<boolean> {
+  try {
+    const events = await loadEvents(state.gh);
+    if (state.closed) return false;
+    const checked = events !== state.activityEvents;
+    state.activityEvents = events;
+    delete state.activityEventsError;
+    paintChanges(state);
+    return checked;
+  } catch (e) {
+    if (state.closed) return false;
+    state.activityEventsError = `Public events unavailable: ${message(e)}`;
+    paintChanges(state);
+    return false;
+  }
+}
+
 /** Re-read the dispatch runs; false if nothing was read (see SourceDef.read). */
 async function refreshAgentDispatch(state: State): Promise<boolean> {
   if (state.closed || state.dispatchRunning) return false;
@@ -727,6 +747,7 @@ async function refreshAgentDispatch(state: State): Promise<boolean> {
     // A failed read keeps the cards last read, with why they weren't refreshed.
     state.dispatch = data.state === "ok" || !state.dispatch ? data : { ...state.dispatch, warnings: data.warnings };
     if (state.home) fillDispatch(state.home, state.dispatch, Date.now());
+    paintChanges(state);
     return data.state === "ok";
   } finally {
     state.dispatchRunning = false;
@@ -873,6 +894,9 @@ function paintChanges(state: State): void {
       seen: feedSeen(a?.board, a?.at ?? Date.now(), a?.fromCache),
       fromCache: a?.fromCache === true,
       news: state.news,
+      events: state.activityEvents,
+      eventsError: state.activityEventsError,
+      dispatch: state.dispatch,
       feed: {
         urgentOnly: loadUrgentOnly(),
         onUrgentOnly: (on) => {
@@ -910,7 +934,8 @@ function paintOps(state: State): void {
  * atop every view, and the decisions the header's counts, so every view
  * needs them too. The merged PRs, the ops detail, the themes and the
  * people's asks are read only for their view, while their section or
- * fold is open; the dispatch runs only for the Agents view. A poll asked for early (after an action) re-reads the
+ * fold is open; dispatch runs serve Agents and the open Activity stream.
+ * A poll asked for early (after an action) re-reads the
  * queue only: the others wait for their cadence, which the usual poll
  * interval meets. A refresh he asked for from another view than the
  * inbox doesn't force the decisions' redraw over his unsent picks there.
@@ -925,9 +950,10 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       { name: "queue", path: "the Workstream board's items; search of the bot's PRs", cadence: POLL_INTERVAL_MS, views: VIEWS },
       { name: "active", path: "the board, heartbeat, usage snapshot and project status", cadence: OPS_POLL_INTERVAL_MS, views: VIEWS, read: () => refreshActive(get()) },
       { name: "runs", path: "agent workflow runs and their jobs", cadence: RUNS_POLL_MS, views: VIEWS, read: () => refreshActionRuns(get()) },
-      { name: "agent-dispatch", path: "the tracker's dispatch runs, their jobs and finished runs' status comments", cadence: DISPATCH_POLL_MS, views: [SECTION_VIEW.agents], read: () => refreshAgentDispatch(get()) },
+      { name: "agent-dispatch", path: "the tracker's dispatch runs, their jobs and finished runs' status comments", cadence: DISPATCH_POLL_MS, views: [SECTION_VIEW.agents, SECTION_VIEW.changes], read: () => refreshAgentDispatch(get()), when: () => get().view === SECTION_VIEW.agents || open((home) => home.sections.changes.details)() },
+      { name: "activity-events", path: "the bot's public events (GitHub's X-Poll-Interval)", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.changes], read: () => refreshActivityEvents(get()), when: open((home) => home.sections.changes.details) },
       { name: "ops", path: "devspaces, agent runs and the bot's public events", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.agents], read: () => refreshOps(get()), when: open((home) => home.slots.opsBox) },
-      { name: "news", path: "merged PRs of the harness repositories", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.changes], read: () => refreshNews(get()), when: open((home) => home.sections.changes.details) },
+      { name: "news", path: "merged PRs of the harness repositories", cadence: NEWS_POLL_MS, views: [SECTION_VIEW.changes], read: () => refreshNews(get()), when: open((home) => home.sections.changes.details) },
       { name: "themes", path: "every open board item", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.priority], read: () => refreshTriage(get()), when: open((home) => home.slots.themesBox) },
       { name: "decisions", path: "the decisions document and tracker questions", cadence: POLL_INTERVAL_MS, views: VIEWS, read: (force) => refreshDecisions(get(), force && get().view === SECTION_VIEW.needs) },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
