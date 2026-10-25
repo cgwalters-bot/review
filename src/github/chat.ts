@@ -41,6 +41,10 @@ export const LIVE_STATUSES: ReadonlySet<string> = new Set(["queued", "in_progres
 const RUNS_PER_PAGE = 10;
 /** Largest publication comment body read. */
 const MAX_COMMENT = 65536;
+/** Characters of a session transcript drawn before the rest waits behind a button. */
+const TRANSCRIPT_CHARS = 1024 * 1024;
+/** Top-level transcript entries drawn. */
+const TRANSCRIPT_NODES = 1000;
 
 export interface LiveRun {
   source: ChatSource;
@@ -376,8 +380,23 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     };
     const go = (next: ChatState, text?: string) => { state = next; if (text !== undefined) say(text); controls(); };
 
+    /**
+     * s as far as the transcript's display budget goes, then a button that
+     * shows the rest on request: one oversized update can't flood the page,
+     * and its full text stays reachable.
+     */
+    const bounded = (s: string): [Text, ...HTMLElement[]] => {
+      const room = Math.max(0, TRANSCRIPT_CHARS - chars);
+      chars += Math.min(s.length, room);
+      if (s.length <= room) return [doc.createTextNode(s)];
+      const rest = s.slice(room);
+      const more = h("button", { type: "button", class: "chat-more" }, `Show ${rest.length.toLocaleString()} more characters`);
+      more.addEventListener("click", (e) => { e.preventDefault(); more.replaceWith(rest); });
+      return [doc.createTextNode(s.slice(0, room)), more];
+    };
+
     const render = (u: any) => {
-      if (!u || chars >= 1024 * 1024 || log.childElementCount >= 1000) { say("Transcript display limit reached"); return; }
+      if (!u || chars >= TRANSCRIPT_CHARS || log.childElementCount >= TRANSCRIPT_NODES) { say("Transcript display limit reached"); return; }
       const text = (v: unknown) => typeof v === "string" ? v : "";
       let node: HTMLElement | undefined;
       if (u.sessionUpdate === "agent_message_chunk" || u.sessionUpdate === "user_message_chunk") {
@@ -387,21 +406,22 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
           if (!current || currentKind !== u.sessionUpdate) {
             current = h("p", { class: u.sessionUpdate === "user_message_chunk" ? "chat-user" : "chat-agent" }); currentKind = u.sessionUpdate; log.append(current);
           }
+          const [head, ...more] = bounded(chunk);
           const leaf = current.firstChild;
-          if (leaf) leaf.nodeValue = (leaf.nodeValue ?? "") + chunk;
-          else current.append(doc.createTextNode(chunk));
-          chars += chunk.length;
+          if (leaf) leaf.nodeValue = (leaf.nodeValue ?? "") + head.data;
+          else current.append(head);
+          current.append(...more);
         }
       } else if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
         const id = text(u.toolCallId);
         node = tools.get(id);
         if (!node) { node = h("details"); tools.set(id, node); }
-        node.replaceChildren(h("summary", {}, `${text(u.title) || "Tool"} · ${text(u.status)}`), h("pre", {}, text(JSON.stringify(u.content ?? u.rawOutput ?? ""))));
+        node.replaceChildren(h("summary", {}, ...bounded(`${text(u.title) || "Tool"} · ${text(u.status)}`)), h("pre", {}, ...bounded(text(JSON.stringify(u.content ?? u.rawOutput ?? "")))));
       } else if (u.sessionUpdate === "plan" && Array.isArray(u.entries)) {
-        node = h("ul", {}, ...u.entries.slice(0, 100).map((e: any) => h("li", {}, `${text(e.status)}: ${text(e.content)}`)));
+        node = h("ul", {}, ...u.entries.slice(0, 100).map((e: any) => h("li", {}, ...bounded(`${text(e.status)}: ${text(e.content)}`))));
       }
       if (u.sessionUpdate !== "agent_message_chunk" && u.sessionUpdate !== "user_message_chunk") current = undefined;
-      if (node) { chars += node.textContent?.length ?? 0; if (!node.parentNode) log.append(node); }
+      if (node && !node.parentNode) log.append(node);
     };
 
     /**

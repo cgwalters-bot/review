@@ -26,3 +26,9 @@ export function age(iso: string | undefined, now: number): string {
   for (const [unit, suffix] of AGE_UNITS) if (ms >= unit) return `${Math.floor(ms / unit)}${suffix}`;
   return "now";
 }
+
+/** An age as a phrase, e.g. "3d ago" or "just now", or "" for no or a bad date. */
+export function ago(iso: string | undefined, now: number): string {
+  const text = age(iso, now);
+  return text === "now" ? "just now" : text ? `${text} ago` : "";
+}

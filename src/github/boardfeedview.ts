@@ -5,7 +5,7 @@
 import { h, link } from "../dom.ts";
 import type { Item } from "./board.ts";
 import { type Change, diffBoard, groupByTime, isUrgent, type ItemChanges, type Snapshot } from "./boardfeed.ts";
-import { ageLabel, pill } from "./view.ts";
+import { ageLabel, agoLabel, pill } from "./view.ts";
 
 export interface FeedOptions {
   now: number;
@@ -86,7 +86,7 @@ export function feedSection(board: readonly Item[] | undefined, seen: Snapshot |
     h(
       "div",
       { class: "feed-bar" },
-      h("span", { class: "note" }, "Since ", ageLabel(new Date(seen.at).toISOString(), opts.now), ` ago · ${all.length} item${all.length === 1 ? "" : "s"} changed`),
+      h("span", { class: "note" }, "Since ", agoLabel(new Date(seen.at).toISOString(), opts.now), ` · ${all.length} item${all.length === 1 ? "" : "s"} changed`),
       h("label", {}, toggle, " P0/P1 only"),
       seenBtn,
     ),

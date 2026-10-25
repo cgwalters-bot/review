@@ -39,7 +39,7 @@ import {
   viewedKey,
 } from "./store.ts";
 import type { RunStatus } from "./backend.ts";
-import { ageLabel, type ContextHooks, pill, runView, time } from "./view.ts";
+import { ageLabel, agoLabel, type ContextHooks, pill, runView } from "./view.ts";
 import type { PrReason, PrWait } from "./waiting.ts";
 
 export { FILE_CLASS };
@@ -828,7 +828,9 @@ class Pane implements PrPane {
     const note = h(
       "p",
       { class: "note" },
-      `Advice from ${BOT_LOGIN}'s reviewer, written for ${short(guide.head)}${g.at ? ` (${time(g.at)})` : ""}: where it thinks this PR needs a close read. It doesn't replace reading the diff. `,
+      `Advice from ${BOT_LOGIN}'s reviewer, written for ${short(guide.head)}`,
+      g.at ? h("span", {}, " (", agoLabel(g.at, Date.now()), ")") : "",
+      ": where it thinks this PR needs a close read. It doesn't replace reading the diff. ",
       link(g.url, "the review"),
     );
     const children: HTMLElement[] = [head, note];

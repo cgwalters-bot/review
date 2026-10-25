@@ -109,7 +109,7 @@ import { DEFAULT_VIEW, fillNav, SECTION_VIEW, showView, VIEW_ATTR, VIEW_TITLE, t
 import { checkedText, SourceLayer } from "./sourcelayer.ts";
 import { loadAdvance, loadFilter, loadNeedsPriority, saveAdvance, saveFilter, saveNeedsPriority } from "./store.ts";
 import { buildTriage, type Decision, decisionLabel, parseDecision, sortDecisions, triageOrder, type TriageFilter } from "./triage.ts";
-import { ageLabel, answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
+import { agoLabel, answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
 const render = createRenderer(window);
@@ -334,9 +334,9 @@ function renderMeta(state: State): void {
   const people = peopleMeta(state.people, !!state.home?.el.isConnected && !!state.home.el.querySelector<HTMLDetailsElement>("#sec-people")?.open);
   part("mp-queues", h("span", { title: people.title }, people.text), ` · bot ${botCount}`);
   const since = cachedSince(state);
-  if (since !== undefined) part("mp-age", h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, "cached · ", ageLabel(new Date(since).toISOString(), Date.now()), " ago"));
+  if (since !== undefined) part("mp-age", h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, "cached · ", agoLabel(new Date(since).toISOString(), Date.now())));
   else if (state.home?.el.isConnected) part("mp-age", viewChecked(state.layer, state.view, Date.now()));
-  else if (state.lastPoll) part("mp-age", "checked ", ageLabel(state.lastPoll.toISOString(), Date.now()), " ago");
+  else if (state.lastPoll) part("mp-age", "checked ", agoLabel(state.lastPoll.toISOString(), Date.now()));
   // Why it isn't being refreshed as usual, if it isn't. Only the queue's
   // cached copy (also shown behind an item) is re-read by the poll itself;
   // PRs have loaders of their own.

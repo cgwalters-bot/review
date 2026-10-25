@@ -4,8 +4,8 @@
 import { type Answer, parseAnswer, parseBlocks, type Question, unfencedLines } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
-import { age, time } from "../time.ts";
-export { age, clock, time } from "../time.ts";
+import { age, ago, time } from "../time.ts";
+export { age, ago, clock, time } from "../time.ts";
 import { commentNote, type ItemAction, parseAskBody } from "./asks.ts";
 import { authorLabel } from "./authors.ts";
 import { ASK_LABELS, askKind, type IssueRef, isAsk, isQuestion, type Item, questionOf, type SubIssueSummary } from "./board.ts";
@@ -26,6 +26,14 @@ export function excerpt(text: string): string {
 /** An in-place ticking relative time; the full timestamp stays in its tooltip. */
 export function ageLabel(iso: string | undefined, now: number, title = time(iso)): HTMLElement {
   return h("span", { class: "age", title, ...(iso && Number.isFinite(Date.parse(iso)) ? { [SINCE_ATTR]: iso } : {}) }, age(iso, now) || "age unknown");
+}
+
+/** ageLabel as a phrase for prose, "5m ago" or "just now", never "now ago". */
+export function agoLabel(iso: string | undefined, now: number, title = time(iso)): HTMLElement {
+  const label = ageLabel(iso, now, title);
+  label.setAttribute(AGO_ATTR, "");
+  label.textContent = ago(iso, now) || "at an unknown time";
+  return label;
 }
 
 /**
@@ -135,6 +143,9 @@ function row(e: Entry, labelOf: (e: Entry) => RowLabel | undefined, now: number,
 /** On an age label the page's ticker moves on (tickAges): the time it counts from. */
 export const SINCE_ATTR = "data-since";
 
+/** On an age label: it reads as a phrase (agoLabel), not a compact age. */
+const AGO_ATTR = "data-ago";
+
 /**
  * Move every ticking age under `root` to `now`, in place: the queue is
  * redrawn only when it changes, so without this a row's age sits at the
@@ -143,7 +154,8 @@ export const SINCE_ATTR = "data-since";
  */
 export function tickAges(root: ParentNode, now: number): void {
   for (const el of root.querySelectorAll<HTMLElement>(`.age[${SINCE_ATTR}]`)) {
-    const text = age(el.getAttribute(SINCE_ATTR) ?? undefined, now);
+    const since = el.getAttribute(SINCE_ATTR) ?? undefined;
+    const text = el.hasAttribute(AGO_ATTR) ? ago(since, now) : age(since, now);
     if (text) el.textContent = text;
   }
 }
