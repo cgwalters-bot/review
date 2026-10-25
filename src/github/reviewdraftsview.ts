@@ -11,13 +11,6 @@ import { dispatchFailed, EVENTS, loadDraftIssues, readPr, refText, sendDraft, st
 export function reviewDraftsPanel(gh: GitHub, c: ReviewDraftConfig, render: Renderer): HTMLDetailsElement {
   const list = h("div");
   const status = h("p", { role: "status" });
-  const input = h("input", { type: "text", placeholder: "OWNER/REPO#N or PR URL", "aria-label": "Pull request to draft a review of" });
-  const start = h("button", { type: "submit" }, "Draft review");
-  const started = h("p", { role: "status" });
-  const form = h("form", { class: "review-draft-start" }, input, start, started);
-  const panel = h("details", { class: "review-drafts sec" }, h("summary", {}, "Review drafts"),
-    h("p", { class: "note" }, `Open ${c.label} issues in ${c.tracker}. Send ticks the issue's send box as you; the tracker's workflow posts the review.`),
-    form, status, list);
   let loading = false;
   const load = (): void => {
     if (loading) return;
@@ -27,20 +20,32 @@ export function reviewDraftsPanel(gh: GitHub, c: ReviewDraftConfig, render: Rend
       status.textContent = issues.length ? "" : "No open review drafts.";
     }).catch((e: unknown) => { status.textContent = String(e); }).finally(() => { loading = false; });
   };
+  const panel = h("details", { class: "review-drafts sec" }, h("summary", {}, "Review drafts"),
+    h("p", { class: "note" }, `Open ${c.label} issues in ${c.tracker}. Send ticks the issue's send box as you; the tracker's workflow posts the review.`),
+    draftReviewForm(gh, c, load), status, list);
   panel.addEventListener("toggle", () => { if (panel.open) load(); });
+  return panel;
+}
+
+/** Draft review: create a PR's draft issue and start its drafting run, then `started` (to read the drafts again). */
+export function draftReviewForm(gh: GitHub, c: ReviewDraftConfig, started: () => void): HTMLFormElement {
+  const input = h("input", { type: "text", placeholder: "OWNER/REPO#N or PR URL", "aria-label": "Pull request to draft a review of" });
+  const start = h("button", { type: "submit" }, "Draft review");
+  const result = h("p", { role: "status" });
+  const form = h("form", { class: "review-draft-start" }, input, start, result);
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
     if (start.disabled || !input.value.trim()) return;
-    start.disabled = true; started.textContent = "Starting…";
+    start.disabled = true; result.textContent = "Starting…";
     void startDraft(gh, c, input.value).then((s) => {
       const what = s.retried ? "Retried on the existing draft issue" : "Created the draft issue";
-      started.replaceChildren(s.dispatchError ? `${what}, but the drafting run did not start (${s.dispatchError}); Draft review again retries it: `
+      result.replaceChildren(s.dispatchError ? `${what}, but the drafting run did not start (${s.dispatchError}); Draft review again retries it: `
         : s.retried ? `${what}: ` : "Drafting: ", link(s.issue, s.issue));
       input.value = "";
-      load();
-    }).catch((e: unknown) => { started.textContent = String(e); }).finally(() => { start.disabled = false; });
+      started();
+    }).catch((e: unknown) => { result.textContent = String(e); }).finally(() => { start.disabled = false; });
   });
-  return panel;
+  return form;
 }
 
 function excerptView(e: Excerpt): HTMLElement {
@@ -48,7 +53,8 @@ function excerptView(e: Excerpt): HTMLElement {
     h("div", { class: `${r.kind}${i === e.at ? " at" : ""}` }, `${String(r.new ?? "").padStart(5)} ${r.kind === "add" ? "+" : r.kind === "del" ? "-" : " "}${r.text}`)));
 }
 
-async function draftCard(gh: GitHub, c: ReviewDraftConfig, render: Renderer, d: DraftIssue): Promise<HTMLElement> {
+/** A draft as its review will look, flagged where it can't be sent, with Send; the inbox's Send card shows it too. */
+export async function draftCard(gh: GitHub, c: ReviewDraftConfig, render: Renderer, d: DraftIssue): Promise<HTMLElement> {
   const card = h("section", { class: "review-draft" }, h("h3", {}, link(d.issue.html_url, d.issue.title)));
   const flags = h("ul", { class: "review-draft-flags" });
   const flag = (text: string) => flags.append(h("li", {}, text));

@@ -498,14 +498,7 @@ export async function rerunFailedJobs(gh: GitHub, ask: IssueRef, runUrl: string,
   const { raw, jobs } = await readRun(gh, run);
   const problem = rerunProblem(run, raw, jobs);
   if (problem) throw new Error(`not rerunning ${run.url}: ${problem}`);
-  try {
-    await gh.send("POST", `/repos/${run.owner}/${run.repo}/actions/runs/${run.id}/rerun-failed-jobs`);
-  } catch (e) {
-    // A clear refusal (4xx) means nothing happened; anything else may have.
-    if (e instanceof GitHubError && e.status < 500) throw e;
-    const why = e instanceof Error ? e.message : String(e);
-    throw new MaybeSentError(`the rerun request for ${run.url} may or may not have gone out (${why}); check the run on GitHub before trying again`);
-  }
+  await postRerun(gh, run);
   try {
     return await comment(gh, ask, formatComment(rerunComment(run)));
   } catch (e) {
@@ -540,6 +533,31 @@ export async function rerunPrRun(gh: GitHub, pr: IssueRef, runUrl: string, allow
   if (!raw.head_sha || raw.head_sha !== fresh.head?.sha) {
     throw new Error(`not rerunning ${run.url}: it ran on ${(raw.head_sha ?? "an unknown commit").slice(0, 12)}, and ${refKey(pr)} is now at ${(fresh.head?.sha ?? "?").slice(0, 12)}`);
   }
+  await postRerun(gh, run);
+  return run.url;
+}
+
+/**
+ * Rerun the failed jobs of a failed dispatch run the inbox offers (a
+ * Rerun card). As strict as rerunPrRun: `allowed` must name this exact
+ * run URL, which must be in the tracker; the run is read fresh and must
+ * be completed and failed, with failed jobs. Nothing is commented: the
+ * run going live again is the record, and takes the card away.
+ */
+export async function rerunDispatchRun(gh: GitHub, runUrl: string, allowed: readonly string[]): Promise<string> {
+  const run = parseRunUrl(runUrl);
+  if (!run) throw new Error(`not rerunning: ${JSON.stringify(runUrl)} is not a workflow run URL`);
+  if (!allowed.includes(run.url)) throw new Error(`not rerunning: ${run.url} isn't a failed run the inbox offers`);
+  if (`${run.owner}/${run.repo}`.toLowerCase() !== TRACKER_REPO.toLowerCase()) throw new Error(`not rerunning: ${run.url} is not in ${TRACKER_REPO}`);
+  const { raw, jobs } = await readRun(gh, run);
+  const problem = rerunProblem(run, raw, jobs);
+  if (problem) throw new Error(`not rerunning ${run.url}: ${problem}`);
+  await postRerun(gh, run);
+  return run.url;
+}
+
+/** Ask GitHub to rerun a run's failed jobs; a clear refusal (4xx) means nothing happened, anything else may have. */
+async function postRerun(gh: GitHub, run: RunRef): Promise<void> {
   try {
     await gh.send("POST", `/repos/${run.owner}/${run.repo}/actions/runs/${run.id}/rerun-failed-jobs`);
   } catch (e) {
@@ -547,5 +565,4 @@ export async function rerunPrRun(gh: GitHub, pr: IssueRef, runUrl: string, allow
     const why = e instanceof Error ? e.message : String(e);
     throw new MaybeSentError(`the rerun request for ${run.url} may or may not have gone out (${why}); check the run on GitHub before trying again`);
   }
-  return run.url;
 }

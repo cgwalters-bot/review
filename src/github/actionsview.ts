@@ -22,14 +22,17 @@ export function actionsPanel(gh: GitHub, config: ActionConfig): HTMLElement {
   return panel;
 }
 
-async function proposalCard(gh: GitHub, config: ActionConfig, o: Offered, isBusy: () => boolean, setBusy: (v: boolean) => void): Promise<HTMLElement> {
+/** A proposal with its live facts and Execute; the inbox's Do card shows it too. */
+export async function proposalCard(gh: GitHub, config: ActionConfig, o: Offered, isBusy: () => boolean, setBusy: (v: boolean) => void, planned?: Plan): Promise<HTMLElement> {
   const rows = h("ol");
   const results: HTMLElement[] = [];
   const status = h("p", { role: "status" });
   // The live facts shown here are the ones execution requires to still hold.
-  let shown: Plan | undefined;
-  try { shown = await plan(gh, config, o.proposal.actions); }
-  catch (e) { status.textContent = `Refused: ${String(e)}`; }
+  let shown = planned;
+  if (!shown) {
+    try { shown = await plan(gh, config, o.proposal.actions); }
+    catch (e) { status.textContent = `Refused: ${String(e)}`; }
+  }
   for (const [i, action] of o.proposal.actions.entries()) {
     const result = h("p", { role: "status" }); results.push(result);
     // Literal JSON is the exact typed mutation.

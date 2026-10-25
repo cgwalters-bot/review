@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GitHub } from "../src/github/api.ts";
-import { DECISIONS_CONFIG, DOCUMENT_CHANGED_NOTE, DOCUMENT_KEPT, MAX_ABOUT, answerDocument, documentView, parseDocument, readMarks, refreshDocument, sendDocumentAnswer, toggleDocument } from "../src/github/decisiondocument.ts";
+import { DECISIONS_CONFIG, DOCUMENT_CHANGED_NOTE, DOCUMENT_KEPT, MAX_ABOUT, answerDocument, answerShownEntry, documentView, parseDocument, readMarks, refreshDocument, sendDocumentAnswer, toggleDocument } from "../src/github/decisiondocument.ts";
 import recorded from "./fixtures/decision-about.json" with { type: "json" };
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
@@ -391,6 +391,33 @@ test("About lines name the item an entry is about; malformed or path-like ones n
   assert.equal(parseDocument("### D1 X\n```\nAbout: example/work#3\n```\n")[0]!.about, undefined);
 });
 
+test("an answer from a form kept on the page goes out only while its entry reads as shown", () => {
+  const shownBody = "### D12 Enable scheduler?\n- [ ] A) Enable\n- [ ] B) Disable\nReply:\n\n### D13 Another?\n- [ ] A) Yes\nReply:\n";
+  const shown = parseDocument(shownBody)[0]!;
+  // Elsewhere in the document is no matter: it builds on the body as it is now.
+  const elsewhere = shownBody.replace("### D13 Another?", "### D13 Another one?");
+  assert.match(answerShownEntry(elsewhere, shown, "B", "no"), /\[x\] B\) Disable[\s\S]*Reply: no[\s\S]*Another one/);
+  for (const [name, now] of [
+    ["the options swapped", shownBody.replace("A) Enable\n- [ ] B) Disable", "A) Disable\n- [ ] B) Enable")],
+    ["the heading reworded", shownBody.replace("Enable scheduler?", "Disable scheduler?")],
+    ["the entry gone", shownBody.slice(shownBody.indexOf("### D13"))],
+  ] as const) assert.throws(() => answerShownEntry(now, shown, "B", "no"), /D12 changed since it was shown/, name);
+});
+
+test("agent-board's heading names the item an entry blocks as its About, unless an About line names one", () => {
+  const cases: [string, unknown][] = [
+    ["### D12 Enable scheduler? (P0, blocks example/work#3)\n", { repo: "example/work", number: 3 }],
+    ["### D12 Enable scheduler? (blocks example/work#3)\r\n", { repo: "example/work", number: 3 }],
+    ["### D12 Enable scheduler? (P0, blocks example/work#3)\nAbout: example/other#9, asked 2026-10-15\n", { repo: "example/other", number: 9, asked: "2026-10-15T00:00:00.000Z" }],
+    ["### D12 Enable scheduler? (P0)\n", undefined],
+    ["### D12 Enable scheduler? (P0, blocks example/work#3) later\n", undefined],
+    ["### D12 Enable scheduler? (P0, blocks ../..#3)\n", undefined],
+    ["### D12 Enable scheduler? (P0, blocks example/work#0)\n", undefined],
+  ];
+  for (const [doc, about] of cases) assert.deepEqual(parseDocument(doc)[0]!.about, about, doc);
+  assert.deepEqual(parseDocument(body)[0]!.about, { repo: "example/work", number: 3 });
+});
+
 test("recorded states resolve closed and merged items, mark one answered since the ask, and leave the rest", async () => {
   const requests: string[] = [];
   const marks = await readMarks(recordedGitHub(about, requests), parseDocument(about));
@@ -422,7 +449,8 @@ test("resolve is off unless configured, and on it moves resolved entries read-on
   await refreshDocument(recordedGitHub(about, requests), slot, render, { repo: "example/private", number: 8 });
   assert.equal(requests.length, 1);
   assert.equal(slot.querySelector(".decision-resolved"), null);
-  assert.equal(DECISIONS_CONFIG.document?.resolve, false);
+  // The site's document sets it.
+  assert.equal(DECISIONS_CONFIG.document?.resolve, true);
 
   await refreshDocument(recordedGitHub(about), slot, render, { repo: "example/private", number: 8, resolve: true, checkboxes: true });
   const resolved = slot.querySelector<HTMLDetailsElement>(".decision-resolved")!;

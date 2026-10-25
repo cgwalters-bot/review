@@ -23,6 +23,7 @@ import {
   type OpenBoard,
   postAnswer,
   postAskComment,
+  rerunDispatchRun,
   rerunFailedJobs,
   rerunPrRun,
   submitAskedReview,
@@ -47,7 +48,9 @@ import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from 
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
-import { DECISIONS_CONFIG, refreshDocument } from "./decisiondocument.ts";
+import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, refreshDocument, sendDocumentEdit } from "./decisiondocument.ts";
+import { DISPATCH_WORKFLOW, type DispatchRun, inboxCards, loadDispatchRuns, mayAct, offeredReruns } from "./inbox.ts";
+import { fillInbox, type InboxHooks } from "./inboxview.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
@@ -63,6 +66,7 @@ import {
   POLL_STALL_MS,
   RATE_LOW_FRACTION,
   THEME_KEY,
+  TRACKER_REPO,
 } from "./config.ts";
 import { composeReviews, type ForgePr, refKey, type ReviewAction, VERDICT_LABEL } from "./forge.ts";
 import type { QueueFilter } from "./filter.ts";
@@ -70,11 +74,11 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
-import { ACTION_CONFIG } from "./actions.ts";
-import { actionsPanel } from "./actionsview.ts";
-import { REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
-import { reviewDraftsPanel } from "./reviewdraftsview.ts";
+import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { ACTION_CONFIG, loadProposals, type Offered, plan, type Plan } from "./actions.ts";
+import { actionsPanel, proposalCard } from "./actionsview.ts";
+import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
+import { draftCard, draftReviewForm, reviewDraftsPanel } from "./reviewdraftsview.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { botWaitingCount, filterNeeds, type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
@@ -205,6 +209,8 @@ interface State {
   prefs: SectionPrefs;
   /** The rows of "Needs you" as last drawn, and a signature of them. */
   needs: Need[];
+  /** With DECISIONS_CONFIG.inbox, the inbox's cards and what they are made from beyond the needs. */
+  inbox?: Inbox;
   /** The priority those rows are filtered by. */
   needsPriority: string;
   /** Why GitHub hasn't confirmed `login` (it is then the cache's, or unknown); retried at each poll. */
@@ -461,10 +467,178 @@ function mountHome(state: State): Home {
     el.setAttribute(VIEW_ATTR, SECTION_VIEW.needs);
     state.home!.el.prepend(el);
   };
-  if (ACTION_CONFIG) inbox(actionsPanel(state.gh, ACTION_CONFIG));
-  if (REVIEW_DRAFT_CONFIG) inbox(reviewDraftsPanel(state.gh, REVIEW_DRAFT_CONFIG, render));
+  if (DECISIONS_CONFIG.inbox) mountInbox(state, state.home);
+  else {
+    if (ACTION_CONFIG) inbox(actionsPanel(state.gh, ACTION_CONFIG));
+    if (REVIEW_DRAFT_CONFIG) inbox(reviewDraftsPanel(state.gh, REVIEW_DRAFT_CONFIG, render));
+  }
   showMain(state.home.el);
   return state.home;
+}
+
+interface Inbox {
+  list: HTMLElement;
+  /** Why something it reads can't be shown, over the cards. */
+  status: HTMLElement;
+  /** Those reasons, by what was read. */
+  notes: Map<string, string>;
+  empty: HTMLElement;
+  document?: { body: string; marks: Map<string, Mark> };
+  drafts?: DraftIssue[];
+  runs?: DispatchRun[];
+  /** Proposals as last loaded by hand, with their plans when they held. */
+  offers?: { offer: Offered; plan?: Plan }[];
+  /** Document writes, one after another, each on the body the last left. */
+  writes: Promise<void>;
+  /** Proposal executions: one at a time, and no reload of the proposals (which would redraw its card) meanwhile. */
+  busy: boolean;
+  load?: HTMLButtonElement;
+}
+
+/** A proposal started or finished executing. */
+function setInboxBusy(inbox: Inbox, busy: boolean): void {
+  inbox.busy = busy;
+  if (inbox.load) inbox.load.disabled = busy;
+}
+
+/**
+ * The inbox's cards, in place of the Decisions rows, the decisions
+ * document and the opt-in panels: Draft review and loading proposals
+ * (still by hand, never on a poll) head the list.
+ */
+function mountInbox(state: State, home: Home): void {
+  const list = h("div", { class: "inbox-cards" });
+  const status = h("p", { class: "note", role: "status" });
+  const empty = h("p", { class: "empty", hidden: "" }, "All caught up: nothing needs you right now.");
+  const head = h("div", { class: "inbox-head" });
+  const inbox: Inbox = { list, status, notes: new Map(), empty, writes: Promise.resolve(), busy: false };
+  state.inbox = inbox;
+  if (REVIEW_DRAFT_CONFIG) head.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => void refreshDrafts(state)));
+  if (ACTION_CONFIG) {
+    const config = ACTION_CONFIG;
+    const load = h("button", { type: "button", class: "small" }, "Load proposals");
+    inbox.load = load;
+    load.addEventListener("click", () => {
+      if (load.disabled || inbox.busy) return;
+      load.disabled = true;
+      inboxNote(inbox, "proposals", "Reading proposals…");
+      // Each proposal's plan reads its targets: one that no longer holds is no card.
+      void loadProposals(state.gh, config).then(async ({ offers, warnings }) => {
+        const planned: { offer: Offered; plan?: Plan }[] = [];
+        for (const offer of offers) planned.push({ offer, ...(await plan(state.gh, config, offer.proposal.actions).then((p) => ({ plan: p }), () => ({}))) });
+        inbox.offers = planned;
+        inboxNote(inbox, "proposals", warnings.map((w) => `Refused issue: ${w}`).join(" "));
+        paintInbox(state);
+      }).catch((e: unknown) => inboxNote(inbox, "proposals", `Couldn't read the proposals: ${message(e)}`)).finally(() => { load.disabled = inbox.busy; });
+    });
+    head.append(load);
+  }
+  home.slots.decisionDocument.hidden = true;
+  home.slots.needs.hidden = true;
+  home.sections.needs.body.prepend(head, status, list, empty);
+}
+
+/** Say (or, with "", stop saying) why `what` can't be shown. */
+function inboxNote(inbox: Inbox, what: string, text: string): void {
+  if (text) inbox.notes.set(what, text);
+  else inbox.notes.delete(what);
+  inbox.status.textContent = [...inbox.notes.values()].join(" ");
+}
+
+function inboxHooks(state: State): InboxHooks {
+  return {
+    now: Date.now(),
+    render,
+    mayAct: mayAct(state.login),
+    sendNeed: (n, a) => sendNeed(state, n, a),
+    answerEntry: (entry, letter, reply) => answerEntry(state, entry, letter, reply),
+    // Only while it is still offered, as read now: no newer run, the item open.
+    rerun: async (run) => rerunDispatchRun(state.gh, run.url, await offeredReruns(state.gh, run)),
+    ...(REVIEW_DRAFT_CONFIG ? { draftBody: (c) => draftCard(state.gh, REVIEW_DRAFT_CONFIG!, render, c.draft) } : {}),
+    ...(ACTION_CONFIG ? {
+      offerBody: (c) => proposalCard(state.gh, ACTION_CONFIG!, c.offer, () => state.inbox?.busy === true, (v) => { if (state.inbox) setInboxBusy(state.inbox, v); }, c.plan),
+    } : {}),
+  };
+}
+
+/**
+ * Answer document entry `shown` (as its card drew it), on the body the
+ * inbox last read or wrote. A card is kept unredrawn under an unsent pick,
+ * so the entry may have changed since it was drawn: the letter is ticked
+ * only while the entry still reads as shown, or it could tick another
+ * option than the one he picked. A change elsewhere keeps the answer to
+ * check and send again.
+ */
+function answerEntry(state: State, shown: DocumentEntry, letter: string, reply: string): Promise<void> {
+  const inbox = state.inbox;
+  const target = DECISIONS_CONFIG.document;
+  if (!inbox?.document || !target) return Promise.reject(new Error("The decisions document isn't read yet"));
+  const run = inbox.writes.then(async () => {
+    const doc = inbox.document!;
+    try {
+      doc.body = await sendDocumentEdit(state.gh, documentPath(target), doc.body, (body) => answerShownEntry(body, shown, letter, reply));
+    } catch (e) {
+      if (!(e instanceof DocumentChanged)) throw e;
+      // The next send builds on the document as it is now.
+      doc.body = e.body;
+      throw new Error(DOCUMENT_KEPT);
+    }
+  });
+  inbox.writes = run.catch(() => {});
+  return run;
+}
+
+/** Redraw the inbox's cards that changed; with `force` (he reloaded), those holding unsent text too. */
+function paintInbox(state: State, force = false): void {
+  const inbox = state.inbox;
+  const home = state.home;
+  if (!inbox || !home || state.closed) return;
+  let document: { entries: ReturnType<typeof parseDocument>; marks: Map<string, Mark> } | undefined;
+  try {
+    if (inbox.document) document = { entries: parseDocument(inbox.document.body), marks: inbox.document.marks };
+    inboxNote(inbox, "document", "");
+  } catch (e) {
+    inboxNote(inbox, "document", `The decisions document can't be read: ${message(e)}`);
+  }
+  // What the board knows of an item's state, for the Rerun cards.
+  const states = new Map([...(state.active?.board ?? []), ...state.items].flatMap((i) => (i.ref && i.state ? [[refKey(i.ref).toLowerCase(), i.state] as const] : [])));
+  const now = Date.now();
+  const cards = inboxCards({ needs: state.needs, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}), ...(inbox.runs ? { runs: inbox.runs } : {}), itemState: (item) => states.get(item), ...(inbox.offers ? { offers: inbox.offers } : {}), now });
+  fillInbox(inbox.list, cards, inboxHooks(state), force);
+  const waiting = cards.filter((c) => !c.answered).length;
+  inbox.empty.hidden = cards.length > 0;
+  setCount(home, "needs", String(waiting), { title: `${waiting} cards waiting on you`, hot: waiting > 0 });
+  markSelected(state, false);
+}
+
+/** Re-read the open review drafts for the Send cards; false if nothing was read (see SourceDef.read). */
+async function refreshDrafts(state: State): Promise<boolean> {
+  const inbox = state.inbox;
+  if (!inbox || !REVIEW_DRAFT_CONFIG) return false;
+  try {
+    inbox.drafts = await loadDraftIssues(state.gh, REVIEW_DRAFT_CONFIG);
+    inboxNote(inbox, "drafts", "");
+    paintInbox(state);
+    return true;
+  } catch (e) {
+    inboxNote(inbox, "drafts", `Couldn't read the review drafts: ${message(e)}`);
+    return false;
+  }
+}
+
+/** Re-read the dispatch runs for the Rerun cards; false if nothing was read. */
+async function refreshDispatch(state: State): Promise<boolean> {
+  const inbox = state.inbox;
+  if (!inbox) return false;
+  try {
+    inbox.runs = await loadDispatchRuns(state.gh);
+    inboxNote(inbox, "runs", "");
+    paintInbox(state);
+    return true;
+  } catch (e) {
+    inboxNote(inbox, "runs", `Couldn't read the dispatch runs: ${message(e)}`);
+    return false;
+  }
 }
 
 function renderHome(state: State): void {
@@ -546,6 +720,13 @@ function paintNeeds(state: State, force = false): void {
   const home = state.home;
   if (!home || state.closed) return;
   const needs = currentNeeds(state);
+  if (state.inbox) {
+    // Its cards keep their own unsent forms (fillInbox).
+    state.needs = needs;
+    paintInbox(state, force);
+    renderChrome(state);
+    return;
+  }
   const hooks = needsHooks(state, Date.now());
   const sig = needsSignature(needs, hooks, state.entries);
   const forms: NeedsForm[] = [...home.slots.needs.querySelectorAll("form.answer")].map((form) => ({
@@ -727,6 +908,9 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       { name: "themes", path: "every open board item", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.priority], read: () => refreshTriage(get()), when: open((home) => home.slots.themesBox) },
       { name: "decisions", path: "the decisions document and tracker questions", cadence: POLL_INTERVAL_MS, views: VIEWS, read: (force) => refreshDecisions(get(), force && get().view === SECTION_VIEW.needs) },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
+      // The inbox's own reads, only while it is on (DECISIONS_CONFIG.inbox).
+      { name: "dispatch", path: `the last day's ${DISPATCH_WORKFLOW} runs in ${TRACKER_REPO}`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDispatch(get()), when: () => get().inbox !== undefined },
+      { name: "drafts", path: "the open review-draft issues", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDrafts(get()), when: () => get().inbox !== undefined && REVIEW_DRAFT_CONFIG !== undefined },
     ],
     () => (get().closed ? undefined : visibleView(document, HOME_CLASS)),
   );
@@ -1260,6 +1444,16 @@ async function sendNeed(state: State, need: Need, answer: Answer): Promise<strin
   }
   if (need.decision) state.decisionsAnswered.add(need.decision.item.nodeId);
   state.answeredHere.add(need.key);
+  if (state.inbox) {
+    // The inbox has no next row to move on to: the card dims in place, and other cards keep their unsent text.
+    // After the form marks itself sent (once this resolves), or it would count as unsent text.
+    setTimeout(() => {
+      rebuildEntries(state);
+      paintNeeds(state);
+    }, 0);
+    refreshSoon(state);
+    return posted.url;
+  }
   const title = need.decision ? `${decisionLabel(need.decision)}: ${need.title}` : need.title;
   acted(state, {
     key: need.key,
@@ -1319,7 +1513,16 @@ interface DecisionsRead {
  * questions couldn't be read (see SourceDef.read).
  */
 async function refreshDecisions(state: State, force = false): Promise<boolean> {
-  if (state.home) await refreshDocument(state.gh, state.home.slots.decisionDocument, render, DECISIONS_CONFIG.document, force);
+  const inbox = state.inbox;
+  if (inbox && DECISIONS_CONFIG.document) {
+    try {
+      inbox.document = await readDocument(state.gh, DECISIONS_CONFIG.document);
+      inboxNote(inbox, "document", "");
+    } catch (e) {
+      inboxNote(inbox, "document", e instanceof GitHubError && e.status === 404 ? "Cannot read the decisions issue: it may be private and this viewer's token has no access, or the issue does not exist." : `Couldn't read the decisions document: ${message(e)}`);
+    }
+    paintInbox(state, force);
+  } else if (state.home) await refreshDocument(state.gh, state.home.slots.decisionDocument, render, DECISIONS_CONFIG.document, force);
   if (!DECISIONS_CONFIG.legacyQuestions) return true;
   const read = async (gh: GitHub) => {
     const q = await loadDecisions(gh);
