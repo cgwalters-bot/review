@@ -1,4 +1,5 @@
 {
-  "document": { "repo": "cgwalters-forge/operator", "number": 1, "checkboxes": false, "resolve": false },
-  "legacyQuestions": true
+  "document": { "repo": "cgwalters-forge/operator", "number": 1, "checkboxes": false, "resolve": true },
+  "legacyQuestions": true,
+  "inbox": false
 }

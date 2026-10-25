@@ -564,6 +564,28 @@ details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font
   .row.need { grid-template-columns: minmax(0, 1fr); }
   .row.need > .kind { display: none; }
 }
+
+/* The inbox's cards (decisions-config.json's inbox): kind chip, title and age, one line, one action. */
+.inbox-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.row.card { display: block; padding: 12px 14px; cursor: default; }
+.row.card:focus { outline: none; border-color: var(--accent); }
+.row.card-done { opacity: .7; }
+.row.card-stale { border-color: var(--p2); }
+.card-head { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: baseline; }
+.card-head .title { flex: 1 1 12em; font-size: 16px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.card-head .title a { color: inherit; }
+.card-head .age { font: 12px var(--mono); color: var(--muted); }
+.card-where { margin: 2px 0 0; font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.card-note, .card-stale-note { margin: 4px 0 0; font-size: var(--type-secondary); overflow-wrap: anywhere; }
+.row.card form.answer, .row.card > .actions, .row.card > .action { margin-top: 8px; }
+.row.card > .action { display: inline-block; min-height: 32px; line-height: 26px; }
+.row.card label.opt { display: flex; gap: 8px; font-size: 15px; line-height: 1.4; padding: 8px 0; }
+/* 16px: a smaller text box makes a phone browser zoom in on focus. */
+.row.card textarea, .row.card input[type=text] { font-size: 16px; }
+.kind.c-document, .kind.c-answer { color: var(--p1); background: var(--p1-soft); border-color: transparent; }
+.kind.c-approve, .kind.c-send { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.kind.c-rerun { color: var(--p0); background: var(--p0-soft); border-color: transparent; }
+.kind.c-do { color: var(--p2); background: var(--p2-soft); border-color: transparent; }
 .action { font: 600 12px var(--mono); padding: 2px 9px; border-radius: 999px; color: var(--accent); background: var(--accent-soft); border: 1px solid transparent; text-decoration: none; white-space: nowrap; }
 .action:hover { border-color: var(--accent); }
 .action.a-answer { color: var(--p1); background: var(--p1-soft); }

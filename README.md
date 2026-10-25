@@ -237,7 +237,10 @@ answers, are checkboxes: a tap ticks or unticks that
 one line through the same write as Send, and done entries stay read-only.
 An entry names the issue or PR it is about with an `About: owner/repo#12`
 line, optionally `, asked 2026-10-15` (or a UTC time such as
-`2026-10-15T09:30Z`). With `resolve: true` in `document` (off by default),
+`2026-10-15T09:30Z`); without one, the item agent-board's heading says it
+blocks, as in `### D12 Enable scheduler? (P0, blocks owner/repo#7)`, which
+gives no ask time, so only its closing or merging is read. With
+`resolve: true` in `document` (off unless set; the shipped document sets it),
 each refresh reads the items of the first ten open entries with an About
 line: an entry whose item is closed or merged moves, read-only, to a
 collapsed **Resolved** with a line saying so, however the document still
@@ -252,6 +255,33 @@ send again. A poll that finds the body changed under an unsent answer says so
 instead of redrawing, and `r` reloads it; every redraw keeps unsent answers
 for entries still open. No private contents ship in
 the build. Configuration and migration are left to the operator.
+
+**Inbox cards**, with `inbox: true` in `src/github/decisions-config.json`
+(off by default), replace the Decisions rows, the document and the review
+draft and operator action panels with one card per thing only you can do,
+each leaving by its own rule. **Decide** is an open document entry: an
+option ticked dims it until the bot acts, its About item closing or
+merging removes it, and comments on the item since the ask say it changed.
+**Answer** and **Approve** are what the Decisions rows list: an ask on an open issue,
+dimmed once answered and gone once the issue closes, and a review request
+at an unreviewed head, gone once that head is reviewed or the PR closes or
+merges. **Send** is an open review-draft issue (when the review drafts are
+configured; Draft review heads the list), dimmed once ticked and gone once
+the tracker's workflow closes it. **Rerun** is an item's newest run of
+tracker's `dispatch.yml`, its title `KIND OWNER/REPO#N (POOL)`, when it
+failed or was cancelled in the last day and the board doesn't show the
+item closed; a newer run overtakes it. Its button first reads the runs and
+the item again, and reruns the failed jobs only if the card still holds.
+**Do** is an operator-action proposal whose preconditions hold, read only on
+Load proposals, as the panel did. The inbox adds one conditional read a
+minute (the last day's dispatch runs, at most 100), plus with review drafts
+configured their issues and comments (at most 20) and each drawn Send
+card's PR, only while the Inbox view shows; the document's `resolve` reads
+its About items as above, inbox or not. A card keeps its place across
+polls, and one holding an unsent pick, reply or answer, or the focus, is
+never redrawn, moved or removed: it says it changed or left, and `r`
+reloads it, dropping that text. An answer from a card kept that way goes
+out only if its entry still reads as the card shows it.
 
 The legacy Decisions list is
 ranked by Priority, showing what they block and their inline answer forms.

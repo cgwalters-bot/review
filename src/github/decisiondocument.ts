@@ -7,7 +7,11 @@ import { taskItemLines, type Renderer } from "../markdown.ts";
 // unless set, so a document not written for one-tap edits stays read-only.
 // `resolve: true` reads the live state of each open entry's About item (see
 // readMarks); off unless set, so the document costs one read per refresh.
-export const DECISIONS_CONFIG = config as { document: { repo: string; number: number; checkboxes?: boolean; resolve?: boolean } | null; legacyQuestions: boolean };
+// `inbox: true` shows the Inbox view as one card per thing to do (inbox.ts)
+// instead of the Decisions rows, the document and the opt-in panels.
+export const DECISIONS_CONFIG = config as { document: DocumentTarget | null; legacyQuestions: boolean; inbox?: boolean };
+
+export interface DocumentTarget { repo: string; number: number; checkboxes?: boolean; resolve?: boolean }
 
 function proseLines(text: string): { text: string; start: number }[] {
   const lines: { text: string; start: number }[] = [];
@@ -48,7 +52,12 @@ export interface About {
 // point that read elsewhere on the API.
 const ABOUT_LINE = /^About: ((?!\.+\/)[A-Za-z0-9_.-]+\/(?!\.+#)[A-Za-z0-9_.-]+)#([1-9]\d{0,8})(?:,? asked (\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?Z)?))?\s*$/;
 
-function parseAbout(text: string): About | undefined {
+// agent-board writes what an entry blocks at the end of its heading,
+// `### D12 Enable scheduler? (P0, blocks owner/repo#7)`; with no About line,
+// that item is the one the entry is about. Same name rules as ABOUT_LINE.
+const HEADING_ABOUT = /\((?:[^()]*, )?blocks ((?!\.+\/)[A-Za-z0-9_.-]+\/(?!\.+#)[A-Za-z0-9_.-]+)#([1-9]\d{0,8})\)\s*$/;
+
+function parseAbout(text: string, title: string): About | undefined {
   for (const line of proseLines(text)) {
     if (!/^About:/.test(line.text)) continue;
     const m = ABOUT_LINE.exec(line.text);
@@ -56,7 +65,8 @@ function parseAbout(text: string): About | undefined {
     const asked = m[3] && !Number.isNaN(Date.parse(m[3])) ? new Date(m[3]).toISOString() : undefined;
     return { repo: m[1]!, number: Number(m[2]), ...(asked ? { asked } : {}) };
   }
-  return undefined;
+  const m = HEADING_ABOUT.exec(title);
+  return m ? { repo: m[1]!, number: Number(m[2]) } : undefined;
 }
 
 export function parseDocument(body: string): DocumentEntry[] {
@@ -88,7 +98,7 @@ export function parseDocument(body: string): DocumentEntry[] {
       return m ? [{ letter: m[2]!, text: m[3]!, checked: m[1] !== " " }] : [];
     });
     if (new Set(options.map((o) => o.letter)).size !== options.length) throw new Error("Duplicate option letters");
-    const about = parseAbout(text);
+    const about = parseAbout(text, heading.title);
     return [{ ...heading, id: heading.id, end, text, options, ...(about ? { about } : {}) }];
   });
   if (new Set(entries.map((e) => e.id)).size !== entries.length) throw new Error("Duplicate decision ids");
@@ -110,6 +120,17 @@ export function answerDocument(body: string, id: string, letter: string, reply: 
     replacement = replacement.slice(0, line.start) + updated + replacement.slice(line.start + line.text.length);
   }
   return body.slice(0, entry.start) + replacement + body.slice(entry.end);
+}
+
+/**
+ * answerDocument, only while entry `shown.id` still reads as `shown`: a
+ * form kept on the page since then would otherwise tick whatever its
+ * letter says now, not the option he picked.
+ */
+export function answerShownEntry(body: string, shown: DocumentEntry, letter: string, reply: string): string {
+  const now = parseDocument(body).find((e) => e.id === shown.id);
+  if (!now || now.title !== shown.title || now.text !== shown.text) throw new Error(`${shown.id} changed since it was shown; press r to reload it`);
+  return answerDocument(body, shown.id, letter, reply);
 }
 
 // The start of a line markdown-it reads as a task list item: optional
@@ -340,15 +361,28 @@ function slotNote(slot: HTMLElement, text: string): void {
 // `marks` (and `markKey`, their serialization) are what it was shown with.
 const readers = new WeakMap<HTMLElement, { running: boolean; body?: string; written?: string; marks?: Map<string, Mark>; markKey?: string }>();
 
+/** The document's API path, refusing a configuration that would name another one. */
+export function documentPath(target: DocumentTarget): string {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(target.repo) || !Number.isSafeInteger(target.number) || target.number < 1) throw new Error("Invalid decisions configuration");
+  return `/repos/${target.repo}/issues/${target.number}`;
+}
+
+/** The document as it is now, and with `resolve`, the marks of its open entries' items. */
+export async function readDocument(gh: GitHub, target: DocumentTarget): Promise<{ body: string; marks: Map<string, Mark> }> {
+  const { data: { body } } = await gh.get<{ body: string }>(documentPath(target));
+  // An item can close with the document untouched, so its state is read
+  // on every refresh, not only when the body changed.
+  return { body, marks: target.resolve === true ? await readMarks(gh, parseDocument(body)) : new Map<string, Mark>() };
+}
+
 export async function refreshDocument(gh: GitHub, slot: HTMLElement, render: Renderer, target = DECISIONS_CONFIG.document, force = false): Promise<void> {
   if (!target) return;
   const checkboxes = target.checkboxes === true;
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(target.repo) || !Number.isSafeInteger(target.number) || target.number < 1) throw new Error("Invalid decisions configuration");
+  const path = documentPath(target);
   const state = readers.get(slot) ?? { running: false };
   readers.set(slot, state);
   if (state.running) return;
   state.running = true;
-  const path = `/repos/${target.repo}/issues/${target.number}`;
   // Show `body`, carrying each unsent pick and reply over to the same entry's
   // new form, so neither a reload nor a refused send loses what was typed. An
   // entry answered or moved to Done meanwhile has no form, and its draft goes.
@@ -397,22 +431,19 @@ export async function refreshDocument(gh: GitHub, slot: HTMLElement, render: Ren
     slot.replaceChildren(view);
   };
   try {
-    const { data } = await gh.get<{ body: string }>(path);
-    // An item can close with the document untouched, so its state is read
-    // on every refresh, not only when the body changed.
-    const marks = target.resolve === true ? await readMarks(gh, parseDocument(data.body)) : new Map<string, Mark>();
+    const { body, marks } = await readDocument(gh, target);
     const markKey = JSON.stringify([...marks]);
     slot.querySelector(":scope > p[role=status]")?.remove();
-    if (!force && state.body === data.body && state.markKey === markKey) return;
+    if (!force && state.body === body && state.markKey === markKey) return;
     // Redrawing under a half-written answer would move it as it is typed:
     // say the document changed, and leave the reload to r.
-    if (!force && drafts(slot).size) return data.body === state.written && state.markKey === markKey ? undefined : slotNote(slot, DOCUMENT_CHANGED_NOTE);
+    if (!force && drafts(slot).size) return body === state.written && state.markKey === markKey ? undefined : slotNote(slot, DOCUMENT_CHANGED_NOTE);
     // A tap still writing: re-rendering now would show a body without it.
     // A forced reload goes ahead; the re-read before each write then refuses
     // the next tap with "changed, reload" rather than undo this one.
     if (!force && slot.querySelector('.md input[type="checkbox"]:disabled')) return;
-    mount(data.body, marks);
-    state.body = data.body;
+    mount(body, marks);
+    state.body = body;
     state.marks = marks;
     state.markKey = markKey;
   } catch (e) {
