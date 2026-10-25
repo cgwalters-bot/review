@@ -35,10 +35,6 @@ export function parseRunTitleMetrics(title: string | undefined): RunTitleMetrics
     cost: Number.isSafeInteger(units) && Math.round(cost * USD_SCALE) === units ? cost : null };
 }
 
-export function runsDue(started: number, running: boolean, now: number, visible: boolean, onDashboard: boolean): boolean {
-  return visible && onDashboard && !running && now - started >= RUNS_POLL_MS;
-}
-
 export interface RunJob extends RawJob {
   id?: number;
   name?: string;

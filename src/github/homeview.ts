@@ -1,5 +1,6 @@
 // The one page: collapsible sections (see sections.ts) that main.ts fills
-// as their data arrives. The skeleton is built once and stays in place
+// as their data arrives, each part in one of the views (shell.ts) unless
+// it shows in all. The skeleton is built once and stays in place
 // across data refreshes, so a section's open state, a half-typed answer
 // and the scroll position are not lost when something behind them
 // changes. Every section shows its count in its header and a few rows
@@ -29,6 +30,7 @@ import { type Ops } from "./ops.ts";
 import { opsDetail, POOL_ATTR, usageSection, usageSummary, weeklyUsage } from "./opsview.ts";
 import { type Entry, priorityRank } from "./queue.ts";
 import { PREVIEW_ROWS, SECTION_HINT, SECTION_TITLE, SECTIONS, type SectionId } from "./sections.ts";
+import { isView, SECTION_VIEW, showView, VIEW_ATTR, type ViewId, viewHash } from "./shell.ts";
 import type { OpenBoard, ProjectStatus } from "./backend.ts";
 import { refKey, VERDICT_LABEL } from "./forge.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
@@ -172,7 +174,25 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     priority: section("priority", ctx, hooks, priority, themes.box),
     usage: section("usage", ctx, hooks, usage),
   };
-  const el = h("div", { class: HOME_CLASS }, summary, weekly, sections.needs.details, status, peopleSection, focus, runs, ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details), freshness);
+  // Each part in the view that shows it (shell.ts); the summary and the freshness line show in all.
+  const inView = (view: ViewId, el: HTMLElement) => {
+    el.setAttribute(VIEW_ATTR, view);
+    return el;
+  };
+  for (const id of SECTIONS) inView(SECTION_VIEW[id], sections[id].details);
+  const el = h(
+    "div",
+    { class: HOME_CLASS },
+    summary,
+    inView("usage", weekly),
+    sections.needs.details,
+    inView("board", status),
+    inView("inbox", peopleSection),
+    inView("board", focus),
+    inView("agents", runs),
+    ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details),
+    freshness,
+  );
   return { el, sections, slots: { summary, people, peopleCount, runs, freshness, status, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
 }
 
@@ -201,6 +221,12 @@ export function fillSummary(home: Home, state: PageState, controller: Controller
     show: (id) => {
       const target = id === "ops" ? home.slots.opsBox : home.el.querySelector<HTMLElement>(`#${id}`);
       if (!target) return;
+      // In another view: go there first (the hash is the route).
+      const view = target.closest(`[${VIEW_ATTR}]:not(.${HOME_CLASS})`)?.getAttribute(VIEW_ATTR) ?? undefined;
+      if (isView(view) && home.el.getAttribute(VIEW_ATTR) !== view) {
+        showView(home.el, view);
+        window.location.hash = viewHash(view);
+      }
       for (let d = target.closest("details"); d; d = d.parentElement?.closest("details") ?? null) d.open = true;
       target.scrollIntoView({ block: "start" });
     },

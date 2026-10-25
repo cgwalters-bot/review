@@ -3,8 +3,9 @@
 
 import { parseFilterToken, type QueueFilter } from "./filter.ts";
 import type { SectionId } from "./sections.ts";
+import { isView, SECTION_VIEW, type ViewId } from "./shell.ts";
 
-/** The one page of sections, an item opened from it, or a forge PR. */
+/** The page of sections in one of its views, an item opened from it, or a forge PR. */
 export type Route = "home" | "item" | "pr";
 
 export type Command =
@@ -17,7 +18,7 @@ export type Command =
   | "fold"
   | "compose"
   | "help"
-  // Jump to a section of the page: open it and scroll to it.
+  // Switch to the view of a section of the page, open the section and scroll to it.
   | `section:${SectionId}`
   | "capture"
   // The PR pane's own, which it carries out itself.
@@ -91,20 +92,21 @@ export function keyCommand(press: KeyPress, route: Route): Command | "blur" | un
 
 export const HELP: Record<Route, string> = {
   home:
-    "j/k or ↓/↑ move · o or Enter open · q needs you · d agents · n changes · t by priority · s usage (jump to a section) · b file to the board · r refresh · ? keys",
+    "j/k or ↓/↑ move · o or Enter open · q inbox · d agents · n activity · t board · s usage (switch view) · b file to the board · r refresh · ? keys",
   item: "u or Esc back · c write an answer · b file to the board · r refresh",
   pr: "n/p next/previous file · j/k next/previous hunk · v mark viewed · x fold · c comment on the focused line (or write the review) · s unified/split · [/] previous/next commit · g guided review (then n/p between hotspots, Esc leaves) · a approve · b file to the board · u or Esc back · r reload",
 };
 
 export type RouteInfo =
-  | { route: "home"; filter?: QueueFilter }
+  | { route: "home"; view?: ViewId; filter?: QueueFilter }
   | { route: "item"; id: string }
   | { route: "pr"; ref: { owner: string; repo: string; number: number } };
 
 /**
- * The view a location hash asks for; anything unknown is the page. A
- * bare filter token (see filterToken), e.g. `#composefs`, is the page
- * with its by-priority list filtered so.
+ * The view a location hash asks for: one of the page's views (shell.ts),
+ * e.g. `#agents`; anything unknown is the page in the view last shown
+ * (no `view`). A bare filter token (see filterToken), e.g. `#composefs`,
+ * is the board view with its by-priority list filtered so.
  */
 export function parseRoute(hash: string): RouteInfo {
   // A board item (PVTI_), or a tracker issue (I_) for a decision read
@@ -114,6 +116,8 @@ export function parseRoute(hash: string): RouteInfo {
   const pr = /^#pr\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/([1-9][0-9]{0,9})$/.exec(hash);
   // "." and ".." are no repository's name, and would climb the API path.
   if (pr?.[1] && pr[2] && pr[3] && !/^\.+$/.test(pr[2])) return { route: "pr", ref: { owner: pr[1], repo: pr[2], number: Number(pr[3]) } };
-  const filter = parseFilterToken(hash.slice(1));
-  return filter ? { route: "home", filter } : { route: "home" };
+  const token = hash.slice(1);
+  if (isView(token)) return { route: "home", view: token };
+  const filter = parseFilterToken(token);
+  return filter ? { route: "home", view: SECTION_VIEW.priority, filter } : { route: "home" };
 }

@@ -13,9 +13,11 @@
 <script type="module" src="app.js"></script>
 </head>
 <body>
+<!-- A link per view (shell.ts): a sidebar on a wide screen, tabs at the bottom on a phone. -->
+<nav class="views" id="views" aria-label="Views" hidden></nav>
 <div class="wrap">
   <header class="top">
-    <h1><a href="#">Needs you</a></h1>
+    <h1><a href="#inbox">Needs you</a></h1>
     <span class="meta" id="meta">Starting…</span>
     <!-- On a narrow screen the controls fold into a menu; on a wide one, the toggle is hidden and they sit in the header. -->
     <button type="button" id="menu-toggle" class="small menu-toggle" aria-label="More" aria-expanded="false" aria-controls="menu">⋯</button>

@@ -1,11 +1,11 @@
-// Entry point: sign-in, routing between the one page of sections, board
-// items and forge PRs, keyboard commands, and polling while the tab is
-// visible.
+// Entry point: sign-in, routing between the views of the one page of
+// sections, board items and forge PRs, keyboard commands, and polling
+// while the tab is visible, of only what the view on screen shows.
 
 import type { Answer } from "../answer.ts";
 import { h } from "../dom.ts";
 import { pageState, type PageState } from "./state.ts";
-import { loadActionRuns, runsDue, type RunsData } from "./runs.ts";
+import { loadActionRuns, RUNS_POLL_MS, type RunsData } from "./runs.ts";
 import { readSource, type Sources } from "./freshness.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
@@ -70,7 +70,7 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG } from "./actions.ts";
 import { actionsPanel } from "./actionsview.ts";
 import { REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
@@ -80,7 +80,7 @@ import { botWaitingCount, filterNeeds, type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
 import { activeFromOps, type JobCache, loadActive, loadOps, type Ops } from "./ops.ts";
 import { tickOps } from "./opsview.ts";
-import { Poller, pollDelay, pollNote } from "./poller.ts";
+import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
 import { loadPeople, markPeopleDone, type People } from "./people.ts";
@@ -105,6 +105,8 @@ import {
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref, onBot, staleItems } from "./queue.ts";
 import { isSection, loadSectionPrefs, type SectionId, type SectionPrefs, saveSectionPref, sectionOpen } from "./sections.ts";
+import { DEFAULT_VIEW, fillNav, SECTION_VIEW, showView, VIEW_ATTR, VIEW_TITLE, type ViewId, viewHash, VIEWS, visibleView } from "./shell.ts";
+import { checkedText, SourceLayer } from "./sourcelayer.ts";
 import { loadAdvance, loadFilter, loadNeedsPriority, saveAdvance, saveFilter, saveNeedsPriority } from "./store.ts";
 import { buildTriage, type Decision, decisionLabel, parseDecision, sortDecisions, triageOrder, type TriageFilter } from "./triage.ts";
 import { answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
@@ -118,8 +120,11 @@ interface State {
   peopleRevision?: number;
   peopleWrites?: number;
   actionRuns?: RunsData;
-  runsStarted: number;
   runsRunning: boolean;
+  /** What the views show and when each is read (see newLayer). */
+  layer: SourceLayer<ViewId>;
+  /** The view of the page last shown, which a bare # (e.g. "Back") returns to. */
+  view: ViewId;
   sources: Sources;
   gh: GitHub;
   source: TokenSource;
@@ -188,11 +193,9 @@ interface State {
   harness: HarnessCache;
   /** The ops detail's last read, when it started, and the finished runs' jobs. */
   ops?: Ops;
-  opsStarted: number;
   opsRunning: boolean;
-  /** What the agents, changes and usage sections show: the board, the heartbeat and the usage as last read (or the ops detail's), and when that started. */
+  /** What the agents, changes and usage sections show: the board, the heartbeat and the usage as last read (or the ops detail's). */
   active?: Active;
-  activeStarted: number;
   activeRunning: boolean;
   jobs: JobCache;
   /** Moves the ops detail's live times while it is shown. */
@@ -332,6 +335,7 @@ function renderMeta(state: State): void {
   part("mp-queues", h("span", { title: people.title }, people.text), ` · bot ${botCount}`);
   const since = cachedSince(state);
   if (since !== undefined) part("mp-age", h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, cachedLabel(since, Date.now())));
+  else if (state.home?.el.isConnected) part("mp-age", viewChecked(state.layer, state.view, Date.now()));
   else if (state.lastPoll) part("mp-age", `checked ${clock(state.lastPoll.getTime())}`);
   // Why it isn't being refreshed as usual, if it isn't. Only the queue's
   // cached copy (also shown behind an item) is re-read by the poll itself;
@@ -344,6 +348,13 @@ function renderMeta(state: State): void {
   byId("menu-meta").textContent = [who, api].filter(Boolean).join(" · ");
 }
 
+/** The view's "checked N s ago", with each of its sources' in the tooltip. */
+function viewChecked(layer: SourceLayer<ViewId>, view: ViewId, now: number): HTMLElement {
+  const f = layer.freshness(view);
+  const title = f.sources.map((s) => `${s.name} (${s.path}): ${s.checked === undefined ? "not read yet" : `checked ${new Date(s.checked).toLocaleTimeString()}`}`).join("\n");
+  return h("span", { title: `What ${VIEW_TITLE[view]} shows:\n${title}` }, checkedText(f.at, now));
+}
+
 /** Meta line and notices only: never touches the view, or a half-typed answer. */
 function renderChrome(state: State): void {
   if (state.closed) return;
@@ -351,6 +362,7 @@ function renderChrome(state: State): void {
   const json = document.getElementById("state-json");
   const model = snapshot(state);
   if (json) json.textContent = JSON.stringify(model, null, 2);
+  fillNav(byId("views"), state.view);
   if (state.home?.el.isConnected) {
     fillState(state.home, model);
     fillSummary(state.home, model, state.ops?.controller, Date.now());
@@ -424,10 +436,10 @@ function homeHooks(state: State): HomeHooks {
     toggled: (id, open) => {
       state.prefs[id] = open;
       saveSectionPref(id, open);
-      if (open) loadSections(state);
+      if (open) tickSources(state);
     },
     opsToggled: (open) => {
-      if (open) void refreshOps(state);
+      if (open) tickSources(state);
       else clearInterval(state.ticker);
     },
     themesToggled: (open) => {
@@ -444,8 +456,13 @@ function homeHooks(state: State): HomeHooks {
 function mountHome(state: State): Home {
   if (state.home?.el.isConnected) return state.home;
   state.home = homeSkeleton(homeHooks(state));
-  if (ACTION_CONFIG) state.home.el.prepend(actionsPanel(state.gh, ACTION_CONFIG));
-  if (REVIEW_DRAFT_CONFIG) state.home.el.prepend(reviewDraftsPanel(state.gh, REVIEW_DRAFT_CONFIG, render));
+  // Things to do, so in the inbox, at its top.
+  const inbox = (el: HTMLElement) => {
+    el.setAttribute(VIEW_ATTR, SECTION_VIEW.needs);
+    state.home!.el.prepend(el);
+  };
+  if (ACTION_CONFIG) inbox(actionsPanel(state.gh, ACTION_CONFIG));
+  if (REVIEW_DRAFT_CONFIG) inbox(reviewDraftsPanel(state.gh, REVIEW_DRAFT_CONFIG, render));
   showMain(state.home.el);
   return state.home;
 }
@@ -457,9 +474,13 @@ function renderHome(state: State): void {
     state.filter = r.filter;
     saveFilter(r.filter);
   }
+  // A view in the hash is shown; a bare # shows the last one.
+  if (r.route === "home" && r.view) state.view = r.view;
   // Drawn once while the page stays: a redraw of it must not take half-typed answers away.
   const fresh = !state.home?.el.isConnected;
   const home = mountHome(state);
+  showView(home.el, state.view);
+  renderChrome(state);
   if (r.route === "home" && r.filter) setSectionOpen(home, "priority", true, true, homeHooks(state));
   paintNeeds(state, fresh);
   paintPeople(state);
@@ -469,7 +490,7 @@ function renderHome(state: State): void {
   paintOps(state);
   paintThemes(state);
   markSelected(state, false);
-  loadSections(state);
+  tickSources(state);
 }
 
 /** What the "Needs you" rows act through. */
@@ -499,21 +520,18 @@ function snapshot(state: State): PageState {
   return pageState({ active: state.active, entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, runs: state.actionRuns, sources: state.sources });
 }
 
-function actionRunsDue(state: State): boolean {
-  return !state.closed && runsDue(state.runsStarted, state.runsRunning, Date.now(), !document.hidden, route().route === "home" && window.location.hash !== "#state.json");
-}
-
-async function refreshActionRuns(state: State): Promise<void> {
-  if (state.closed || state.runsRunning || document.hidden || route().route !== "home" || window.location.hash === "#state.json") return;
+/** Re-read the agent runs; false if nothing was read (see SourceDef.read). */
+async function refreshActionRuns(state: State): Promise<boolean> {
+  if (state.closed || state.runsRunning) return false;
   state.runsRunning = true;
-  state.runsStarted = Date.now();
   try {
     const runs = await loadActionRuns(state.gh);
-    if (state.closed) return;
+    if (state.closed) return false;
     state.sources.runs = { state: runs.state, checkedAt: runs.at, ...(runs.state === "ok" ? { fetchedAt: runs.at } : { error: runs.warnings.join(" ") }) };
     // Preserve last known rows on a transient failure, while marking them stale.
     if (runs.state === "ok" || !state.actionRuns) state.actionRuns = runs;
     renderChrome(state);
+    return runs.state === "ok";
   } finally {
     state.runsRunning = false;
   }
@@ -578,18 +596,20 @@ function paintPeople(state: State): void {
   });
 }
 
-async function refreshPeople(state: State): Promise<void> {
-  if (!state.home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open) return;
-  if (state.peopleRunning || state.peopleWrites || state.closed) return;
+/** Re-read the people's asks while their fold is open; false if nothing was read (see SourceDef.read). */
+async function refreshPeople(state: State): Promise<boolean> {
+  if (!state.home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open) return false;
+  if (state.peopleRunning || state.peopleWrites || state.closed) return false;
   state.peopleRunning = true;
   const revision = state.peopleRevision;
   try {
     const people = await readSource(state.sources, "people", (gh) => loadPeople(gh, Date.now(), state.login === OPERATOR), state.gh);
-    if (state.closed) return;
-    if (!people || revision !== state.peopleRevision) { renderChrome(state); return; }
+    if (state.closed) return false;
+    if (!people || revision !== state.peopleRevision) { renderChrome(state); return false; }
     state.people = people;
     paintPeople(state);
     renderChrome(state);
+    return true;
   } finally {
     state.peopleRunning = false;
   }
@@ -678,40 +698,48 @@ function paintOps(state: State): void {
   }
 }
 
-function sectionOpenNow(state: State, id: SectionId): boolean {
-  return state.home?.sections[id].details.open === true;
-}
-
-function activeDue(state: State): boolean {
-  return !state.activeRunning && Date.now() - state.activeStarted >= OPS_POLL_INTERVAL_MS;
-}
-
 /**
- * Start the reads the open sections show: the agents' and usage's
- * (always, they are cheap and fill their counts), the merged PRs while
- * the changes are open, the ops detail and the themes while their folds
- * are, and the decisions, which are rows of "Needs you".
+ * The sources of the state `get` returns (a getter: the state holds the
+ * layer), and the views that show them. The queue (board items and the
+ * bot's PRs) is the poll loop's own read, on every view and behind an
+ * entry too, as the header's counts and moving on after an action come
+ * from it. The board, heartbeat, usage and agent runs fill the summary
+ * atop every view, and the decisions the header's counts, so every view
+ * needs them too. The merged PRs, the ops detail, the themes and the
+ * people's asks are read only for their view, while their section or
+ * fold is open. A poll asked for early (after an action) re-reads the
+ * queue only: the others wait for their cadence, which the usual poll
+ * interval meets. A refresh he asked for from another view than the
+ * inbox doesn't force the decisions' redraw over his unsent picks there.
  */
-function loadSections(state: State): void {
-  if (state.closed || !state.loaded || route().route !== "home" || !state.home) return;
-  if (activeDue(state)) void refreshActive(state);
-  if (actionRunsDue(state)) void refreshActionRuns(state);
-  if (sectionOpenNow(state, "changes") && !state.news) void refreshNews(state);
-  if (state.home.slots.opsBox.open && opsDue(state)) void refreshOps(state);
-  if (state.home.slots.themesBox.open && !state.openBoard) void refreshTriage(state);
-  if (!state.decisions) void refreshDecisions(state);
-  if (!state.people) void refreshPeople(state);
+function newLayer(get: () => State): SourceLayer<ViewId> {
+  const open = (box: (home: Home) => HTMLDetailsElement) => () => {
+    const home = get().home;
+    return home !== undefined && box(home).open;
+  };
+  return new SourceLayer<ViewId>(
+    [
+      { name: "queue", path: "the Workstream board's items; search of the bot's PRs", cadence: POLL_INTERVAL_MS, views: VIEWS },
+      { name: "active", path: "the board, heartbeat, usage snapshot and project status", cadence: OPS_POLL_INTERVAL_MS, views: VIEWS, read: () => refreshActive(get()) },
+      { name: "runs", path: "agent workflow runs and their jobs", cadence: RUNS_POLL_MS, views: VIEWS, read: () => refreshActionRuns(get()) },
+      { name: "ops", path: "devspaces, agent runs and the bot's public events", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.agents], read: () => refreshOps(get()), when: open((home) => home.slots.opsBox) },
+      { name: "news", path: "merged PRs of the harness repositories", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.changes], read: () => refreshNews(get()), when: open((home) => home.sections.changes.details) },
+      { name: "themes", path: "every open board item", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.priority], read: () => refreshTriage(get()), when: open((home) => home.slots.themesBox) },
+      { name: "decisions", path: "the decisions document and tracker questions", cadence: POLL_INTERVAL_MS, views: VIEWS, read: (force) => refreshDecisions(get(), force && get().view === SECTION_VIEW.needs) },
+      { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
+    ],
+    () => (get().closed ? undefined : visibleView(document, HOME_CLASS)),
+  );
 }
 
 /**
  * Re-read the board, heartbeat and usage, as often as the ops detail,
  * and only while the page shows. The first time, what the cache has
- * shows first.
+ * shows first. False if not all of it was read (see SourceDef.read).
  */
-async function refreshActive(state: State): Promise<void> {
-  if (state.activeRunning) return;
+async function refreshActive(state: State): Promise<boolean> {
+  if (state.activeRunning) return false;
   state.activeRunning = true;
-  state.activeStarted = Date.now();
   try {
     if (!state.active) {
       const cached = state.gh.cacheOnly();
@@ -731,6 +759,7 @@ async function refreshActive(state: State): Promise<void> {
     paintActive(state);
     paintNeeds(state);
     paintChanges(state);
+    return status !== undefined && Object.values(active.sources ?? {}).every((s) => s.state !== "unavailable");
   } finally {
     state.activeRunning = false;
   }
@@ -1155,9 +1184,9 @@ async function refreshContext(state: State, item: Item): Promise<void> {
 /**
  * Re-read the merged PRs (conditionally), and show them if the changes
  * section is on the page and they changed. The first time, a complete
- * cached copy shows first.
+ * cached copy shows first. False if it couldn't (see SourceDef.read).
  */
-async function refreshNews(state: State): Promise<void> {
+async function refreshNews(state: State): Promise<boolean> {
   if (!state.news) {
     const cached = state.gh.cacheOnly();
     const news = await loadNews(cached, state.harness, NEWS_LIMIT).catch(() => undefined);
@@ -1176,18 +1205,20 @@ async function refreshNews(state: State): Promise<void> {
     state.news = news;
     if (news.changed || first) paintChanges(state);
     renderChrome(state);
+    return !news.warnings.length;
   } catch (e) {
     state.error = `Couldn't read the merged PRs: ${message(e)}`;
     renderChrome(state);
+    return false;
   }
 }
 
 /**
  * Re-read every open board item (conditionally) for the themes under
  * "By priority", and show them if they changed. The first time, a
- * cached copy shows first.
+ * cached copy shows first. False if it couldn't (see SourceDef.read).
  */
-async function refreshTriage(state: State): Promise<void> {
+async function refreshTriage(state: State): Promise<boolean> {
   if (!state.openBoard) {
     const cached = state.gh.cacheOnly();
     const board = await loadOpenBoard(cached).catch(() => undefined);
@@ -1205,9 +1236,11 @@ async function refreshTriage(state: State): Promise<void> {
     state.openBoard = board;
     if (redraw) paintThemes(state);
     renderChrome(state);
+    return true;
   } catch (e) {
     state.error = `Couldn't read the board for the themes: ${message(e)}`;
     renderChrome(state);
+    return false;
   }
 }
 
@@ -1282,11 +1315,12 @@ interface DecisionsRead {
 /**
  * Re-read the open decisions and which he answered, and show them among
  * the rows of "Needs you" if they changed; with an answer half written,
- * only say so, unless `force` (he asked to reload).
+ * only say so, unless `force` (he asked to reload). False if the
+ * questions couldn't be read (see SourceDef.read).
  */
-async function refreshDecisions(state: State, force = false): Promise<void> {
+async function refreshDecisions(state: State, force = false): Promise<boolean> {
   if (state.home) await refreshDocument(state.gh, state.home.slots.decisionDocument, render, DECISIONS_CONFIG.document, force);
-  if (!DECISIONS_CONFIG.legacyQuestions) return;
+  if (!DECISIONS_CONFIG.legacyQuestions) return true;
   const read = async (gh: GitHub) => {
     const q = await loadDecisions(gh);
     const answered = await loadAnswered(gh, q.items);
@@ -1322,10 +1356,7 @@ async function refreshDecisions(state: State, force = false): Promise<void> {
     },
   });
   await state.decisionsRefresh.refresh(force);
-}
-
-function opsDue(state: State): boolean {
-  return !state.opsRunning && Date.now() - state.opsStarted >= OPS_POLL_INTERVAL_MS;
+  return state.sources.decisions?.state !== "unavailable";
 }
 
 /**
@@ -1333,10 +1364,9 @@ function opsDue(state: State): boolean {
  * first time, what the cache has shows first, marked as cached:
  * sections it lacks say so rather than warn.
  */
-async function refreshOps(state: State): Promise<void> {
-  if (state.opsRunning) return;
+async function refreshOps(state: State): Promise<boolean> {
+  if (state.opsRunning) return false;
   state.opsRunning = true;
-  state.opsStarted = Date.now();
   try {
     if (!state.ops) {
       const cached = state.gh.cacheOnly();
@@ -1351,10 +1381,12 @@ async function refreshOps(state: State): Promise<void> {
     state.ops = await loadOps(state.gh, state.jobs);
     // The same reads serve the agents, changes and usage sections, so they needn't repeat them.
     state.active = activeFromOps(state.active, state.ops);
-    state.activeStarted = Date.now();
+    const read = Object.values(state.ops.sources ?? {}).every((s) => s.state !== "unavailable");
+    if (read) state.layer.checked("active");
     paintOps(state);
     paintActive(state);
     paintChanges(state);
+    return read;
   } finally {
     state.opsRunning = false;
   }
@@ -1567,18 +1599,6 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
   }
 }
 
-/** What the poll re-reads for the page: the open sections' data, and the decisions. */
-function pollSections(state: State): void {
-  if (route().route !== "home" || !state.home || !state.loaded) return;
-  if (activeDue(state)) void refreshActive(state);
-  if (actionRunsDue(state)) void refreshActionRuns(state);
-  if (sectionOpenNow(state, "changes")) void refreshNews(state);
-  if (state.home.slots.opsBox.open && opsDue(state)) void refreshOps(state);
-  if (state.home.slots.themesBox.open) void refreshTriage(state);
-  void refreshDecisions(state);
-  void refreshPeople(state);
-}
-
 /**
  * Ask GitHub whose token this is, after the read at start failed: until
  * it answers, the rows can't say who is answering, and the capture bar
@@ -1609,7 +1629,7 @@ async function confirmLogin(state: State): Promise<void> {
 async function poll(state: State, current: () => boolean): Promise<void> {
   if (state.closed) return;
   void confirmLogin(state);
-  pollSections(state);
+  state.layer.tick();
   // The board and the forge load side by side; whichever answers first shows first.
   const forge = pollForge(state);
   try {
@@ -1617,6 +1637,7 @@ async function poll(state: State, current: () => boolean): Promise<void> {
     if (!current()) return;
     state.lastPoll = new Date();
     state.sources.queue = { state: "ok", checkedAt: Date.now(), fetchedAt: Date.now() };
+    state.layer.checked("queue");
     delete state.error;
     const first = !state.loaded;
     // The first answer after showing the cached queue: re-read what the
@@ -1655,11 +1676,25 @@ function refreshSoon(state: State): void {
   state.poller.now();
 }
 
+/** The poll loop's delay now: the usual interval, or longer and why under the rate budget. */
+function delayNow(state: State): Delay {
+  return pollDelay(state.gh.rate, Date.now(), { interval: POLL_INTERVAL_MS, backoff: POLL_BACKOFF_FACTOR, lowFraction: RATE_LOW_FRACTION, clock }, state.gh.blockedUntil);
+}
+
+/**
+ * Start the due sources of the view on screen off the poll (on showing
+ * a view, or opening a section): unless the rate budget slowed or paused
+ * the poll, as the sources then wait for it.
+ */
+function tickSources(state: State): void {
+  if (delayNow(state).why === undefined) state.layer.tick();
+}
+
 /** The poll loop of the state `get` returns (a getter: the state holds the loop). */
 function newPoller(get: () => State): Poller {
   return new Poller({
     run: (current) => poll(get(), current),
-    delay: () => pollDelay(get().gh.rate, Date.now(), { interval: POLL_INTERVAL_MS, backoff: POLL_BACKOFF_FACTOR, lowFraction: RATE_LOW_FRACTION, clock }, get().gh.blockedUntil),
+    delay: () => delayNow(get()),
     hidden: () => document.hidden,
     changed: () => {
       if (get().loaded) renderChrome(get());
@@ -1704,18 +1739,9 @@ function run(state: State, cmd: Command, where: Route): void {
         return;
       }
       if (r.route === "home") {
-        // The sections' data is re-read too, now rather than when due; a reload on request drops the needs rows' unsent picks, as the note warned (the decisions document keeps its own).
-        state.activeStarted = 0;
-        state.opsStarted = 0;
-        state.runsStarted = 0;
-        void refreshActionRuns(state);
-        void refreshDecisions(state, true);
-        void refreshPeople(state);
-        if (sectionOpenNow(state, "changes")) void refreshNews(state);
-        if (state.home?.slots.themesBox.open) void refreshTriage(state);
-        paintNeeds(state, true);
-        void refreshActive(state);
-        if (state.home?.slots.opsBox.open) void refreshOps(state);
+        // The view's sources are re-read too, now rather than when due; a reload on request in the inbox drops the needs rows' unsent picks, as the note warned (the decisions document keeps its own), but not from another view, where they are out of sight.
+        state.layer.tick(true);
+        if (state.view === SECTION_VIEW.needs) paintNeeds(state, true);
       }
       refreshSoon(state);
       return;
@@ -1740,11 +1766,18 @@ function run(state: State, cmd: Command, where: Route): void {
   }
 }
 
-/** Open a section and scroll to it, as the section keys do; remembered like any opening. */
+/** Switch to a section's view, open the section and scroll to it, as the section keys do; remembered like any opening. */
 function jumpTo(state: State, id: string): void {
   if (!isSection(id) || !state.home) return;
+  const view = SECTION_VIEW[id];
+  if (view !== state.view) {
+    // Shown at once, so there is something to scroll to; the hash change then follows.
+    state.view = view;
+    showView(state.home.el, view);
+    window.location.hash = viewHash(view);
+  }
   setSectionOpen(state.home, id, true, true, homeHooks(state));
-  loadSections(state);
+  tickSources(state);
   state.home.sections[id].details.scrollIntoView?.({ block: "start" });
   // The first row of it, so j/k go on from there.
   const first = state.home.sections[id].details.querySelector<HTMLElement>(`.${ROW_CLASS}`);
@@ -1864,10 +1897,13 @@ function rejected(state: State): Promise<void> {
 
 async function start(source: TokenSource): Promise<void> {
   const session = await openCache(await source.get(), source.persistence === "local", () => IdbStore.open(), () => deleteCacheDatabase());
+  // The view the page opens in, so the navigation marks it while loading.
+  const opened = route();
   const state: State = {
     sources: {},
-    runsStarted: 0,
     runsRunning: false,
+    layer: newLayer(() => state),
+    view: (opened.route === "home" && opened.view) || DEFAULT_VIEW,
     poller: newPoller(() => state),
     tickedAt: Date.now(),
     gh: new GitHub(() => source.get(), undefined, session.cache),
@@ -1911,9 +1947,7 @@ async function start(source: TokenSource): Promise<void> {
     answeredHere: new Set(),
     triageFilter: "all",
     harness: new Map(),
-    opsStarted: 0,
     opsRunning: false,
-    activeStarted: 0,
     activeRunning: false,
     jobs: new Map(),
     triageOpen: new Set(),
@@ -1944,6 +1978,7 @@ async function start(source: TokenSource): Promise<void> {
     state.tokenWarning = `This token lacks the ${lacking.map((n) => n.any.join(" or ")).join(", ")} scope${lacking.length > 1 ? "s" : ""}; some reads or answers will fail.`;
   }
   byId("signout").hidden = false;
+  byId("views").hidden = false;
   const copy = document.getElementById("copy-state");
   if (copy) {
     copy.hidden = false;
@@ -1980,10 +2015,12 @@ async function start(source: TokenSource): Promise<void> {
           state.openedFrom === "themes" ? themesOrigin(state, "#") : state.openedFrom === "priority" ? queueOrigin(state, "#") : needsOrigin(state, "#");
       } else if (came !== "item" && came !== "pr") delete state.origin;
     }
+    // Shown before this route renders: the view switched to, unless a jump already showed it.
+    const shownView = state.home?.el.isConnected ? state.home.el.getAttribute(VIEW_ATTR) : undefined;
     renderRoute(state);
-    // Back on the page from an entry, he is on the row he left; picking a filter leaves him where he is.
+    // Back on the page from an entry, he is on the row he left; picking a filter leaves him where he is; another view starts at its top.
     if (to === "home" && came !== "home") markSelected(state, true);
-    else if (to !== "home") window.scrollTo(0, 0);
+    else if (to !== "home" || (shownView && shownView !== state.view)) window.scrollTo(0, 0);
   });
   installKeys(state);
   installOpenedFrom(state);
@@ -1997,7 +2034,6 @@ async function start(source: TokenSource): Promise<void> {
     state.tickedAt = Date.now();
     if (state.loaded && !document.hidden) {
       renderChrome(state);
-      if (actionRunsDue(state)) void refreshActionRuns(state);
       // Waiting ages move on without a redraw of the rows.
       tickAges(document.body, Date.now());
     }
@@ -2139,6 +2175,7 @@ function signInView(reason: SignInReason): HTMLElement {
 function showSignIn(reason: SignInReason): void {
   byId("meta").textContent = "";
   byId("signout").hidden = true;
+  byId("views").hidden = true;
   for (const id of ["state-link", "copy-state"]) {
     const control = document.getElementById(id);
     if (control) control.hidden = true;

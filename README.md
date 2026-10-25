@@ -173,7 +173,7 @@ already read, so it adds no GitHub request (its Scheduler link opens the ops
 detail, whose reads then start as if opened by hand). Merge queues are not in
 it: nothing on the page reads them yet.
 
-**Weekly subscription usage** follows, always visible. It
+**Weekly subscription usage** heads the Usage view, always open. It
 reads Claude and OpenAI from `bot-usage/v1`'s `pools`, one compact row each: a
 thin bar of the percent used with a tick at the scheduler's allowance by now
 (`allowed_percent`), coloured as a warning when over it or held, and a label
@@ -379,9 +379,18 @@ exit nonzero. Run the source entrypoint directly: there is no npm `state`
 script because `package.json` is protected for this change.
 
 The existing **Changes**, **By priority** (including themes), **Usage**, and
-ops detail remain below and start collapsed. Section choices are remembered.
-`q`, `d`, `n`, `t`, `s` jump to Decisions, Agents, Changes, By priority, Usage;
-`j`/`k`/`o` walk visible rows.
+ops detail start collapsed. Section choices are remembered.
+
+The page is split into views, one route each, linked from a sidebar on a
+wide screen and from tabs at the bottom on a phone or tablet: **Inbox** (`#inbox`:
+Decisions and From people), **Agents** (`#agents`: live runs, Agents and the
+ops detail), **Board** (`#board`: Status, Focus and By priority, also what a
+filter in the URL opens), **Activity** (`#activity`: Changes) and **Usage**
+(`#usage`). The summary shows in every view. A bare `#`, as Back and `u`
+go to, is the view last shown. Switching views keeps the page as it was,
+half-written answers included. `q`, `d`, `n`, `t`, `s` switch to Decisions,
+Agents, Changes, By priority, Usage and open that section; `j`/`k`/`o`
+walk the rows of the view shown.
 
 **Filters** in By priority narrow the queue by the organization an
 entry targets and by priority, with each chip's count. The target is the
@@ -572,7 +581,17 @@ the top; the key hints are hidden on touch screens.
 
 The board is polled every minute with ETags while the tab is visible
 (never while it is hidden), the bot's PRs with two searches every
-minute, and a PR's reviews only when it changed. At most four requests
+minute, and a PR's reviews only when it changed. Everything else a view
+shows is one of a list of sources, each with what it reads, a cadence
+(a minute for all of them today) and the views that show it, and is
+read only while one of those views is on screen, at the poll, or at
+once on switching to a view whose sources are older than their cadence
+(unless the rate budget slowed the poll: they then wait for it). The
+summary's and the header's own sources are needed by every view. The
+header says how long ago the view on screen was last checked ("checked
+12 s ago", its oldest source; each source in its tooltip); a failed
+read doesn't count.
+At most four requests
 to GitHub are in flight at once, searches one at a time: GitHub's
 secondary rate limits punish concurrency. When GitHub refuses a request
 for a rate limit, the app says "GitHub rate limit: retrying in N s",
