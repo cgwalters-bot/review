@@ -465,6 +465,11 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
   );
 }
 
+/** A bar per plan pool, with its pace tick and hold, as the Usage and Dashboard views show them. */
+export function poolRows(usage: Usage, now: number): HTMLElement[] {
+  return POOLS.map(([name, label]) => poolRow(name, label, usage.pools?.[name], now, usage.updatedAt || usage.observedAt || ""));
+}
+
 const usd = (v: number) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /** The time to a monthly reset: days while more than one is left, or that it passed. */
@@ -580,7 +585,7 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
       h(
         "div",
         { class: "pools" },
-        ...POOLS.map(([name, label]) => poolRow(name, label, usage.pools?.[name], now, usage.updatedAt || usage.observedAt || "")),
+        ...poolRows(usage, now),
         ...(usage.mistral ? [mistralRow(usage.mistral, now)] : []),
         h("p", { class: "fine" }, usage.updatedAt ? h("span", {}, "Published ", agoLabel(usage.updatedAt, now), ". ") : "Publication time unknown. ", usage.commentUrl ? link(usage.commentUrl, "Source ↗") : ""),
       ),

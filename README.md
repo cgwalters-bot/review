@@ -442,6 +442,21 @@ half-written answers included. `q`, `d`, `n`, `t`, `s` switch to Decisions,
 Agents, Changes, By priority, Usage and open that section; `j`/`k`/`o`
 walk the rows of the view shown.
 
+A **Dashboard** view (`#dashboard`) is built but off by default
+(`enabled` in `src/github/dashboard-config.json`), since it adds reads of
+its own. Four tiles link to where the detail is: dispatch runs in flight
+against `runCap` (Agents), approvals waiting (Inbox), PRs in the harness
+repositories' merge queues, with how many approved PRs in the forge are
+not queued (GitHub's search), and pools held (Usage). Under them are the
+pool bars and three 14-day charts: dispatch runs by result, their success
+rate, and board items done by priority (from the items' `closed_at`, not
+counting those closed as not planned). The runs are read a UTC day at a
+time; a past day whose runs had all finished is kept in the browser and
+never read again, so after the first load only today is. The merge queues
+are one GraphQL query, and the approved PRs one search
+(`is:pr is:open review:approved org:cgwalters-forge`), each read once a
+minute while the view shows.
+
 **Filters** in By priority narrow the queue by the organization an
 entry targets and by priority, with each chip's count. The target is the
 board's Org field, else a tracker issue's `target:<org>` label, else the

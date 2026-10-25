@@ -5,14 +5,19 @@
 // answer in one view is still there on coming back to it.
 
 import { h } from "../dom.ts";
+import config from "./dashboard-config.json" with { type: "json" };
 import type { SectionId } from "./sections.ts";
 
-export const VIEWS = ["inbox", "agents", "board", "activity", "usage"] as const;
+export const VIEWS = ["inbox", "agents", "dashboard", "board", "activity", "usage"] as const;
 export type ViewId = (typeof VIEWS)[number];
+
+/** The views linked and routed to: the dashboard only while DASHBOARD_CONFIG has it on. */
+export const SHOWN_VIEWS: readonly ViewId[] = VIEWS.filter((v) => v !== "dashboard" || config.enabled);
 
 export const VIEW_TITLE: Record<ViewId, string> = {
   inbox: "Inbox",
   agents: "Agents",
+  dashboard: "Dashboard",
   board: "Board",
   activity: "Activity",
   usage: "Usage",
@@ -33,7 +38,7 @@ export const SECTION_VIEW: Record<SectionId, ViewId> = {
 /** The attribute naming the view a part of the page is in; a part without it shows in every view. */
 export const VIEW_ATTR = "data-view";
 
-export const isView = (v: string | undefined): v is ViewId => (VIEWS as readonly (string | undefined)[]).includes(v);
+export const isView = (v: string | undefined): v is ViewId => (SHOWN_VIEWS as readonly (string | undefined)[]).includes(v);
 
 export const viewHash = (view: ViewId): string => `#${view}`;
 
@@ -52,7 +57,7 @@ export function visibleView(doc: Document, pageClass: string): ViewId | undefine
 
 /** Fill the navigation with a link per view, marking `current`. */
 export function fillNav(nav: HTMLElement, current: ViewId): void {
-  if (!nav.firstChild) nav.append(...VIEWS.map((v) => h("a", { href: viewHash(v), class: "view-link", [VIEW_ATTR]: v }, VIEW_TITLE[v])));
+  if (!nav.firstChild) nav.append(...SHOWN_VIEWS.map((v) => h("a", { href: viewHash(v), class: "view-link", [VIEW_ATTR]: v }, VIEW_TITLE[v])));
   for (const a of nav.querySelectorAll<HTMLElement>(`a[${VIEW_ATTR}]`)) {
     if (a.getAttribute(VIEW_ATTR) === current) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");

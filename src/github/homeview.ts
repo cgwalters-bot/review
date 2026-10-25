@@ -20,6 +20,7 @@ import { boardStatus, STATUS_SECTION_HINT, STATUS_SECTION_TITLE, STATUS_SECTIONS
 import { diffBoard, type Snapshot } from "./boardfeed.ts";
 import type { DispatchData } from "./dispatch.ts";
 import { dispatchPanel } from "./dispatchview.ts";
+import { dashboardView, type DashboardInputs } from "./dashboardview.ts";
 import { type FeedOptions, feedSection } from "./boardfeedview.ts";
 import type { QueueFilter } from "./filter.ts";
 import type { Heartbeat } from "./heartbeat.ts";
@@ -99,6 +100,8 @@ export interface Slots {
   themesBox: HTMLDetailsElement;
   usage: HTMLElement;
   weekly: HTMLElement;
+  /** The Dashboard view's tiles, pools and charts. */
+  dashboard: HTMLElement;
 }
 
 export interface Home {
@@ -178,6 +181,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const priority = h("div", { class: "priority-slot" });
   const themes = fold("themes-fold", "Themes and verdicts (every open board item)", hooks.themesToggled);
   const usage = h("div", { class: "usage-slot" });
+  const dashboard = h("section", { class: "dashboard", "aria-label": "Dashboard" }, h("h2", {}, "Dashboard"));
   const ctx = { expected };
   const sections: Record<SectionId, SectionEls> = {
     needs: section("needs", ctx, hooks, decisionDocument, needs),
@@ -203,10 +207,11 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     inView("board", focus),
     inView("agents", dispatch),
     inView("agents", runs),
+    inView("dashboard", dashboard),
     ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details),
     freshness,
   );
-  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, statusComputed, statusNote, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
+  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, statusComputed, statusNote, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly, dashboard }, expected };
 }
 
 export function fillState(home: Home, state: PageState): void {
@@ -515,6 +520,13 @@ export function fillAgents(home: Home, active: Active | undefined, now: number, 
 
 export function fillDispatch(home: Home, data: DispatchData | undefined, now: number): void {
   home.slots.dispatch.replaceChildren(dispatchPanel(data, now));
+}
+
+export function fillDashboard(home: Home, inputs: DashboardInputs): void {
+  // Keep the pool expanders and number tables he opened, as fillUsage does.
+  const open = new Set([...home.slots.dashboard.querySelectorAll<HTMLDetailsElement>("details[open]")].map((d) => d.getAttribute(POOL_ATTR) ?? d.closest("section")?.getAttribute("aria-label")));
+  home.slots.dashboard.replaceChildren(h("h2", {}, "Dashboard"), dashboardView(inputs));
+  for (const d of home.slots.dashboard.querySelectorAll<HTMLDetailsElement>("details")) d.open = open.has(d.getAttribute(POOL_ATTR) ?? d.closest("section")?.getAttribute("aria-label"));
 }
 
 /** The ops detail; returns its element, whose live times main.ts keeps ticking. */
