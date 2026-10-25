@@ -163,7 +163,7 @@ describe("rerunDispatchRun", () => {
 
 describe("Do cards", () => {
   const offer: Offered = { issue: 12, comment: { id: "IC_1", databaseId: 5, body: "", updatedAt: at(2), author: { login: "planner" }, editor: null, lastEditedAt: null }, proposal: { schema: "agent-board/operator-action/v1", title: "Create the ruleset", why: "D15", actions: [] } };
-  const plan: Plan = { states: ["o/r#1 · now \"open\" → \"closed\""], expected: ["open"] };
+  const plan: Plan = { states: ["o/r#1 · now \"open\" → \"closed\""], expected: ["open"], mutations: [undefined] };
   it("a proposal whose preconditions hold", () => assert.equal(outcome(doCard(offer, plan)), "present"));
   it("a proposal whose precondition no longer holds", () => assert.equal(outcome(doCard(offer, undefined)), "absent"));
 });

@@ -6,7 +6,9 @@ The action panel is disabled by default. Enable it only by editing
 `src/github/action-config.json` on the repository's default branch: set
 `operator`, `planner`, `tracker` (`OWNER/REPO`), and an explicit
 `repositories` allowlist. `project` is the one GitHub project URL proposals may
-change, or empty to refuse project-field actions. No dispatcher or proposal can widen this
+change, or empty to refuse project-field actions. `org` is likewise the one
+organisation whose Actions variables and rulesets proposals may change, or
+empty to refuse those kinds. No dispatcher or proposal can widen this
 configuration. The allowlist should start with the forge-native repositories;
 upstreams require an operator-reviewed configuration change.
 
@@ -33,16 +35,62 @@ allowlist (including parents), a project other than the configured one, an
 issue as its own parent, a `.` or `..` label (`DELETE …/labels/.` would reach
 the remove-all-labels endpoint), and a close reason that starts with a slash
 command. `move_sub_issue` uses GitHub's single replace-parent operation.
+For the organisation kinds it refuses an `org` other than the configured one
+(case-insensitive), selected repositories outside that org, off the
+allowlist or listed twice, a variable value or `expected_current` over
+49,152 UTF-8 bytes (GitHub's limit; the schema counts characters), and a
+ruleset source repository off the allowlist. A proposal comment holds at most 65,536
+characters, so a value and `expected_current` both near the limit cannot be
+proposed together.
 
 ## Stale checks
 
-Proposals carry no timestamps or prior values. Instead, rendering a proposal
+Proposals on issues and PRs carry no timestamps or prior values. Instead, rendering a proposal
 reads every target and shows the fact each action depends on: issue state for
 close and reopen, label membership, a PR's state, draft flag and head (which
 must be open, non-draft and at `head_sha`), the current parent, or the
 project field's current value. Actions run in order, so an action on a target
 an earlier action changed is checked against that earlier action's result.
 Any failed or unavailable check disables the batch.
+
+`set_org_variable` and `apply_org_ruleset` are different: they overwrite org
+state that was the proposal's input, so they carry the prior state the
+proposer saw, and the action is stale unless live state still matches it.
+For a variable, the live value must equal `expected_current` (null: unset);
+the fact shown also covers its visibility and selected repositories. For a
+ruleset, the live ruleset of exactly that name, normalised as agent-board
+defines, must have the SHA-256 `expected_current_sha256` (null: none of that
+name). A member proposer cannot see a ruleset's bypass actors, so cannot
+compute that digest for an update: the stale refusal names the live digest
+for the operator to hand back. A wrong expectation only makes the action stale.
+
+Both kinds create or update: a variable is POSTed when unset and PATCHed
+when set, with repository IDs read from `GET /repos/OWNER/NAME` at plan time
+and again just before the write (a renamed or transferred repository is
+refused), never from the proposal. A ruleset is POSTed when none has its name
+and PUT to the live ruleset's ID otherwise; more than one ruleset of the name,
+or more than 1,000 rulesets, is refused. A proposal may hold only one action
+per organisation variable or ruleset, since each is planned against live state
+alone. The ruleset body is only the reviewed source file: it is fetched at the
+pinned commit, which must be reachable from the source repository's default
+branch (compare status `behind` or `identical`), since a member can push an
+unreviewed branch to an allowlisted repository; a renamed or transferred
+source repository is refused. The file must pass agent-board's source checks
+(writable fields only, matching name, not `disabled`, at most 64 KiB, no
+bypass actor the live ruleset lacks, so none on create), and is sent
+normalised. GitHub keeps the fields an update omits, so an update must also
+state every writable field the live ruleset has: removing every bypass actor
+means writing `"bypass_actors": []`. Switching to `evaluate` stops
+enforcement, and pinning any older default-branch commit rolls a ruleset
+back; both are allowed and show in the diff for the operator to judge. The card shows the exact request
+(method, path and body), the variable's current and new value in full, and a
+line diff of the live and source rulesets, both normalised.
+
+These reads and writes need an org owner's token with `admin:org`. A classic
+token without it is refused at plan time; the rest of the site does not
+need it. A fine-grained token sends no scopes, and one without org access may
+see a variable as unset (a 404); that fails safe, since GitHub then refuses
+the create.
 
 Execution reads every target again and refuses unless each fact still equals
 what was shown, then checks each one again just before its write. A target
@@ -75,8 +123,8 @@ are not an atomic lock: concurrent clients depend on GitHub showing earlier
 receipts. Do not execute the same proposal from multiple tabs/devices. Deleting
 a receipt can permit replay. Editing a proposal creates a new version.
 
-GitHub offers no compare-and-swap for issue, label, project-field or sub-issue
-writes, so a change racing the final read remains possible. A read that lags
+GitHub offers no compare-and-swap for issue, label, project-field, sub-issue,
+org variable or org ruleset writes, so a change racing the final read remains possible. A read that lags
 an earlier write in the same batch stops the batch as stale. PR merge uses the
 server-side SHA guard; approval is explicitly bound to the reviewed SHA.
 Closing has two writes (reason comment then state); if the second fails, the

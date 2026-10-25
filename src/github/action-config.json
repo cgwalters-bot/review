@@ -13,5 +13,6 @@
     "cgwalters-forge/review",
     "cgwalters-forge/tracker"
   ],
-  "project": "https://github.com/orgs/cgwalters-forge/projects/1"
+  "project": "https://github.com/orgs/cgwalters-forge/projects/1",
+  "org": "cgwalters-forge"
 }

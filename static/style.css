@@ -497,11 +497,11 @@ textarea.mine-msg { font: 13px/1.45 var(--mono); }
 .mine-who { display: flex; flex-wrap: wrap; gap: 8px; font-size: var(--type-secondary); }
 .mine-who label { flex: 1 1 14em; display: grid; gap: 4px; }
 .mine-change h4 { margin: 8px 0 4px; font-size: var(--type-secondary); }
-pre.mine-diff { margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: 13px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-pre.mine-diff span { display: block; min-height: 1.45em; }
-pre.mine-diff .d-add { background: var(--add); color: var(--add-ink); }
-pre.mine-diff .d-del { background: var(--del); color: var(--del-ink); }
-pre.mine-diff .d-same { color: var(--muted); }
+pre.line-diff { margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font: 13px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+pre.line-diff span { display: block; min-height: 1.45em; }
+pre.line-diff .d-add { background: var(--add); color: var(--add-ink); }
+pre.line-diff .d-del { background: var(--del); color: var(--del-ink); }
+pre.line-diff .d-same { color: var(--muted); }
 
 /* Triage: the P0 lane, then board items grouped by Theme with their verdicts. */
 .triage section { margin-top: 12px; }
