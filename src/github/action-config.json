@@ -1,7 +1,17 @@
 {
-  "operator": "",
-  "planner": "",
-  "tracker": "",
-  "repositories": [],
-  "project": ""
+  "operator": "cgwalters",
+  "planner": "cgwalters-bot",
+  "tracker": "cgwalters-forge/tracker",
+  "repositories": [
+    "cgwalters-forge/actions",
+    "cgwalters-forge/agent-board",
+    "cgwalters-forge/agentic-job",
+    "cgwalters-forge/agenthome",
+    "cgwalters-forge/cgwalters-forge.github.io",
+    "cgwalters-forge/forge-infra",
+    "cgwalters-forge/misctool",
+    "cgwalters-forge/review",
+    "cgwalters-forge/tracker"
+  ],
+  "project": "https://github.com/orgs/cgwalters-forge/projects/1"
 }

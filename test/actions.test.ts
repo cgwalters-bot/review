@@ -124,8 +124,9 @@ it("gives agent-board's verdict on every shared fixture case", () => {
   for (const a of shared.scope_rejections) { assert.ok(matchesActionSchema(one(a))); assert.throws(() => validateProposal(one(a), cfg), /not allowed/); }
 });
 
-it("defaults off and requires repository-owned writer, target and project configuration", () => {
-  assert.equal(ACTION_CONFIG, undefined);
+it("is enabled only for the operator, within the forge, and requires repository-owned writer, target and project configuration", () => {
+  assert.equal(ACTION_CONFIG?.operator, "cgwalters");
+  assert.ok(ACTION_CONFIG?.repositories.length && ACTION_CONFIG.repositories.every(r => r.startsWith("cgwalters-forge/")));
   assert.deepEqual(actionConfig(c), c);
   assert.deepEqual(actionConfig({ ...c, project: "" }), { ...c, project: "" });
   for (const value of [{ ...c, operator: "" }, { ...c, operator: undefined }, { ...c, planner: undefined }, { ...c, tracker: undefined }, { ...c, repositories: ["../tasks"] }, { ...c, tracker: "https://evil" }, { ...c, project: "PVT_example" }, { ...c, project: `${project}\n` }]) assert.throws(() => actionConfig(value));
