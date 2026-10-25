@@ -181,8 +181,11 @@ such as "50% used · 8% of week gone · ~636% at reset": the share of the window
 gone is worked out from the pool's `resets_at` and `window_minutes` (a week by
 default) at the time it was observed, and the projection is the rate so far
 carried to the window's end (none before 5% of it). The label also says when
-the scheduler holds new work on the pool (`hold`; running work goes on), until
-`next_dispatch_at` when the snapshot gives it, and when a stale reading was
+the scheduler holds new work on the pool (`hold`): "held: no new runs until
+HH:MM" with the date from `next_dispatch_at` when the snapshot gives it,
+and "running runs continue". A missing resume time is explicit; a past one
+says it was due to end and awaits a new reading, never promises a restart.
+The label also says when a stale reading was
 taken. Each row expands to the exact percentages, reset time and when it was
 observed. When the snapshot has a `mistral` object (the broker's requests and
 tokens since it started; it has no plan window, so no pace) a Mistral row

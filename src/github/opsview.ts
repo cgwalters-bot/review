@@ -401,9 +401,9 @@ export const poolStale = (pool: UsagePool, now: number): boolean => now - Date.p
  */
 export function poolStateWords(pool: UsagePool, now: number): { held: string; stale: HTMLElement | null } {
   // A time already past (a reading from before it, not since updated) is no end to promise.
-  const next = pool.nextDispatchAt && (Date.parse(pool.nextDispatchAt) > now ? ` until ${time(pool.nextDispatchAt)}` : ` (was due to end ${time(pool.nextDispatchAt)})`);
+  const next = pool.nextDispatchAt && (Date.parse(pool.nextDispatchAt) > now ? ` until ${clock(Date.parse(pool.nextDispatchAt))} (${time(pool.nextDispatchAt)})` : ` (was due to end ${time(pool.nextDispatchAt)}; awaiting a new reading)`);
   return {
-    held: !pool.hold ? "" : ` · new work held${next || ""}`,
+    held: !pool.hold ? "" : ` · held: no new runs${next || "; resume time not published"}; running runs continue`,
     stale: poolStale(pool, now) ? h("span", { class: "pool-stale" }, " · stale: read ", agoLabel(pool.observedAt, now)) : null,
   };
 }

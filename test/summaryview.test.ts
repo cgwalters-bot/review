@@ -10,7 +10,7 @@ import type { ActionRun, RunsData } from "../src/github/runs.ts";
 import { showView } from "../src/github/shell.ts";
 import { pageState } from "../src/github/state.ts";
 import { parseUsage, USAGE_MARKER } from "../src/github/usage.ts";
-import { time } from "../src/github/view.ts";
+import { clock, time } from "../src/github/view.ts";
 import { fixture, installDom } from "./helpers.ts";
 
 const win = installDom();
@@ -40,7 +40,7 @@ describe("the summary", () => {
     assert.equal(lines[2], "Scheduler mode and last passes not read: they are read when the ops detail is opened");
     assert.deepEqual(lines.slice(3), [
       "Claude 42% used · 52% of week gone · ~81% at reset · stale: read 23m ago",
-      `OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · new work held until ${time("2026-10-13T00:57:18.315Z")}`,
+      `OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`,
       "Mistral spend not published · $300 a month, 28% gone",
     ]);
     assert.ok(home.slots.summary.querySelectorAll("li")[4]!.classList.contains("hot"));
@@ -54,14 +54,14 @@ describe("the summary", () => {
     const held = pageState({ active: { warnings: [], at: NOW, usage: { state: "ok", usage: { ...usage, pools: { openai } } } }, runs }, NOW);
     fillSummary(home, { ...held, agents: { ...held.agents, executionKnown: true, unconfirmed: 7 } }, undefined, NOW);
     const lines = [...home.slots.summary.querySelectorAll("li")].map(text);
-    assert.match(lines[0]!, /^Agents \d+ running.* · 7 claimed or last seen, not confirmed running/);
-    assert.equal(lines[3], "OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · new work held");
+    assert.match(lines[0]!, /^Agents \d+ running.* · 7 unconfirmed: claimed or last seen, not confirmed running/);
+    assert.equal(lines[3], "OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · held: no new runs; resume time not published; running runs continue");
 
     // A dispatch time already past promises no end, and the reading's age says why.
     const later = Date.parse("2026-10-13T12:00:00Z");
     fillSummary(home, pageState({ active: { warnings: [], at: later, usage: { state: "ok", usage } }, runs }, later), undefined, later);
     const openaiLine = [...home.slots.summary.querySelectorAll("li")].map(text).find((l) => l.startsWith("OpenAI"));
-    assert.equal(openaiLine, `OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · new work held (was due to end ${time("2026-10-13T00:57:18.315Z")}) · stale: read 3d ago`);
+    assert.equal(openaiLine, `OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · held: no new runs (was due to end ${time("2026-10-13T00:57:18.315Z")}; awaiting a new reading); running runs continue · stale: read 3d ago`);
   });
 
   it("keeps its lines while what they say is unchanged, and says when usage can't be read", () => {
@@ -101,19 +101,22 @@ describe("the summary", () => {
       { piece: piece("Broker probe"), state: "ok", last: { url: "https://github.com/x", at: "2026-10-09T12:00:00Z", conclusion: "failure" } },
     ] };
     fillSummary(home, state, controller, NOW);
-    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run) · poll ok 5m ago · broker failure 2h ago");
+    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run): not starting runs · poll ok 5m ago · broker failure 2h ago");
     assert.match(home.slots.summary.querySelectorAll("li")[2]!.querySelector<HTMLElement>(".age")!.title, /^finished .*2026/);
     controller.pieces[2] = { ...controller.pieces[2]!, last: { url: "https://github.com/x", at: "2026-10-09T13:45:00Z", conclusion: "success" } };
     fillSummary(home, state, controller, NOW);
-    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run) · poll ok 5m ago · broker ok 15m ago");
+    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run): not starting runs · poll ok 5m ago · broker ok 15m ago");
     // Its usual state while tracker's BROKER_OUTAGE isn't apply: the job is skipped, not passed.
     controller.pieces[2] = { ...controller.pieces[2]!, last: { url: "https://github.com/x", at: "2026-10-09T13:45:00Z", conclusion: "skipped" } };
     fillSummary(home, state, controller, NOW);
-    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run) · poll ok 5m ago · broker skipped 15m ago");
+    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run): not starting runs · poll ok 5m ago · broker skipped 15m ago");
     // Not yet read (a workflow with no runs): said, not left out.
     controller.pieces[2] = { piece: piece("Broker probe"), state: "absent" };
     fillSummary(home, state, controller, NOW);
-    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run) · poll ok 5m ago · broker no pass");
+    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run): not starting runs · poll ok 5m ago · broker no pass");
+    controller.pieces[0]!.scheduler!.mode = "acting";
+    fillSummary(home, state, controller, NOW);
+    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board dispatching: starting new runs · poll ok 5m ago · broker no pass");
   });
 
   const agent = (name: string, more: Partial<ActiveAgent>): ActiveAgent => ({
