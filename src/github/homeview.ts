@@ -16,7 +16,8 @@ import type { Renderer } from "../markdown.ts";
 import type { Active, AgentSummary } from "./agents.ts";
 import { agentsBody, agentsSummary } from "./agentsview.ts";
 import { blockedBy, type Item } from "./board.ts";
-import type { Snapshot } from "./boardfeed.ts";
+import { boardStatus, STATUS_SECTION_HINT, STATUS_SECTION_TITLE, STATUS_SECTIONS } from "./boardstatus.ts";
+import { diffBoard, type Snapshot } from "./boardfeed.ts";
 import type { DispatchData } from "./dispatch.ts";
 import { dispatchPanel } from "./dispatchview.ts";
 import { type FeedOptions, feedSection } from "./boardfeedview.ts";
@@ -79,7 +80,10 @@ export interface Slots {
   /** The tracker's dispatch runs, live and recently finished. */
   dispatch: HTMLElement;
   freshness: HTMLElement;
+  /** The Status part: the sections computed from the board, then the posted update as a note. */
   status: HTMLElement;
+  statusComputed: HTMLElement;
+  statusNote: HTMLElement;
   focus: HTMLElement;
   needs: HTMLElement;
   decisionDocument: HTMLElement;
@@ -160,7 +164,9 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const weekly = h("section", { class: "usage-body weekly-usage", id: "weekly-usage", "aria-label": "Weekly subscription usage" }, h("h2", {}, "Weekly subscription usage"), h("p", { class: "note" }, "Reading usage…"));
   const needs = h("div", { class: "needs-slot" });
   const decisionDocument = h("div", { class: "decision-document-slot" });
-  const status = h("section", { class: "dashboard-status", "aria-label": "Status" }, h("h2", {}, "Status"));
+  const statusComputed = h("div", { class: "status-computed" }, h("p", { class: "note" }, "Reading the board…"));
+  const statusNote = h("div", { class: "status-note" });
+  const status = h("section", { class: "dashboard-status", "aria-label": "Status" }, h("h2", {}, "Status"), statusComputed, statusNote);
   const focus = h("section", { class: "dashboard-focus", "aria-label": "Focus" }, h("h2", {}, "Focus"));
   const runs = h("div", { class: "runs-slot", id: "live-runs" });
   const dispatch = h("div", { class: "dispatch-slot" }, dispatchPanel(undefined, 0));
@@ -200,7 +206,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details),
     freshness,
   );
-  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
+  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, statusComputed, statusNote, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
 }
 
 export function fillState(home: Home, state: PageState): void {
@@ -379,8 +385,12 @@ function fullTitles(slot: HTMLElement, board: readonly Item[] | undefined): void
   }
 }
 
+/**
+ * The posted status update, now only the coordinator's note under the
+ * computed status: its age, its first paragraph and "Expand".
+ */
 export function fillStatus(home: Home, status: ProjectStatus | null | undefined, render: Renderer, error?: string, now = Date.now(), board?: readonly Item[]): void {
-  const slot = home.slots.status;
+  const slot = home.slots.statusNote;
   const timestamp = status ? Date.parse(status.createdAt) : NaN;
   const interval = STATUS_INTERVAL;
   const age = () => {
@@ -397,7 +407,7 @@ export function fillStatus(home: Home, status: ProjectStatus | null | undefined,
     return;
   }
   slot.dataset.signature = JSON.stringify(status) ?? "";
-  slot.replaceChildren(h("h2", {}, "Status"));
+  slot.replaceChildren(h("h3", {}, "Coordinator's note"));
   if (!status) {
     slot.append(h("p", { class: "note" }, error ?? (status === null ? "No project status update yet." : "Reading project status…")));
     return;
@@ -415,6 +425,39 @@ export function fillStatus(home: Home, status: ProjectStatus | null | undefined,
   slot.append(h("p", { class: "note status-age" }), body, button);
   fullTitles(slot, board);
   age();
+}
+
+/** Rows per computed status section before its "View all". */
+export const STATUS_LIMIT = 10;
+
+const STATUS_ROW_CLASS = "status-row";
+
+/**
+ * The status sections computed from the board (boardstatus.ts), each
+ * with its count, full titles that wrap, and a fold past STATUS_LIMIT.
+ * Rebuilt only when what they list changed, so a focused link survives
+ * the page's periodic redraw.
+ */
+export function fillBoardStatus(home: Home, board: readonly Item[] | undefined, now: number): void {
+  const slot = home.slots.statusComputed;
+  if (!board) {
+    if (!slot.dataset.signature) slot.replaceChildren(h("p", { class: "note" }, "Reading the board…"));
+    return;
+  }
+  const computed = boardStatus(board, now);
+  const signature = JSON.stringify(STATUS_SECTIONS.map((id) => computed[id].map((i) => [i.nodeId, i.title, i.url, i.priority, i.status])));
+  if (slot.dataset.signature === signature) return;
+  slot.dataset.signature = signature;
+  slot.replaceChildren(...STATUS_SECTIONS.map((id) => {
+    const items = computed[id];
+    const list = h("div", { class: `status-list status-${id}` },
+      h("h3", {}, STATUS_SECTION_TITLE[id], " ", h("span", { class: COUNT_CLASS }, String(items.length)), h("span", { class: "sec-hint" }, ` · ${STATUS_SECTION_HINT[id]}`)),
+      items.length
+        ? h("ul", {}, ...items.map((i) => h("li", { class: STATUS_ROW_CLASS }, i.url ? h("a", { href: i.url }, i.title) : i.title, i.priority ? ` · ${i.priority}` : "", i.status ? ` · ${i.status}` : "")))
+        : h("p", { class: "note" }, "None."));
+    applyLimit(list, `status-${id}`, `.${STATUS_ROW_CLASS}`, STATUS_LIMIT);
+    return list;
+  }));
 }
 
 /**

@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { Active } from "../src/github/agents.ts";
 import type { Item } from "../src/github/board.ts";
-import { applyLimit, COUNT_CLASS, DECISION_LIMIT, fillAgents, fillFocus, fillStatus, focusStatus, fillNeeds, fillPriority, fillUsage, type Home, type HomeHooks, homeSkeleton, resetExpanded, reveal, setSectionOpen, stepRow, VIEW_ALL_CLASS, walkRows } from "../src/github/homeview.ts";
+import { boardStatus, type StatusSectionId } from "../src/github/boardstatus.ts";
+import { applyLimit, COUNT_CLASS, DECISION_LIMIT, fillAgents, fillBoardStatus, fillFocus, fillStatus, STATUS_LIMIT, focusStatus, fillNeeds, fillPriority, fillUsage, type Home, type HomeHooks, homeSkeleton, resetExpanded, reveal, setSectionOpen, stepRow, VIEW_ALL_CLASS, walkRows } from "../src/github/homeview.ts";
 import { buildNeeds } from "../src/github/needs.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
 import { needsSignature } from "../src/github/needsview.ts";
@@ -295,6 +296,66 @@ describe("operator dashboard", () => {
     fillStatus(later, status, render);
     fillStatus(later, status, render, undefined, Date.now(), board);
     assert.equal(later.slots.status.querySelector(`a[href="${TRACKER}/540"]`)?.textContent, full);
+  });
+
+  describe("status computed from the board", () => {
+    const now = Date.parse("2026-10-22T12:00:00Z");
+    const hours = (n: number) => new Date(now - n * 3_600_000).toISOString();
+    const long = "Cross-check ostreedev/ostree's CI against bootc's composefs tests, and say which of them it covers";
+    const board = [
+      tracked("waiting", 540, { title: long, priority: "P0", movedAt: hours(30), updatedAt: hours(30) }),
+      tracked("draft", 541, { status: "Draft", priority: "P1", movedAt: hours(2) }),
+      tracked("running", 542, { status: "In Progress", priority: "P2", movedAt: hours(48) }),
+      // Commented on an hour ago, but not moved on the board for two days.
+      tracked("commented-p0", 543, { status: "In Progress", priority: "P0", movedAt: hours(48), updatedAt: hours(1) }),
+      tracked("closed", 544, { status: "Done", priority: "P0", state: "closed", movedAt: hours(3) }),
+      tracked("stale-closed", 545, { status: "Needs human", priority: "P0", state: "closed", movedAt: hours(40) }),
+      tracked("merged", 547, { kind: "pr", status: "Draft", priority: "P0", state: "merged", movedAt: hours(40) }),
+      tracked("untimed", 546, { status: "Todo", priority: "P0" }),
+      // Without the board item's time, the issue's.
+      tracked("issue-time", 548, { status: "In Progress", priority: "P1", updatedAt: hours(5) }),
+      tracked("edge", 549, { status: "In Progress", priority: "P0", movedAt: hours(24) }),
+    ];
+    const CASES: { section: StatusSectionId; nodes: string[] }[] = [
+      // Newest first; closed and Done items count as changes; exactly 24 h is still in.
+      { section: "changed", nodes: ["draft", "closed", "issue-time", "edge"] },
+      { section: "inProgress", nodes: ["commented-p0", "edge", "issue-time", "running"] },
+      // Needs human and Draft, open only.
+      { section: "waiting", nodes: ["waiting", "draft"] },
+      // An unfinished P0 not moved in 24 h, whatever its comments; a P0 with no times is not guessed at.
+      { section: "atRisk", nodes: ["commented-p0", "waiting"] },
+    ];
+    for (const c of CASES) {
+      it(`lists ${c.section}`, () => {
+        assert.deepEqual(boardStatus(board, now)[c.section].map((i) => i.nodeId), c.nodes);
+      });
+    }
+
+    it("renders the four sections with full titles, folds past ten, and keeps them across an unchanged repaint", () => {
+      const home = homeSkeleton(hooks());
+      fillBoardStatus(home, undefined, now);
+      assert.match(text(home.slots.statusComputed), /Reading the board/);
+      // Without the item on the 24 h edge, a minute later lists the same items.
+      const many = [...board.filter((i) => i.nodeId !== "edge"), ...Array.from({ length: 12 }, (_, i) => tracked(`ask${i}`, 600 + i, { priority: "P3" }))];
+      fillBoardStatus(home, many, now);
+      const slot = home.slots.statusComputed;
+      assert.deepEqual([...slot.querySelectorAll("h3")].map((el) => el.firstChild?.textContent), ["Changed", "In progress", "Waiting on the operator", "At risk"]);
+      assert.equal(slot.querySelector(".status-waiting a")?.textContent, long);
+      assert.equal(text(slot.querySelector(".status-waiting .sec-count")), "14");
+      const waiting = slot.querySelector(".status-waiting")!;
+      assert.equal(waiting.querySelectorAll(".status-row:not([hidden])").length, STATUS_LIMIT);
+      const button = waiting.querySelector<HTMLButtonElement>(`.${VIEW_ALL_CLASS}`)!;
+      assert.equal(text(button), "View all 14");
+      button.click();
+      assert.equal(waiting.querySelectorAll(".status-row[hidden]").length, 0);
+      const row = slot.querySelector(".status-row");
+      fillBoardStatus(home, many, now + 60_000);
+      assert.equal(slot.querySelector(".status-row"), row);
+      // The posted update stays, below, as a note.
+      fillStatus(home, { body: "Note.", createdAt: hours(1) }, render, undefined, now, many);
+      assert.equal(text(home.slots.statusNote.querySelector("h3")), "Coordinator's note");
+      assert.ok(home.slots.statusComputed.compareDocumentPosition(home.slots.statusNote) & win.Node.DOCUMENT_POSITION_FOLLOWING);
+    });
   });
 
   it("previews the first paragraph even after a heading or list", () => {

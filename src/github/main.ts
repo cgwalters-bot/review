@@ -75,7 +75,7 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillAgents, fillChanges, fillDispatch, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { fillAgents, fillBoardStatus, fillChanges, fillDispatch, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadProposals, type Offered, plan, type Plan } from "./actions.ts";
 import { actionsPanel, proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
@@ -877,6 +877,7 @@ function paintActive(state: State): void {
   if (!state.home) return;
   const model = snapshot(state);
   fillAgents(state.home, state.active, Date.now(), model.agents);
+  fillBoardStatus(state.home, state.active?.board, Date.now());
   fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError, Date.now(), state.active?.board);
   fillFocus(state.home, state.active?.board ? model.focus : undefined);
   fillUsage(state.home, model.usage ?? undefined, state.active?.local, Date.now());

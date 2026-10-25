@@ -323,7 +323,11 @@ Questions retain their inline answer forms and draft protection. Reviews
 open the existing head-checked review pane; **Write text** on an escalation
 opens its GitHub issue.
 
-**Status** renders the newest ProjectV2 status update as sanitized Markdown,
+**Status** is computed from the board as read: Changed (moved in the last
+24 hours, newest first), In progress, Waiting on the operator (Needs human or
+Draft) and At risk (an unfinished P0 not moved in 24 hours), each complete,
+with full titles, and folded past ten rows. Below them, the newest ProjectV2
+status update is the coordinator's note, rendered as sanitized Markdown,
 showing only its first paragraph until Expand. Issue references link to GitHub
 (bare `#N` uses the configured tracker repository); code and existing links are
 left alone. HTML comments, such as the writer's marker, are hidden as on
