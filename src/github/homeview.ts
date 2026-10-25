@@ -7,6 +7,7 @@
 // before "View all".
 
 import { h } from "../dom.ts";
+import { chatButton, chatItem } from "./chatitem.ts";
 import { TRACKER_REPO } from "./config.ts";
 import { DECISIONS_CONFIG } from "./decisiondocument.ts";
 import { CONTROLLER, parseControllerConfig } from "./controller.ts";
@@ -501,6 +502,8 @@ export function fillFocus(home: Home, board: readonly Item[] | undefined): void 
     const paused = epic.status === "Paused" || epic.verdict?.toLowerCase() === "park";
     const status = focusStatus(epic, board);
     const row = h("article", { class: `focus-epic${paused ? " paused" : ""}` }, h("h3", {}, epic.priority ? `${epic.priority} · ` : "", h("a", { href: epic.url ?? "#" }, epic.title)), h("p", {}, epic.subIssues ? `${epic.subIssues.completed}/${epic.subIssues.total} complete` : "Progress not reported", " · ", h("span", { class: `focus-status${status.bug ? " state bug" : ""}` }, status.text)));
+    const chat = chatButton(chatItem(epic.url, epic.title, epic.engine));
+    if (chat) row.append(chat);
     if (epic.subIssues) row.append(h("progress", { max: String(epic.subIssues.total), value: String(epic.subIssues.completed), "aria-label": `${epic.title} progress` }));
     const children = board.filter((i) => live(i) && i.status === "In Progress" && i.parent && epic.ref && refKey(i.parent).toLowerCase() === refKey(epic.ref).toLowerCase());
     row.append(h("ul", {}, ...children.map((i) => h("li", {}, h("a", { href: i.url ?? "#" }, i.title), i.lead ? ` · ${i.lead}` : "", " · running"))));

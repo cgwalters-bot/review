@@ -6,6 +6,7 @@ import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, fillInbox, holdsDr
 import type { Item } from "../src/github/board.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
+import { ITEM_CHAT_EVENT, type ChatItem } from "../src/github/chatitem.ts";
 
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
@@ -40,6 +41,32 @@ const drafts: [string, (card: HTMLElement) => void][] = [
 ];
 
 describe("fillInbox", () => {
+  it("adds Chat to cards without consuming their unsent forms", () => {
+    const list = document.createElement("div");
+    fillInbox(list, [question(), documentCard(parseDocument("### D1 Pick one\nAbout: o/r#2\n- [ ] A) This\nReply:\n")[0]!, undefined)!], hooks);
+    assert.equal(list.querySelectorAll("button.item-chat").length, 2);
+    const card = cardOf(list, "item:I_1")!;
+    card.querySelector("textarea")!.value = "Unsent answer";
+    card.querySelector<HTMLButtonElement>(".item-chat")!.click();
+    assert.equal(card.querySelector("textarea")!.value, "Unsent answer");
+    assert.equal(card.querySelector<HTMLButtonElement>(".item-chat")!.type, "button");
+  });
+
+  it("keeps the board item's pool in Answer and Approve chat requests", () => {
+    for (const kind of ["answer", "approve"] as const) {
+      const c = question();
+      assert.ok(c.kind === "answer");
+      c.need.entry!.item!.engine = "openai";
+      const list = document.createElement("div");
+      fillInbox(list, [{ ...c, kind }], hooks);
+      let item: ChatItem | undefined;
+      list.addEventListener(ITEM_CHAT_EVENT, (e) => { item = (e as CustomEvent<ChatItem>).detail; });
+      list.querySelector<HTMLButtonElement>(".item-chat")!.click();
+      assert.equal(item?.pool, "openai");
+      assert.equal(item?.ref, "o/r#1");
+    }
+  });
+
   it("leaves an unchanged card as the node it is, and redraws a changed one with nothing typed", () => {
     const list = document.createElement("div");
     fillInbox(list, [entry("D1"), entry("D2")], hooks);

@@ -2402,7 +2402,6 @@ function showCapture(state: State): void {
     if (chat) {
       const chatSlot = byId("chat");
       chat.mount(chatSlot);
-      chatSlot.hidden = false;
     }
   }
   keptChat = undefined;

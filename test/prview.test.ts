@@ -87,6 +87,7 @@ const codeRows = (root: Element) =>
 describe("prView", () => {
   it("shows untrusted text as text, and drops the bot-meta section", () => {
     const { el } = pane(detail());
+    assert.equal(el.querySelector("button.item-chat")?.textContent, "Chat");
     assertNoActiveContent(el);
     const text = el.textContent ?? "";
     assert.ok(text.includes(`widget: ${EVIL}`));

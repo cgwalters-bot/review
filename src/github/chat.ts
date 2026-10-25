@@ -1,4 +1,4 @@
-// The session chat pane, atop the page: start (or find) a session run of a
+// The item chat drawer: start (or find) a session run of a
 // configured workflow, wait for its bridge, and talk to it over ACP.
 //
 // A session run serves one ACP client over a WebSocket in the tailnet; when
@@ -9,9 +9,12 @@
 import { h } from "../dom.ts";
 import { GitHubError, type GitHub } from "./api.ts";
 import { CHAT_CONFIG, DEFAULT_REF, chatEndpoint, type ChatConfig, type ChatSource } from "./chatconfig.ts";
+import { ITEM_CHAT_EVENT, chatItem, publicItemRef, sessionInputs, type ChatItem } from "./chatitem.ts";
+import { OPERATOR } from "./config.ts";
 
 export interface ChatPanel {
   mount(slot: HTMLElement): void;
+  open(item: ChatItem): void;
   dispose(): void;
   /** Whether a session is attached: disposing would end its run. */
   attached(): boolean;
@@ -57,6 +60,9 @@ export interface LiveRun {
   endpoint?: string;
   /** Where the run is, from its jobs' steps, for the status line. */
   stage: RunStage;
+  items: string[];
+  createdAt?: string;
+  actor?: string;
 }
 
 /**
@@ -190,7 +196,7 @@ export async function findLiveRuns(gh: GitHub, config: ChatConfig, sources: read
   const live: LiveRun[] = [];
   for (const source of sources) {
     const base = `/repos/${source.repo}`;
-    const runs = await gh.get<{ workflow_runs: { id: number; run_attempt?: number; status: string; display_title: string }[] }>(
+    const runs = await gh.get<{ workflow_runs: { id: number; run_attempt?: number; status: string; display_title: string; created_at?: string; actor?: { login: string } }[] }>(
       `${base}/actions/workflows/${source.workflow}/runs?per_page=${RUNS_PER_PAGE}&exclude_pull_requests=true`);
     const found = runs.data.workflow_runs.slice(0, RUNS_PER_PAGE).filter((r) => Number.isSafeInteger(r.id) && LIVE_STATUSES.has(r.status));
     if (!found.length) continue;
@@ -204,9 +210,14 @@ export async function findLiveRuns(gh: GitHub, config: ChatConfig, sources: read
       // A run held as waiting or pending may still have its agent job up.
       const stage: RunStage = listed.phase === "preparing" && run.status !== "in_progress" ? { phase: "queued" } : listed;
       const named = publishedEndpoint(comments.data, source, url, config.tailnetDomain);
+      const items = [...new Set(comments.data.slice(-100).filter((c) => (c.user?.login === source.publisher || c.user?.login === OPERATOR) && typeof c.body === "string" && c.body.length <= MAX_COMMENT && c.body.match(/https:\/\/[^\s<>\x60)\]]+/g)?.some((u) => u === url))
+        .flatMap((c) => [
+          ...(c.body.match(/[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+#[1-9]\d{0,9}(?!\d)/g) ?? []).map(publicItemRef),
+          ...(c.body.match(/https:\/\/github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull)\/[1-9]\d{0,9}(?!\d)/g) ?? []).map((u) => chatItem(u, "")?.ref),
+        ]).filter((r): r is string => !!r))];
       const endpoint = stage.phase === "working" ? named ?? derivedEndpoint(run.id, attempt, config.tailnetDomain)
         : stage.phase === "preparing" || stage.phase === "queued" ? named : undefined;
-      live.push({ source, id: run.id, attempt, status: run.status, title: String(run.display_title ?? ""), url, stage, ...(endpoint ? { endpoint } : {}) });
+      live.push({ source, id: run.id, attempt, status: run.status, title: String(run.display_title ?? ""), url, stage, items, ...(run.created_at ? { createdAt: run.created_at } : {}), ...(run.actor ? { actor: run.actor.login } : {}), ...(endpoint ? { endpoint } : {}) });
     }
   }
   return live;
@@ -216,17 +227,22 @@ export async function findLiveRuns(gh: GitHub, config: ChatConfig, sources: read
  * Dispatch a source's workflow. GitHub answers 204, or 200 with the new
  * run's id when it chooses to say; the id is returned when given.
  */
-export async function dispatchSession(gh: GitHub, source: ChatSource): Promise<number | undefined> {
+export async function dispatchSession(gh: GitHub, source: ChatSource, item: ChatItem): Promise<number | undefined> {
   const path = `/repos/${source.repo}/actions/workflows/${source.workflow}/dispatches`;
   const ref = source.ref ?? DEFAULT_REF;
+  const inputs = sessionInputs(item);
+  // A reference to a private repository is private too; workflow inputs are public.
+  const repo = item.ref.split("#")[0]!;
+  const visibility = await gh.get<{ private: boolean }>(`/repos/${repo}`);
+  if (visibility.data.private !== false) throw new Error("Chat workflow prompts require a public repository reference.");
   try {
     let res: { workflow_run_id?: unknown } | undefined;
     try {
-      res = await gh.send("POST", path, { ref, return_run_details: true });
+      res = await gh.send("POST", path, { ref, inputs, return_run_details: true });
     } catch (e) {
       // A 422 dispatched nothing; it may be an API without return_run_details, so ask once more without it.
       if (!(e instanceof GitHubError && e.status === 422)) throw e;
-      res = await gh.send("POST", path, { ref });
+      res = await gh.send("POST", path, { ref, inputs });
     }
     const id = res?.workflow_run_id;
     return typeof id === "number" && Number.isSafeInteger(id) ? id : undefined;
@@ -313,10 +329,13 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
   let cleanup = () => {};
   let isAttached = () => false;
   let disposed = false;
-  return { dispose() { disposed = true; cleanup(); }, attached: () => !disposed && isAttached(), useGitHub(next) { gh = next; }, mount(slot) {
+  let open = (_item: ChatItem) => {};
+  return { open(item) { open(item); }, dispose() { disposed = true; cleanup(); }, attached: () => !disposed && isAttached(), useGitHub(next) { gh = next; }, mount(slot) {
     if (disposed) return;
     const doc = slot.ownerDocument;
     const pane = h("section", { class: "chat-panel", "aria-label": "Session chat" });
+    const title = h("h2");
+    let item: ChatItem | undefined;
     const badge = h("span", { class: "chat-state" });
     const sourceSelect = h("select", { "aria-label": "Session workflow" }, ...config.sources.map((s, i) => h("option", { value: String(i) }, `${s.repo} ${s.workflow}`)));
     sourceSelect.hidden = config.sources.length < 2;
@@ -324,6 +343,9 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     const check = h("button", { type: "button", class: "small" }, "Check");
     const full = h("button", { type: "button", class: "small", "aria-pressed": "false" }, "Full screen");
     const disconnect = h("button", { type: "button", class: "small" }, "Disconnect");
+    const existing = h("button", { type: "button", class: "small" }, "Attach existing session");
+    const end = h("button", { type: "button", class: "small" }, "End run");
+    const close = h("button", { type: "button", class: "small" }, "Close drawer");
     const status = h("p", { class: "status chat-status", role: "status" });
     const runLink = h("a", { class: "chat-run", target: "_blank", rel: "noopener" });
     const log = h("div", { class: "chat-log", role: "log", "aria-live": "polite" });
@@ -338,7 +360,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     let armed = false;
     let run: LiveRun | undefined;
     /** Set while the run we wait for is one we dispatched: when, and its id once known. */
-    let dispatched: { at: number; id?: number } | undefined;
+    let dispatched: { at: number; source: ChatSource; id?: number; published?: boolean } | undefined;
     /** Runs whose session this tab ended or saw end: never attach to them again. */
     const finished = new Set<number>();
     let client: AcpClient | undefined;
@@ -362,18 +384,23 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     const say = (text: string) => { status.textContent = text; };
 
     const controls = () => {
+      const other = !!run && !!item && !run.items.includes(item.ref) && run.id !== dispatched?.id;
       pane.dataset.state = state;
       badge.dataset.state = state;
       badge.textContent = state === "none" || armed || state === "connected" || state === "ended" ? STATE_TEXT[state] : `${STATE_TEXT[state]} · not attached`;
       const attachable = !armed && !client && run !== undefined && (state === "starting" || state === "waiting");
       start.textContent = attachable ? "Attach" : state === "ended" ? "Start again" : "Start session";
-      start.disabled = working || armed || !!client;
+      start.disabled = working || armed || !!client || other;
+      existing.hidden = !other || armed || !!client;
+      end.hidden = !run || !!client || state === "ended";
+      existing.disabled = end.disabled = working;
       check.disabled = working || armed || !!client;
       sourceSelect.disabled = armed || !!client;
       disconnect.hidden = state !== "connected";
       send.disabled = state !== "connected" || busy;
       cancel.disabled = state !== "connected" || !(busy || refused);
-      input.disabled = state !== "connected";
+      // A draft kept past its session stays editable, so it can be cleared.
+      input.disabled = state !== "connected" && !input.value;
       if (run) { runLink.href = run.url; runLink.textContent = `Run ${run.id}${run.title ? `: ${run.title}` : ""}`; runLink.hidden = false; }
       else runLink.hidden = true;
       body.hidden = state === "none" && !log.childElementCount && !pane.classList.contains("chat-full");
@@ -430,9 +457,29 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
      * queued behind it), else the newest.
      */
     const detect = async (): Promise<LiveRun | undefined> => {
-      const runs = (await findLiveRuns(gh, config, [source()])).filter((r) => !finished.has(r.id));
+      const runs = (await findLiveRuns(gh, config)).filter((r) => !finished.has(r.id));
       const want = run?.id ?? dispatched?.id;
-      return runs.find((r) => r.id === want) ?? runs.findLast((r) => r.status === "in_progress") ?? runs[0];
+      if (dispatched) {
+        const d = dispatched;
+        // Older APIs return only 204, naming no run. A new run by the operator
+        // may then be another tab's dispatch, so it is only offered, never
+        // pinned or associated: poll hands the choice to Attach existing session.
+        if (d.id === undefined) {
+          return runs.find((r) => r.source.repo === d.source.repo && r.source.workflow === d.source.workflow
+            && r.actor === OPERATOR && Date.parse(r.createdAt ?? "") >= Math.floor(d.at / 1000) * 1000);
+        }
+        const found = runs.find((r) => r.id === d.id);
+        if (found && !run) run = found;
+        if (found && item && !disposed && dispatched === d && !found.items.includes(item.ref)) {
+          // session.yml publishes the endpoint, not its prompt. Keep the item
+          // association on that same issue, as the operator, for future Attach.
+          if (!d.published) await gh.send("POST", `/repos/${found.source.repo}/issues/${found.source.issue}/comments`, { body: `Context: ${item.ref}.\n\nSession: ${found.url}` });
+          d.published = true;
+          found.items.push(item.ref);
+        }
+        return found;
+      }
+      return (armed || client ? runs.find((r) => r.id === want) : undefined) ?? runs.find((r) => r.items.includes(item?.ref ?? "")) ?? runs.findLast((r) => r.status === "in_progress") ?? runs[0];
     };
 
     /** Show what is live without attaching: on mount and on Check. */
@@ -444,7 +491,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
         if (gen !== generation || disposed) return;
         run = found;
         if (!found) go(state === "ended" ? "ended" : "none", state === "ended" ? status.textContent ?? "" : "No session is running. Start one to talk to it.");
-        else go(found.endpoint ? "waiting" : "starting", `A session run is ${found.status.replace("_", " ")}. ${found.stage.phase === "queued" ? "" : `${stageText(found)} `}Attach to talk to it; while attached, leaving or disconnecting ends it.`);
+        else go(found.endpoint ? "waiting" : "starting", !found.items.includes(item?.ref ?? "") ? "A session is live about another or unknown item. Attach existing session or end its run before starting another." : `A session run is ${found.status.replace("_", " ")}. ${found.stage.phase === "queued" ? "" : `${stageText(found)} `}Attach to talk to it; while attached, leaving or disconnecting ends it.`);
       } catch (e) { if (gen === generation) say(message(e)); }
       finally { if (gen === generation) { working = false; controls(); } }
     };
@@ -466,6 +513,11 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       if (gen !== generation || disposed) return;
       if (read && run && found?.id !== run.id) {
         endRun("The run finished before its session could be reached.");
+        return;
+      }
+      if (found && dispatched && dispatched.id === undefined) {
+        armed = false; dispatched = undefined; run = found;
+        go(found.endpoint ? "waiting" : "starting", "GitHub didn't say which run this dispatch started, and another tab may have started one. If the linked run is yours, Attach existing session; otherwise Check again.");
         return;
       }
       if (found) {
@@ -563,7 +615,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     };
 
     start.onclick = async () => {
-      if (armed || client || disposed) return;
+      if (armed || client || disposed || !item) return;
       const gen = ++generation;
       armed = true; working = true;
       log.replaceChildren(); chars = 0; tools.clear(); current = undefined;
@@ -572,13 +624,19 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
         const found = await detect();
         if (gen !== generation || disposed) return;
         run = found;
+        if (found && !found.items.includes(item.ref) && found.id !== dispatched?.id) {
+          armed = false;
+          go(found.endpoint ? "waiting" : "starting", "A session is already live. Attach existing session or end its run first.");
+          return;
+        }
         if (found?.endpoint) wait(gen);
         else if (found) startPolling(gen, `${stageText(found)} Not connecting yet: waiting for its session endpoint…`);
         else {
           const src = source();
-          const id = await dispatchSession(gh, src);
+          const at = Date.now();
+          const id = await dispatchSession(gh, src, item);
           if (gen !== generation || disposed) return;
-          dispatched = { at: Date.now(), ...(id !== undefined ? { id } : {}) };
+          dispatched = { at, source: src, ...(id !== undefined ? { id } : {}) };
           startPolling(gen, `Dispatched ${src.workflow} on ${src.repo}; waiting for the run to start…`);
         }
       } catch (e) {
@@ -590,6 +648,29 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       }
     };
     check.onclick = () => void look();
+    existing.onclick = () => {
+      if (!run || working || armed || client) return;
+      item = { ref: run.items[0] ?? item!.ref, title: run.title || `Run ${run.id}` };
+      title.textContent = item.title;
+      // Explicitly attaching an unknown-context run must not dispatch another.
+      run.items = [...run.items, item.ref];
+      armed = true;
+      const gen = ++generation;
+      if (run.endpoint) wait(gen); else startPolling(gen, "Waiting for the existing session…");
+    };
+    end.onclick = async () => {
+      if (!run || working || client || !confirm("End this live session run?")) return;
+      ++generation; clearTimeout(timer); armed = false;
+      working = true; controls();
+      try {
+        await gh.send("POST", `/repos/${run.source.repo}/actions/runs/${run.id}/cancel`);
+        dispatched = undefined;
+        say("Cancellation requested. Check again once the run ends.");
+      }
+      catch (e) { say(message(e)); }
+      finally { working = false; controls(); }
+    };
+    close.onclick = () => { setFull(false); slot.hidden = true; };
     disconnect.onclick = () => { if (client && confirm("Disconnect and end this session run?")) client.socket.close(); };
     cancel.onclick = () => { try { client?.cancel(); refused = false; say("Cancel sent"); } catch (e) { say(message(e)); } controls(); };
     form.onsubmit = async (event) => {
@@ -616,18 +697,17 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     // on the hidden page); typing and buttons keep their default actions.
     // The pane has no key handlers of its own. Otherwise keys are left alone.
     const onKey = (ev: KeyboardEvent) => {
-      if (!pane.classList.contains("chat-full")) return;
+      if (slot.hidden || (!pane.classList.contains("chat-full") && !pane.contains(ev.target as Node))) return;
       ev.stopPropagation();
       if (ev.key !== "Escape" || ev.isComposing) return;
       ev.preventDefault();
-      setFull(false);
+      if (pane.classList.contains("chat-full")) setFull(false);
+      else slot.hidden = true;
     };
     const setFull = (on: boolean) => {
       pane.classList.toggle("chat-full", on);
       full.setAttribute("aria-pressed", String(on));
       full.textContent = on ? "Exit full screen" : "Full screen";
-      if (on) doc.addEventListener("keydown", onKey, true);
-      else doc.removeEventListener("keydown", onKey, true);
       controls();
     };
     full.onclick = () => setFull(!pane.classList.contains("chat-full"));
@@ -642,17 +722,36 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       clearTimeout(timer);
       doc.removeEventListener("keydown", onKey, true);
       win?.removeEventListener("beforeunload", onUnload);
+      doc.removeEventListener(ITEM_CHAT_EVENT, onItem);
       client?.socket.close(); client = undefined;
       slot.replaceChildren(); slot.hidden = true;
     };
 
     pane.append(
-      h("div", { class: "chat-head" }, h("h2", {}, "Session chat"), badge),
-      h("div", { class: "chat-bar" }, sourceSelect, start, check, full, disconnect),
+      h("div", { class: "chat-head" }, title, badge, close),
+      h("div", { class: "chat-bar" }, sourceSelect, start, check, full, disconnect, existing, end),
       h("p", { class: "note" }, "Uses your tailnet login, never your GitHub token. One client per session: leaving or disconnecting ends the run."),
       status, runLink, body,
     );
-    slot.replaceChildren(pane); controls();
-    void look();
+    open = (next) => {
+      if (disposed || !publicItemRef(next.ref)) return;
+      slot.hidden = false;
+      if (item?.ref !== next.ref && (armed || client || dispatched)) {
+        say("Finish or disconnect the current session before chatting about another item. Your draft is kept.");
+      } else if (item?.ref !== next.ref && input.value.trim()) {
+        controls();
+        say("Copy or clear your unsent draft before chatting about another item.");
+      } else if (item?.ref !== next.ref) {
+        item = { ...next, ref: publicItemRef(next.ref)! };
+        title.textContent = next.title;
+        run = undefined;
+        void look();
+      }
+      start.focus();
+    };
+    const onItem = (event: Event) => open((event as CustomEvent<ChatItem>).detail);
+    doc.addEventListener(ITEM_CHAT_EVENT, onItem);
+    doc.addEventListener("keydown", onKey, true);
+    slot.replaceChildren(pane); slot.hidden = true; controls();
   } };
 }
