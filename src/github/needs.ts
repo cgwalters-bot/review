@@ -66,10 +66,13 @@ function actionOf(e: Entry): NeedAction | "none" {
   const item = e.item;
   if (!item || item.kind === "draft" || item.state !== "open") return "none";
   if (isQuestion(item)) return askProblem(item, "question") === undefined ? "answer" : "none";
-  if (item.labels.includes("escalate") && item.assignees.includes(OPERATOR)) return "write";
+  if (item.labels.includes("needs-human") || (item.labels.includes("escalate") && item.assignees.includes(OPERATOR))) return "write";
   // Legacy review/chore asks and inferred board blockers are Watching.
   return "none";
 }
+
+/** The bot's `escalate`, or the `needs-human` the scheduler holds an item on. */
+const handedOff = (item: Item) => item.labels.some((l) => l === "escalate" || l === "needs-human");
 
 function needOf(e: Entry, parent: Entry | undefined): Need | undefined {
   const action = actionOf(e);
@@ -78,7 +81,7 @@ function needOf(e: Entry, parent: Entry | undefined): Need | undefined {
   const why = e.pr ? action === "promote" ? "You approved the current head; send /promote to publish it upstream." : action === "write" ? "You approved the current head; the upstream human-text policy requires your title, description and commit messages." : "Your review is requested for the current, unreviewed head." : e.item?.why;
   if (why) n.why = why;
   if (e.pr && action === "promote") n.href = e.pr.url;
-  if (e.item?.labels.includes("escalate") && e.item.url) n.href = e.item.url;
+  if (e.item && handedOff(e.item) && e.item.url) n.href = e.item.url;
   const priority = effectivePriority(e);
   if (priority) n.priority = priority;
   const since = e.pr ? e.wait?.askedAt : e.since;
@@ -131,7 +134,7 @@ export function buildNeeds(input: NeedsInput): Need[] {
   const listed = new Set(input.entries.flatMap((e) => [e, ...(e.children ?? [])]).filter((e) => e.kind !== "pr").map((e) => e.item?.nodeId));
   for (const item of board) {
     const since = waitingSince(item);
-    if (!listed.has(item.nodeId) && item.labels.includes("escalate") && item.ref) push({ key: `item:${item.nodeId}`, kind: "item", title: item.title, where: refKey(item.ref), href: `#item/${item.nodeId}`, item, ...(item.priority ? { priority: item.priority } : {}), ...(since ? { since } : {}) }, undefined);
+    if (!listed.has(item.nodeId) && handedOff(item) && item.ref) push({ key: `item:${item.nodeId}`, kind: "item", title: item.title, where: refKey(item.ref), href: `#item/${item.nodeId}`, item, ...(item.priority ? { priority: item.priority } : {}), ...(since ? { since } : {}) }, undefined);
   }
   const questions = new Map(out.concat(done).flatMap((n) => (n.action === "answer" && issueKey(n.entry?.item) ? [[issueKey(n.entry?.item) as string, n] as const] : [])));
   for (const d of input.decisions ?? []) {

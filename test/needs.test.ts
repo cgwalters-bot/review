@@ -110,6 +110,12 @@ describe("representative operator asks", () => {
     assert.deepEqual(buildNeeds({ entries: [{ ...base, item, wait: { reasons: [], onBot: true } }], board: [item] }).map((n) => n.key), ["item:context"]);
   });
 
+  it("lists an item the scheduler holds for him, assigned or not", () => {
+    const held = tracked("held", 98, { labels: ["needs-human"], priority: "P1", assignees: [] });
+    const design = tracked("design", 99, { labels: ["needs-design"], assignees: [] });
+    assert.deepEqual(buildNeeds({ entries: [], board: [held, design] }).map((n) => n.key), ["item:held"]);
+  });
+
   it("ages an escalation by its last move on the board, not its issue's creation", () => {
     const moved = tracked("moved", 96, { labels: ["escalate"], createdAt: "2026-07-01T00:00:00Z", movedAt: "2026-10-20T00:00:00Z" });
     const unknown = tracked("unknown", 97, { labels: ["escalate"], createdAt: "2026-07-01T00:00:00Z" });
