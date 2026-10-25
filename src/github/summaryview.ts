@@ -48,7 +48,7 @@ function agentsLine(state: PageState, targets: SummaryTargets): HTMLElement {
   for (const a of running) by.set(poolOf(a), (by.get(poolOf(a)) ?? 0) + 1);
   // Unconfirmed: a board claim or a sighting with no current run or
   // heartbeat behind it, so not counted as running (see agents.ts).
-  line.append(`${running.length} running`, by.size ? ` (${[...by].map(([pool, n]) => `${pool} ${n}`).join(", ")})` : "", s.unconfirmed ? ` · ${s.unconfirmed} claimed or last seen, not confirmed running` : "");
+  line.append(`${running.length} running`, by.size ? ` (${[...by].map(([pool, n]) => `${pool} ${n}`).join(", ")})` : "", s.unconfirmed ? ` · ${s.unconfirmed} unconfirmed: claimed or last seen, not confirmed running` : "");
   running.slice(0, AGENTS_LINKED).forEach((a) => {
     line.append(" · ", link(a.runUrl ?? a.itemUrl, a.itemRef ?? a.name));
   });
@@ -76,7 +76,7 @@ function schedulerLine(controller: ControllerData | undefined, now: number, targ
   const board = piece("Board scheduler");
   const mode = board?.scheduler?.mode;
   line.append(
-    `board ${mode === "acting" ? "dispatching" : mode === "preview" ? "previewing (dry run)" : "mode unknown"}`,
+    `board ${mode === "acting" ? "dispatching: starting new runs" : mode === "preview" ? "previewing (dry run): not starting runs" : "mode unknown"}`,
     " · poll ", ...pass(piece("Poll")),
     " · broker ", ...pass(piece("Broker probe")),
   );
