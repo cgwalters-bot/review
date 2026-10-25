@@ -11,8 +11,9 @@
 // which would silently reset the feed. The board is public, so nothing
 // private is kept.
 
-import { type Item, PRIORITY_ORDER } from "./board.ts";
+import { type Item } from "./board.ts";
 import { DONE } from "./config.ts";
+import { priorityRank } from "./queue.ts";
 import { load, save } from "./store.ts";
 
 const SNAPSHOT_KEY = "board.seen";
@@ -78,13 +79,6 @@ export function snapshotOf(items: readonly Item[], at: number): Snapshot {
   return { v: SNAPSHOT_VERSION, at, items: Object.fromEntries(items.map((i) => [i.nodeId, stateOf(i)])) };
 }
 
-/** A priority's rank: P0 first, then unknown ones, then none. */
-function rank(p: string | undefined): number {
-  if (p === undefined) return PRIORITY_ORDER.length + 1;
-  const i = PRIORITY_ORDER.indexOf(p);
-  return i < 0 ? PRIORITY_ORDER.length : i;
-}
-
 const fromTo = (from: string | undefined, to: string | undefined): Pick<Change, "from" | "to"> => ({
   ...(from === undefined ? {} : { from }),
   ...(to === undefined ? {} : { to }),
@@ -97,7 +91,7 @@ export function changesOf(prev: ItemState, cur: ItemState): Change[] {
     out.push({ kind: cur.status === DONE ? "done" : "status", ...fromTo(prev.status, cur.status) });
   }
   if (prev.priority !== cur.priority) {
-    out.push({ kind: "priority", dir: rank(cur.priority) < rank(prev.priority) ? "up" : "down", ...fromTo(prev.priority, cur.priority) });
+    out.push({ kind: "priority", dir: priorityRank(cur.priority) < priorityRank(prev.priority) ? "up" : "down", ...fromTo(prev.priority, cur.priority) });
   }
   if (prev.lead !== cur.lead) out.push({ kind: "lead", ...fromTo(prev.lead, cur.lead) });
   if (prev.news !== cur.news && cur.news !== undefined) out.push({ kind: "news", ...fromTo(prev.news, cur.news) });

@@ -11,7 +11,7 @@
 import type { Active } from "./agents.ts";
 import { CacheMiss, GitHubError, type GitHub } from "./api.ts";
 import { loadWholeBoard } from "./backend.ts";
-import { type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
+import { type Item, priorityIndex } from "./board.ts";
 import {
   AGENT_WORKFLOW,
   BOT_LOGIN,
@@ -327,11 +327,6 @@ export interface WorkGroup {
   items: Item[];
 }
 
-function priorityRank(p: string | undefined): number {
-  const i = PRIORITY_ORDER.indexOf(p ?? NO_PRIORITY);
-  return i < 0 ? PRIORITY_ORDER.length : i;
-}
-
 /** In Progress items by scope (upstream, the bot's own, no org), each by priority then most recently updated. */
 export function workGroups(items: readonly Item[]): WorkGroup[] {
   const groups: WorkGroup[] = [
@@ -345,7 +340,7 @@ export function workGroups(items: readonly Item[]): WorkGroup[] {
     g?.items.push(item);
   }
   for (const g of groups) {
-    g.items.sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+    g.items.sort((a, b) => priorityIndex(a.priority) - priorityIndex(b.priority) || (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
   }
   return groups.filter((g) => g.items.length > 0);
 }

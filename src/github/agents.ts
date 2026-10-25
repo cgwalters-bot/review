@@ -1,7 +1,7 @@
 // Execution evidence comes from live Actions runs and fresh heartbeat jobs.
 // The board supplies context, never proof that a claimed agent still runs.
 
-import { type Item, parseIssueUrl, PRIORITY_ORDER, repoOf } from "./board.ts";
+import { type Item, parseIssueUrl, priorityIndex, repoOf } from "./board.ts";
 import { AGENT_TARGET, IN_PROGRESS, TRACKER_REPO } from "./config.ts";
 import { isOwnOrg, itemOrg } from "./filter.ts";
 import { type Heartbeat, isStale } from "./heartbeat.ts";
@@ -123,13 +123,8 @@ function itemFor(url: string, board: readonly Item[]): Item | undefined {
   return candidates.find(isClaimed) ?? candidates[0];
 }
 
-function rank(p: string | undefined): number {
-  const i = PRIORITY_ORDER.indexOf(p ?? "");
-  return i < 0 ? PRIORITY_ORDER.length : i;
-}
-
 function byPriorityThenAge(a: ActiveAgent, b: ActiveAgent): number {
-  return rank(a.priority) - rank(b.priority) || (a.since ?? "￿").localeCompare(b.since ?? "￿") || a.name.localeCompare(b.name);
+  return priorityIndex(a.priority) - priorityIndex(b.priority) || (a.since ?? "￿").localeCompare(b.since ?? "￿") || a.name.localeCompare(b.name);
 }
 
 /** Repository plus numeric run id; attempts, query strings and fragments aren't new agents. */
