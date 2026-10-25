@@ -3,6 +3,7 @@
 // runs that finished in the last few hours with their result.
 
 import { h, link } from "../dom.ts";
+import { chatButton, chatItem } from "./chatitem.ts";
 import { FINISHED_MS, type DispatchData, type DispatchRun } from "./dispatch.ts";
 import { age, time } from "./view.ts";
 
@@ -41,7 +42,7 @@ function liveCard(run: DispatchRun, now: number): HTMLElement {
     h("div", { class: "dr-head" }, h("span", { class: "dr-dot", "aria-hidden": "true" }), ...heading(run),
       h("span", { class: "age", title: `started ${time(run.startedAt)}` }, age(run.startedAt, now))),
     stepLine(run, now),
-    h("p", { class: "dr-links" }, `${run.status} · `, link(run.url, "run ↗")),
+    h("p", { class: "dr-links" }, `${run.status} · `, link(run.url, "run ↗"), chatButton(chatItem(itemUrl(run), run.target ? `${run.target.owner}/${run.target.repo}#${run.target.number}` : run.title, run.target?.pool))),
   );
 }
 
@@ -57,7 +58,7 @@ function finishedCard(run: DispatchRun, now: number): HTMLElement {
     h("div", { class: "dr-head" }, h("span", { class: `dr-result${failed ? " failed" : ""}` }, resultChip(run)), " ", ...heading(run),
       h("span", { class: "age", title: `finished ${time(run.updatedAt)}` }, `finished ${age(run.updatedAt, now)} ago`)),
     h("p", { class: "dr-step" }, result),
-    h("p", { class: "dr-links" }, run.result?.url ? link(run.result.url, "result ↗") : null, run.result?.url ? " · " : null, link(run.url, "run ↗")),
+    h("p", { class: "dr-links" }, run.result?.url ? link(run.result.url, "result ↗") : null, run.result?.url ? " · " : null, link(run.url, "run ↗"), chatButton(chatItem(itemUrl(run), run.target ? `${run.target.owner}/${run.target.repo}#${run.target.number}` : run.title, run.target?.pool))),
   );
 }
 

@@ -508,8 +508,10 @@ whole board as read now (a Done item leaving the board is not news). The first v
 something notable happens to an item (`bot-board set --news` in
 homegit); a new line shows highlighted under the item.
 
-**Session chat**, first under the header, is an opt-in ACP chat with a
-session run. Configure
+**Session chat** opens from an item's **Chat** button on an inbox card,
+epic row, dispatch card, board row or item/PR pane. One drawer is shared
+across routes and titled by the item; closing the drawer keeps the session
+and any unsent prompt. Configure
 `src/github/chat-config.json` on the default branch with `tailnetDomain`
 (a DNS name ending in `.ts.net`) and `sources`: each has `repo`, `workflow`,
 `issue` (the endpoint publication issue), `publisher` (the trusted login),
@@ -521,15 +523,29 @@ The shipped configuration enables it for cgwalters-forge/tracker's
 `session.yml` sessions, published by github-actions[bot] on tracker#728, so the
 deployed CSP allows `wss://*.tailf2eb8.ts.net`.
 
-On load the pane only looks: it reads the workflow's 10 newest runs and,
+Nothing is read or dispatched until an item opens the drawer. Then it
+reads each configured workflow's 10 newest runs and,
 when one is live (queued, in progress, waiting, pending or requested), the
 final page of up to 100 publication comments. A publisher's comment must
 contain the exact Actions run URL and a `wss` endpoint in the configured
 tailnet; until one does, an in-progress run's endpoint is taken from its
-agent job's tailnet name, `agentic-job-RUN-ATTEMPT.TAILNET`. Start
-dispatches the workflow (`POST .../dispatches`; the token needs Actions read
-and write on that repository), unless a run is already live: then it
-attaches to that one, as Attach does. The pane shows its state: starting
+agent job's tailnet name, `agentic-job-RUN-ATTEMPT.TAILNET`. Attach prefers
+a run whose publication comment names the same `owner/repo#N` (the configured
+publisher or the operator). The existing workflow publishes only the endpoint,
+so after a dispatch the app posts a reference-only association to that same
+publication issue as the operator; the token also needs Issues write there.
+When GitHub returns no run ID, it waits for a unique live run of that workflow
+created since the request by the operator. Ambiguous candidates are not guessed;
+after the bounded wait, use explicit Attach existing session or check GitHub.
+An unrelated or unknown-context live run blocks a new dispatch and offers
+explicit **Attach existing session** or **End run** (confirmed). A second
+item cannot replace an attached or starting session or an unsent prompt.
+Start dispatches the workflow (`POST .../dispatches`; the token needs
+Actions read and write on that repository) with `prompt` containing only
+the item reference and a fixed opening sentence, and `pool` from the
+item's pool chip (otherwise `claude`). Titles and issue bodies never go
+into those public inputs; a repository visibility read refuses private
+or unknown visibility before dispatch. The pane shows its state: starting
 (polling the run with backoff, up to 20 minutes), connecting, connected, or
 ended. While it waits it says where the run is, from its jobs' steps:
 queued, joining the tailnet, or the agent probably still on its first turn
@@ -550,7 +566,7 @@ page, keeps the page's keyboard shortcuts from acting behind it, and Esc
 leaves it. Messages are plain text, tools start collapsed, and
 the transcript display is bounded.
 
-**The "Ask anything" box** under it files a note onto the board (below).
+The separate capture bar still files a note onto the board (below).
 
 **Controller**, first in the ops detail, says whether shutting the
 interactive session down would stop anything. Its hosted pieces are the

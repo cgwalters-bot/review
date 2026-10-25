@@ -7,6 +7,9 @@
 import type { Answer } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
+import { chatButton, chatItem } from "./chatitem.ts";
+import { TRACKER_REPO } from "./config.ts";
+import { DECISIONS_CONFIG } from "./decisiondocument.ts";
 import { questionOf } from "./board.ts";
 import type { DocumentEntry } from "./decisiondocument.ts";
 import { type Card, CARD_LABEL, type DispatchRun } from "./inbox.ts";
@@ -156,6 +159,12 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   }
   const act = action(c, hooks);
   if (act) el.append(act);
+  const target = c.kind === "document" ? c.entry.about ? `https://github.com/${c.entry.about.repo}/issues/${c.entry.about.number}` : DECISIONS_CONFIG.document ? `https://github.com/${DECISIONS_CONFIG.document.repo}/issues/${DECISIONS_CONFIG.document.number}` : undefined
+    : c.kind === "do" ? `https://github.com/${TRACKER_REPO}/issues/${c.offer.issue}`
+    : c.kind === "rerun" && c.run.item ? `https://github.com/${c.run.item.replace("#", "/issues/")}` : c.url;
+  const pool = c.kind === "rerun" ? c.run.pool : c.kind === "answer" || c.kind === "approve" ? (c.need.decision?.item ?? c.need.entry?.item)?.engine : undefined;
+  const chat = chatButton(chatItem(target, c.title, pool));
+  if (chat) el.append(chat);
   return el;
 }
 

@@ -3,6 +3,7 @@
 // without a Theme.
 
 import { h, link } from "../dom.ts";
+import { chatButton, chatItem } from "./chatitem.ts";
 import type { Item } from "./board.ts";
 import { BOARD_URL, TRIAGE_FIELD } from "./config.ts";
 import {
@@ -69,6 +70,7 @@ function itemRow(item: Item, hooks: TriageHooks): HTMLElement {
       pill(item.priority),
       h("span", { class: "tag" }, item.status ?? "no status"),
       verdictChip(item),
+      chatButton(chatItem(item.url, item.title, item.engine)),
       target ? h("span", { class: "tag" }, "→ ", link(target, shortRef(target))) : null,
     ),
   );

@@ -3,6 +3,7 @@ import { it } from "node:test";
 import { AcpClient, TAILNET_STEP, chatPanel, derivedEndpoint, findLiveRuns, stageText, type ChatTiming, type RunStage } from "../src/github/chat.ts";
 import { CHAT_CONFIG, chatEndpoint, parseChatConfig, type ChatConfig } from "../src/github/chatconfig.ts";
 import { GitHub } from "../src/github/api.ts";
+import { chatButton, chatItem, sessionInputs, type ChatItem } from "../src/github/chatitem.ts";
 import { installDom, scriptedFetch } from "./helpers.ts";
 
 const win = installDom();
@@ -10,10 +11,14 @@ const config = { tailnetDomain: "example.ts.net", sources: [{ repo: "owner/repo"
 // The shipped configuration's shape, with the session wrapper's real status comment.
 const live: ChatConfig = { tailnetDomain: "tailf2eb8.ts.net", sources: [{ repo: "cgwalters-forge/tracker", workflow: "session.yml", issue: 728, publisher: "github-actions[bot]" }] };
 const RUN = 39062677132;
-const statusComment = (id: number) => ({
+const ITEM: ChatItem = { ref: "public/project#157", title: "An item title", pool: "openai" };
+const endpointComment = (id: number) => ({
   user: { login: "github-actions[bot]" },
-  body: `⏳ [session](https://github.com/cgwalters-forge/tracker/actions/runs/${id}) is running. Session: after the task's turn the operator attaches at \`wss://agentic-job-${id}-1.tailf2eb8.ts.net/\`, once the agent job's summary shows it served.\n\n<!-- agentic-job-run: ${id} -->\n\n<!-- agentic-job-status -->`,
-});
+   body: `⏳ [session](https://github.com/cgwalters-forge/tracker/actions/runs/${id}) is running. Session: after the task's turn the operator attaches at \`wss://agentic-job-${id}-1.tailf2eb8.ts.net/\`, once the agent job's summary shows it served.\n\n<!-- agentic-job-run: ${id} -->\n\n<!-- agentic-job-status -->`,
+ });
+// A publisher may name the item itself; the deployed wrapper currently doesn't.
+const statusComment = (id: number) => ({ ...endpointComment(id), body: `Context: ${ITEM.ref}. ${endpointComment(id).body}` });
+const itemPublication = (id = RUN, ref = ITEM.ref) => ({ user: { login: "cgwalters" }, body: `Context: ${ref}.\n\nSession: https://github.com/cgwalters-forge/tracker/actions/runs/${id}` });
 const published = `wss://agentic-job-${RUN}-1.tailf2eb8.ts.net/`;
 const ATTACH_TIMEOUT = 300;
 const FAST: Partial<ChatTiming> = { pollMs: 1, pollMaxMs: 2, retryMs: 1, retryMaxMs: 2, startLimitMs: 5_000, appearLimitMs: 5_000, waitLimitMs: 5_000, openTimeoutMs: 1_000, attachTimeoutMs: ATTACH_TIMEOUT };
@@ -65,8 +70,8 @@ class MockSocket extends MockServer {
   }
 }
 
-interface Run { id: number; run_attempt: number; status: string; display_title: string }
-const run = (status: string, id = RUN, run_attempt = 1): Run => ({ id, run_attempt, status, display_title: "Operator session (claude)" });
+interface Run { id: number; run_attempt: number; status: string; display_title: string; created_at: string; actor: { login: string } }
+const run = (status: string, id = RUN, run_attempt = 1): Run => ({ id, run_attempt, status, display_title: "Operator session (claude)", created_at: new Date().toISOString(), actor: { login: "cgwalters" } });
 
 type Answer = { status: number; body?: unknown };
 
@@ -97,7 +102,7 @@ const jobsBody = (joined: Joined) => ({
  * dispatch answers in turn, and whether the runs' agent jobs joined the tailnet.
  */
 function tracker(runs: Run[] = [], comments: { user: { login: string } | null; body: string }[] = [], dispatch: Answer[] = [{ status: 204 }]) {
-  const world = { runs, comments, dispatch, onDispatch: () => {}, failRuns: 0, joined: "yes" as Joined };
+  const world = { runs, comments, dispatch, onDispatch: () => {}, failRuns: 0, joined: "yes" as Joined, private: false };
   let posts = 0;
   const { fetchImpl, calls } = scriptedFetch((method, url) => {
     if (method === "POST" && url.endsWith("/actions/workflows/session.yml/dispatches")) {
@@ -105,7 +110,13 @@ function tracker(runs: Run[] = [], comments: { user: { login: string } | null; b
       if (answer.status < 300) world.onDispatch();
       return answer;
     }
+    if (method === "POST" && url.endsWith("/issues/728/comments")) {
+      world.comments.push({ user: { login: "cgwalters" }, body: (calls.at(-1)!.body as { body: string }).body });
+      return { status: 201, body: {} };
+    }
+    if (method === "POST" && url.endsWith("/cancel")) return { status: 202 };
     if (method !== "GET") return undefined;
+    if (url.endsWith("/repos/public/project")) return { body: { private: world.private } };
     if (url.includes("/actions/workflows/session.yml/runs?") && world.failRuns > 0) { world.failRuns--; return { status: 500, body: { message: "Server Error" } }; }
     if (url.includes("/actions/workflows/session.yml/runs?")) return { body: { workflow_runs: world.runs } };
     if (url.endsWith("/issues/728")) return { body: { comments: world.comments.length } };
@@ -116,7 +127,7 @@ function tracker(runs: Run[] = [], comments: { user: { login: string } | null; b
     return undefined;
   });
   const gh = new GitHub(async () => "secret-token", fetchImpl);
-  return { world, calls, gh, dispatches: () => calls.filter((c) => c.method === "POST") };
+  return { world, calls, gh, dispatches: () => calls.filter((c) => c.method === "POST" && c.url.endsWith("/dispatches")) };
 }
 
 function mount(gh: GitHub, modes: Mode[] = [], timing: Partial<ChatTiming> = {}) {
@@ -127,6 +138,8 @@ function mount(gh: GitHub, modes: Mode[] = [], timing: Partial<ChatTiming> = {})
   const slot = document.createElement("div");
   document.body.append(slot);
   panel.mount(slot);
+  assert.equal(slot.hidden, true, "no global chat box");
+  panel.open(ITEM);
   const pane = () => slot.querySelector<HTMLElement>(".chat-panel")!;
   const button = (name: RegExp) => [...slot.querySelectorAll("button")].find((b) => name.test(b.textContent ?? ""))!;
   const status = () => slot.querySelector(".chat-status")?.textContent ?? "";
@@ -261,11 +274,11 @@ it("shows no session when nothing runs, without connecting", async () => {
   m.panel.dispose();
 });
 
-const details = { ref: "main", return_run_details: true };
+const details = { ref: "main", inputs: sessionInputs(ITEM), return_run_details: true };
 for (const c of [
   { answers: [{ status: 204 }], bodies: [details] },
   { answers: [{ status: 200, body: { workflow_run_id: RUN } }], bodies: [details] },
-  { answers: [{ status: 422, body: { message: "Invalid request: return_run_details is not a permitted key" } }, { status: 204 }], bodies: [details, { ref: "main" }] },
+  { answers: [{ status: 422, body: { message: "Invalid request: return_run_details is not a permitted key" } }, { status: 204 }], bodies: [details, { ref: "main", inputs: sessionInputs(ITEM) }] },
 ]) {
   it(`Start dispatches once (HTTP ${c.answers.map((a) => a.status).join(" then ")}), waits for the run, then attaches`, async () => {
     const t = tracker([], [], c.answers);
@@ -283,12 +296,20 @@ for (const c of [
     assert.equal(m.sockets.length, 0);
     assert.deepEqual(t.dispatches().map((d) => d.url), c.bodies.map(() => "https://api.github.com/repos/cgwalters-forge/tracker/actions/workflows/session.yml/dispatches"));
     assert.deepEqual(t.dispatches().map((d) => d.body), c.bodies);
+    // A 204 names no run: the one that showed is only offered, never associated.
+    const named = c.answers.at(-1)!.status === 200;
+    if (!named) {
+      assert.equal(m.button(/Attach existing/).hidden, false);
+      m.button(/Attach existing/).click();
+    }
     t.world.runs = [run("in_progress")];
-    t.world.comments = [statusComment(RUN)];
+    t.world.comments.push(endpointComment(RUN));
     await until("connected", () => m.state() === "connected");
     assert.deepEqual(m.sockets.map((s) => s.url), [published]);
     assert.deepEqual(m.sockets[0]!.sent.map((s) => s.method), ["initialize", "session/new"]);
     assert.equal(t.dispatches().length, c.bodies.length);
+    const associations = t.calls.filter((c) => c.method === "POST" && c.url.endsWith("/issues/728/comments"));
+    assert.deepEqual(associations.map((c) => c.body), named ? [{ body: itemPublication().body }] : []);
     assert.equal(m.panel.attached(), true);
     m.panel.dispose();
     assert.equal(m.panel.attached(), false);
@@ -327,7 +348,7 @@ it("doesn't retry when the bridge closes an opened socket unanswered", async () 
 });
 
 it("keeps polling a starting run through a failed GitHub read", async () => {
-  const t = tracker([run("queued")]);
+  const t = tracker([run("queued")], [{ user: { login: "github-actions[bot]" }, body: `public/project#157 https://github.com/cgwalters-forge/tracker/actions/runs/${RUN}` }]);
   const m = mount(t.gh);
   await until("the queued run", () => m.button(/Attach/)?.disabled === false);
   m.button(/Attach/).click();
@@ -341,7 +362,7 @@ it("keeps polling a starting run through a failed GitHub read", async () => {
 });
 
 it("attaches to a live run instead of starting another, by its publication or its job's name", async () => {
-  for (const c of [{ comments: [statusComment(RUN)], attempt: 1 }, { comments: [], attempt: 3 }]) {
+  for (const c of [{ comments: [statusComment(RUN)], attempt: 1 }, { comments: [{ user: { login: "github-actions[bot]" }, body: `public/project#157 https://github.com/cgwalters-forge/tracker/actions/runs/${RUN}` }], attempt: 3 }]) {
     const t = tracker([run("in_progress", RUN, c.attempt)], c.comments);
     const m = mount(t.gh);
     await until("the live run", () => m.state() === "waiting" && m.button(/Attach/)?.disabled === false);
@@ -436,6 +457,27 @@ it("confirms before disconnecting", async () => {
   m.panel.dispose();
 });
 
+it("keeps a draft editable after disconnecting, so clearing it frees the drawer", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN), itemPublication()]);
+  const m = mount(t.gh);
+  await until("the live run", () => m.button(/Attach/)?.disabled === false);
+  m.button(/Attach/).click();
+  await until("connected", () => m.state() === "connected");
+  const input = m.slot.querySelector("textarea")!;
+  input.value = "unsent";
+  Object.assign(globalThis, { confirm: () => true });
+  m.button(/Disconnect/).click();
+  assert.equal(m.state(), "ended");
+  const second = { ref: "public/project#158", title: "Second item" };
+  m.panel.open(second);
+  assert.match(m.status(), /clear your unsent draft/);
+  assert.equal(input.disabled, false);
+  input.value = "";
+  m.panel.open(second);
+  assert.equal(m.slot.querySelector("h2")?.textContent, "Second item");
+  m.panel.dispose();
+});
+
 it("says why Start failed when the token can't dispatch", async () => {
   const t = tracker([], [], [{ status: 403, body: { message: "Resource not accessible by personal access token" } }]);
   const m = mount(t.gh);
@@ -479,7 +521,7 @@ it("goes full screen, keeps the page's keys off the hidden page, and leaves on E
   };
   assert.equal(press("Escape"), false);
   press("a", m.button(/Full screen/));
-  assert.deepEqual(page, ["Escape", "a"]);
+  assert.deepEqual(page, ["Escape"]);
   page.length = 0;
   m.button(/Full screen/).click();
   assert.ok(m.pane().classList.contains("chat-full"));
@@ -546,3 +588,167 @@ it("draws one oversized update only up to the transcript bound, the rest on requ
   assert.equal(p.querySelector("button"), null);
   panel.dispose();
 });
+
+it("opens from an item's Chat button, keeping titles and bodies out of public inputs", async () => {
+  const t = tracker();
+  const m = mount(t.gh);
+  await until("initial look", () => !m.button(/Start session/).disabled);
+  m.button(/Close drawer/).click();
+  const item = { ...chatItem("https://github.com/public/project/issues/158", "Private-looking title <img>", "mistral")!, body: "DO NOT PUBLISH ISSUE BODY" };
+  const button = chatButton(item)!;
+  document.body.append(button);
+  button.click();
+  assert.equal(m.slot.hidden, false);
+  assert.equal(m.pane().querySelector("h2")?.textContent, item.title);
+  assert.equal(m.pane().querySelector("img"), null);
+  await until("item lookup", () => !m.button(/Start session/).disabled);
+  m.button(/Start session/).click();
+  await until("dispatch", () => t.dispatches().length === 1);
+  assert.deepEqual(t.dispatches()[0]!.body, { ref: "main", return_run_details: true, inputs: { prompt: "Context: public/project#158. The operator opens a session about it.", pool: "mistral" } });
+  assert.doesNotMatch(JSON.stringify(t.dispatches()[0]!.body), /Private-looking|PUBLISH ISSUE BODY|img/);
+  assert.equal(sessionInputs({ ...ITEM, pool: "not-a-pool" }).pool, "claude");
+  assert.throws(() => sessionInputs({ ref: "invalid\nbody", title: "x" }));
+  assert.equal(chatItem("https://evil.test/public/project/issues/1", "x"), undefined);
+  button.remove(); m.panel.dispose();
+});
+
+it("refuses to publish references to a private repository", async () => {
+  const t = tracker(); t.world.private = true;
+  const m = mount(t.gh);
+  await until("initial look", () => !m.button(/Start session/).disabled);
+  m.button(/Start session/).click();
+  await until("visibility refusal", () => /public repository/.test(m.status()));
+  assert.equal(t.dispatches().length, 0);
+  m.panel.dispose();
+});
+
+it("Attach selects the publication about this item, not a newer unrelated run", async () => {
+  const other = statusComment(RUN + 1);
+  other.body = other.body.replace("public/project#157", "public/project#158");
+  const t = tracker([run("in_progress", RUN + 1), run("in_progress")], [statusComment(RUN), other]);
+  const m = mount(t.gh);
+  await until("matching session", () => m.button(/^Attach$/)?.disabled === false);
+  m.button(/^Attach$/).click();
+  await until("connected", () => m.state() === "connected");
+  assert.equal(m.sockets[0]?.url, published);
+  m.panel.open({ ref: "public/project#158", title: "A second item" });
+  assert.match(m.status(), /current session/);
+  assert.equal(m.pane().querySelector("h2")?.textContent, ITEM.title);
+  assert.equal(m.sockets.length, 1);
+  assert.equal(t.dispatches().length, 0);
+  m.panel.dispose();
+});
+
+it("matches public item URLs too, but requires the exact publication run URL", async () => {
+  const comment = statusComment(RUN);
+  comment.body = comment.body.replace("public/project#157", "https://github.com/public/project/pull/157");
+  const t = tracker([run("in_progress")], [comment]);
+  assert.deepEqual((await findLiveRuns(t.gh, live))[0]?.items, [ITEM.ref]);
+  t.world.comments = [{ ...comment, body: comment.body.replace(`/runs/${RUN}`, `/runs/${RUN}9`) }];
+  assert.deepEqual((await findLiveRuns(t.gh, live))[0]?.items, []);
+});
+
+it("an unrelated or untrusted publication never auto-attaches or starts a second session", async () => {
+  for (const publisher of ["github-actions[bot]", "someone-else"]) {
+    const comment = statusComment(RUN);
+    comment.user.login = publisher;
+    if (publisher === "github-actions[bot]") comment.body = comment.body.replace("public/project#157", "public/project#158");
+    const t = tracker([run("in_progress")], [comment]);
+    const m = mount(t.gh);
+    await until("lookup", () => !m.button(/^Check$/).disabled);
+    assert.equal(m.button(/^Attach$/).disabled, true);
+    assert.equal(m.sockets.length, 0);
+    assert.equal(t.dispatches().length, 0);
+    assert.equal(m.button(/End run/).hidden, false);
+    m.button(/Attach existing session/).click();
+    await until("explicit attach", () => m.state() === "connected");
+    assert.equal(m.sockets.length, 1);
+    assert.equal(t.dispatches().length, 0);
+    m.panel.dispose();
+  }
+});
+
+it("a second Chat while starting offers to end the current run", async () => {
+  const t = tracker([run("queued")], [itemPublication()]);
+  const m = mount(t.gh);
+  await until("queued run", () => m.button(/^Attach$/)?.disabled === false);
+  m.button(/^Attach$/).click();
+  await until("polling", () => m.state() === "starting" && !m.button(/End run/).disabled);
+  m.panel.open({ ref: "public/project#158", title: "Second item" });
+  assert.match(m.status(), /current session/);
+  assert.equal(m.button(/End run/).hidden, false);
+  Object.assign(globalThis, { confirm: () => true });
+  m.button(/End run/).click();
+  await until("cancellation", () => t.calls.some((c) => c.method === "POST" && c.url.endsWith(`/runs/${RUN}/cancel`)));
+  assert.equal(t.dispatches().length, 0);
+  assert.equal(m.sockets.length, 0);
+  m.panel.dispose();
+});
+
+it("Check prefers a newly matched publication over a previously observed unrelated run", async () => {
+  const t = tracker([run("in_progress", RUN + 1), run("in_progress")], [endpointComment(RUN + 1)]);
+  const m = mount(t.gh);
+  await until("first look", () => !m.button(/^Check$/).disabled);
+  assert.equal(m.button(/^Attach$/).disabled, true);
+  t.world.comments.push(itemPublication());
+  m.button(/^Check$/).click();
+  await until("matching run", () => m.button(/^Attach$/)?.disabled === false);
+  m.button(/^Attach$/).click();
+  await until("connected", () => m.state() === "connected");
+  assert.equal(m.sockets[0]?.url, published);
+  m.panel.dispose();
+});
+
+it("a reload attaches using the operator's reference-only publication and the real endpoint comment", async () => {
+  const t = tracker([run("in_progress")], [endpointComment(RUN), itemPublication()]);
+  const m = mount(t.gh);
+  await until("matching publication", () => m.button(/^Attach$/)?.disabled === false);
+  m.button(/^Attach$/).click();
+  await until("connected", () => m.state() === "connected");
+  assert.equal(m.sockets[0]?.url, published);
+  assert.equal(t.dispatches().length, 0);
+  m.panel.dispose();
+});
+
+it("only offers a run that shows after a 204 dispatch, even when it is another tab's", async () => {
+  const t = tracker();
+  // Another tab's dispatch shows first; this tab's shows a poll later.
+  t.world.onDispatch = () => { t.world.runs = [run("in_progress", RUN + 1)]; };
+  const m = mount(t.gh);
+  await until("initial look", () => !m.button(/Start session/).disabled);
+  m.button(/Start session/).click();
+  await until("offered", () => !m.button(/Attach existing/).hidden);
+  assert.match(m.status(), /didn't say which run/);
+  assert.equal(m.button(/Start session|Attach$/).disabled, true);
+  t.world.runs = [run("in_progress", RUN + 1), run("in_progress")];
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 3));
+  assert.equal(t.dispatches().length, 1);
+  assert.equal(t.calls.filter((c) => c.method === "POST" && c.url.endsWith("/comments")).length, 0);
+  assert.equal(m.sockets.length, 0);
+  m.panel.dispose();
+});
+
+for (const originalRemains of [true, false]) {
+  it(`pins a dispatched run by its id (original remains live: ${originalRemains})`, async () => {
+    const t = tracker([], [], [{ status: 200, body: { workflow_run_id: RUN } }]);
+    t.world.onDispatch = () => { t.world.runs = [run("queued")]; };
+    const m = mount(t.gh);
+    await until("initial look", () => !m.button(/Start session/).disabled);
+    m.button(/Start session/).click();
+    await until("association", () => t.calls.some((c) => c.method === "POST" && c.url.endsWith("/comments")));
+    t.world.runs = [run("in_progress", RUN + 1), ...(originalRemains ? [run("queued")] : [])];
+    if (originalRemains) {
+      // Several polls must keep the pinned queued run, not follow the new one.
+      await new Promise((r) => setTimeout(r, 15));
+      assert.equal(m.state(), "starting");
+      t.world.runs = [run("in_progress", RUN + 1), run("in_progress")];
+      await until("original connected", () => m.state() === "connected");
+      assert.deepEqual(m.sockets.map((s) => s.url), [published]);
+    } else {
+      await until("original ended", () => m.state() === "ended");
+      assert.equal(m.sockets.length, 0);
+    }
+    assert.equal(t.dispatches().length, 1);
+    m.panel.dispose();
+  });
+}

@@ -4,6 +4,7 @@
 // text nodes only.
 
 import { h, kids, link, scrollTo } from "../dom.ts";
+import { chatButton, chatItem } from "./chatitem.ts";
 import type { Renderer } from "../markdown.ts";
 import type { IssueRef } from "./board.ts";
 import { BOARD_URL, BOT_LOGIN, FORGE_ORG } from "./config.ts";
@@ -556,6 +557,7 @@ class Pane implements PrPane {
       ),
       h("h2", {}, d.title),
       linkRow(d, entry),
+      chatButton(chatItem(d.url, d.title, entry?.item?.engine)),
       ...d.warnings.map((w) => h("p", { class: "warn" }, w)),
       entry?.item?.why ? h("section", {}, h("h3", {}, "Why (board)"), h("div", { class: "md" }, render(entry.item.why))) : null,
       entry?.wait ? waitBanner(d, entry.wait) : null,
