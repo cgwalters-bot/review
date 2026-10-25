@@ -19,7 +19,7 @@ export const SECTION_TITLE: Record<SectionId, string> = {
 export const SECTION_HINT: Record<SectionId, string> = {
   needs: "what waits on you, one action each",
   agents: "who is working now",
-  changes: "what moved on the board, and what merged",
+  changes: "events, board transitions, merges and finished runs",
   priority: "everything, ranked, with filters",
   usage: "the plan's windows",
 };

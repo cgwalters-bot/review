@@ -16,14 +16,15 @@ import type { Renderer } from "../markdown.ts";
 import type { Active, AgentSummary } from "./agents.ts";
 import { agentsBody, agentsSummary } from "./agentsview.ts";
 import { blockedBy, type Item } from "./board.ts";
-import { diffBoard, type Snapshot } from "./boardfeed.ts";
+import type { Snapshot } from "./boardfeed.ts";
 import type { DispatchData } from "./dispatch.ts";
 import { dispatchPanel } from "./dispatchview.ts";
 import { type FeedOptions, feedSection } from "./boardfeedview.ts";
 import type { QueueFilter } from "./filter.ts";
 import type { Heartbeat } from "./heartbeat.ts";
 import type { News } from "./news.ts";
-import { newsList } from "./newsview.ts";
+import { activityEntries, type ActivityData } from "./activity.ts";
+import { activityList } from "./activityview.ts";
 import type { People } from "./people.ts";
 import { peopleView, type PeopleHooks } from "./peopleview.ts";
 import { ALL_PRIORITIES, type Need, waitingCount } from "./needs.ts";
@@ -488,7 +489,7 @@ export function fillOps(home: Home, ops: Ops | undefined, now: number): HTMLElem
   return el;
 }
 
-export interface ChangesData {
+export interface ChangesData extends ActivityData {
   board?: readonly Item[] | undefined;
   seen: Snapshot | undefined;
   fromCache: boolean;
@@ -497,12 +498,11 @@ export interface ChangesData {
 }
 
 export function fillChanges(home: Home, data: ChangesData, render: Renderer, now: number): void {
-  home.slots.feed.replaceChildren(feedSection(data.board, data.seen, { ...data.feed, now, ...(data.fromCache ? { fromCache: true } : {}) }));
-  applyLimit(home.slots.feed, LIMIT_ID.feed, ".feed-row");
-  home.slots.news.replaceChildren(newsList(data.news, render, now));
-  applyLimit(home.slots.news, LIMIT_ID.news, ".news-item");
-  const changed = data.board && data.seen && !data.fromCache ? diffBoard(data.seen, data.board).length : undefined;
-  setCount(home, "changes", changed === undefined ? "—" : String(changed), { title: changed === undefined ? "board changes since you last looked: not known yet" : `${changed} items changed on the board since you last looked`, hot: changed !== undefined && changed > 0 });
+  home.slots.feed.replaceChildren(feedSection(data.board, data.seen, { ...data.feed, now, controlsOnly: true, ...(data.fromCache ? { fromCache: true } : {}) }));
+  home.slots.news.replaceChildren(activityList(data, data.feed.urgentOnly, render, now));
+  applyLimit(home.slots.news, LIMIT_ID.news, ".activity-item");
+  const count = activityEntries(data, data.feed.urgentOnly).length;
+  setCount(home, "changes", String(count), { title: `${count} activity entries from the sources read so far`, hot: count > 0 });
 }
 
 export function fillPriority(home: Home, entries: readonly Entry[], labelOf: (e: Entry) => RowLabel | undefined, now: number, filter: QueueFilter, extras: ListExtras): void {

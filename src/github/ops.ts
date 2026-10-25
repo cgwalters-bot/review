@@ -535,9 +535,32 @@ async function loadAgents(gh: GitHub): Promise<AgentData> {
   }
 }
 
-async function loadEvents(gh: GitHub): Promise<BotEvent[]> {
-  const res = await gh.get<RawEvent[]>(`/users/${BOT_LOGIN}/events/public?per_page=${OPS_EVENTS}`);
-  return botEvents(res.data);
+const eventReads = new WeakMap<GitHub, { events?: BotEvent[]; next: number; interval: number; pending?: Promise<BotEvent[]> }>();
+
+/** Shared by Activity and ops; even an explicit refresh respects GitHub's minimum interval. */
+export async function loadEvents(gh: GitHub, now = Date.now()): Promise<BotEvent[]> {
+  let state = eventReads.get(gh);
+  if (!state) {
+    state = { next: 0, interval: MINUTE };
+    eventReads.set(gh, state);
+  }
+  if (state.pending) return state.pending;
+  if (state.events && now < state.next) return state.events;
+  const current = state;
+  current.pending = (async () => {
+    const res = await gh.get<RawEvent[]>(`/users/${BOT_LOGIN}/events/public?per_page=${OPS_EVENTS}`, (headers) => {
+      const interval = Number(headers.get("x-poll-interval") ?? NaN) * 1000;
+      if (Number.isFinite(interval) && interval > 0) current.interval = Math.max(MINUTE, interval);
+    });
+    current.events = botEvents(res.data);
+    current.next = now + current.interval;
+    return current.events;
+  })();
+  try {
+    return await current.pending;
+  } finally {
+    delete current.pending;
+  }
 }
 
 function message(e: unknown): string {

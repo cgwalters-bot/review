@@ -286,7 +286,7 @@ export class GitHub {
   }
 
   /** GET one page, conditionally if we have it cached with a validator. */
-  async #getPage(url: string): Promise<{ entry: CachedResponse; changed: boolean }> {
+  async #getPage(url: string): Promise<{ entry: CachedResponse; changed: boolean; headers?: Headers }> {
     const cached = await this.cache.get(url);
     if (this.#cacheOnly) {
       if (!cached) throw new CacheMiss(`not cached: GET ${url}`);
@@ -301,7 +301,7 @@ export class GitHub {
     const res = await this.#send("GET", url, validators);
     if (res.status === 304 && cached) {
       this.cache.refreshed(url);
-      return { entry: cached, changed: false };
+      return { entry: cached, changed: false, headers: res.headers };
     }
     if (!res.ok) throw new GitHubError(res.status, await errorMessage(res, `GET ${url}`));
     const text = await res.text();
@@ -313,12 +313,13 @@ export class GitHub {
     if (lastModified) entry.lastModified = lastModified;
     if (next) entry.next = next;
     this.cache.put(url, entry, text.length, generation);
-    return { entry, changed: true };
+    return { entry, changed: true, headers: res.headers };
   }
 
-  /** GET a JSON resource, conditionally. */
-  async get<T>(path: string): Promise<Fetched<T>> {
-    const { entry, changed } = await this.#getPage(this.#url(path));
+  /** GET a JSON resource, conditionally; observe network headers even on a 304. */
+  async get<T>(path: string, onHeaders?: (headers: Headers) => void): Promise<Fetched<T>> {
+    const { entry, changed, headers } = await this.#getPage(this.#url(path));
+    if (headers) onHeaders?.(headers);
     return { data: entry.data as T, changed };
   }
 
