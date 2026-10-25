@@ -355,6 +355,18 @@ Actions-only counts render even when board and heartbeat reads fail; agents
 with unknown engines stay unknown in the OpenCode share. Counts include only
 known execution; inaccessible or truncated sources may hide additional jobs.
 
+**Dispatch runs**, atop the Agents view, gives a card per run of the
+tracker's `dispatch.yml` in its in-progress and queued lists, so the count
+is that of those lists: the kind, item and pool from a title of the form
+`KIND OWNER/REPO#N (POOL)`, the time since it started, and the newest step
+of its `run / agent` job (of a setup job before that one starts) with that
+step's age. Job logs aren't readable from the page, so the step is the
+closest view of the agent. A run that finished in the last 6 hours stays
+with its result, as the bot's status comment about that run on the item
+says it, and a link to the PR or comment it handed back. A concluded run's
+item comments are read once per page load. These are read every 60
+seconds, only while Agents is on screen; each list is one page of 100.
+
 **Live Actions runs** is visible outside the Agents and ops disclosures. It
 reads `agent.yml` independently of the heartbeat, conditionally every 60 seconds
 while the dashboard tab is visible. Rows link to Actions and expand to show

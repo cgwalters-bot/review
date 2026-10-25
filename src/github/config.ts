@@ -194,6 +194,11 @@ export const NEWS_LIMIT = 40;
 export const DEVSPACE_REPO = "bootc-dev/cgwalters-devspace-sandbox";
 export const DEVSPACE_WORKFLOW = "devspace.yml";
 export const AGENT_WORKFLOW = "agent.yml";
+/**
+ * The tracker's workflow that runs one agent job on one item, titled
+ * `KIND OWNER/REPO#N (POOL)`; the Agents view shows its runs (dispatch.ts).
+ */
+export const DISPATCH_WORKFLOW = "dispatch.yml";
 /** A devspace's tailnet host is this plus its run id. */
 export const DEVSPACE_HOST_PREFIX = "cgwalters-devspace-";
 /** The Status of an item the bot is working on. */

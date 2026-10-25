@@ -708,6 +708,21 @@ details.sub-fold > div { padding-top: 8px; }
 .runs-spark { display: flex; align-items: end; gap: 3px; height: 48px; max-width: 100%; margin-bottom: 1rem; }
 .runs-spark span { flex: 1; min-width: 0; background: var(--accent); }
 .source-freshness { overflow-wrap: anywhere; padding: .5rem 1rem; }
+/* A card per dispatch run: kind, item, pool and age; its step or result; its links. */
+.dispatch-runs { padding: 1rem; min-width: 0; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }
+.dr-count { font: 12px var(--mono); color: var(--muted); font-weight: normal; }
+.dr-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.dispatch-run { padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.dispatch-run p { margin: 2px 0 0; }
+.dr-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.dr-head .age { margin-left: auto; font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.dr-pool, .dr-result { font: var(--type-meta) var(--mono); padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
+.dr-result { color: var(--ok); background: var(--ok-soft); }
+.dr-result.failed { color: var(--p0); background: var(--p0-soft); }
+.dr-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); align-self: center; }
+.dr-step { font-size: 13px; }
+.dr-links { font: 12px var(--mono); color: var(--muted); }
+.dispatch-run.finished { opacity: .85; }
 .state-export pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .status-preview > :not(.status-summary) { display: none; }
 .status-preview > :first-child { margin-top: 0; }
