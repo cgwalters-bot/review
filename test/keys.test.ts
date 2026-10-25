@@ -81,8 +81,14 @@ describe("parseRoute", () => {
     ["#pr/o/./1", { route: "home" }],
     ["#pr/o/r/1/extra", { route: "home" }],
     ["#item/<script>", { route: "home" }],
-    ["#composefs", { route: "home", filter: { scope: "composefs" } }],
-    ["#org:bootc-dev+P0", { route: "home", filter: { scope: { org: "bootc-dev" }, priority: "P0" } }],
+    ["#inbox", { route: "home", view: "inbox" }],
+    ["#agents", { route: "home", view: "agents" }],
+    ["#board", { route: "home", view: "board" }],
+    ["#activity", { route: "home", view: "activity" }],
+    ["#usage", { route: "home", view: "usage" }],
+    ["#Inbox", { route: "home" }],
+    ["#composefs", { route: "home", view: "board", filter: { scope: "composefs" } }],
+    ["#org:bootc-dev+P0", { route: "home", view: "board", filter: { scope: { org: "bootc-dev" }, priority: "P0" } }],
     ["#org:../x", { route: "home" }],
   ];
   for (const [hash, want] of cases) it(JSON.stringify(hash), () => assert.deepEqual(parseRoute(hash), want));

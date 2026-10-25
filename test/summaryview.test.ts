@@ -7,6 +7,7 @@ import type { ActiveAgent } from "../src/github/agents.ts";
 import type { ControllerData } from "../src/github/controller.ts";
 import { fillSummary, homeSkeleton } from "../src/github/homeview.ts";
 import type { ActionRun, RunsData } from "../src/github/runs.ts";
+import { showView } from "../src/github/shell.ts";
 import { pageState } from "../src/github/state.ts";
 import { parseUsage, USAGE_MARKER } from "../src/github/usage.ts";
 import { time } from "../src/github/view.ts";
@@ -73,18 +74,22 @@ describe("the summary", () => {
     assert.equal(text(home.slots.summary.querySelectorAll("li")[3]), "Resources unreadable with this token");
   });
 
-  it("links open the section they point at without changing the route", () => {
+  it("links open the section they point at, switching to its view only if it isn't shown", () => {
     const home = homeSkeleton(noHooks);
     win.document.body.replaceChildren(home.el);
+    showView(home.el, "inbox");
     Object.assign(win.HTMLElement.prototype, { scrollIntoView() {} });
     fillSummary(home, state, undefined, NOW);
-    const hash = win.location.hash;
     assert.equal(home.sections.agents.details.open, false);
+    assert.equal(home.sections.agents.details.hidden, true);
     home.slots.summary.querySelector<HTMLAnchorElement>('a[href="#sec-agents"]')!.click();
     assert.equal(home.sections.agents.details.open, true);
+    assert.equal(home.sections.agents.details.hidden, false);
+    assert.equal(win.location.hash, "#agents");
+    win.location.hash = "#x";
     home.slots.summary.querySelector<HTMLAnchorElement>('a[href="#ops"]')!.click();
     assert.equal(home.slots.opsBox.open, true);
-    assert.equal(win.location.hash, hash);
+    assert.equal(win.location.hash, "#x");
   });
 
   it("reads the scheduler's mode, the poll's pass and the broker probe's run from the controller, once the ops detail has read it", () => {

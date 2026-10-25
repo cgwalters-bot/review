@@ -9,7 +9,7 @@ import { parseItem, type RawItem } from "../src/github/board.ts";
 import { fillAgents, fillFocus, fillState, homeSkeleton } from "../src/github/homeview.ts";
 import { agentsBody, agentsSummary } from "../src/github/agentsview.ts";
 import { HEARTBEAT_MARKER, parseHeartbeat } from "../src/github/heartbeat.ts";
-import { loadActionRuns, parseRunTitleMetrics, runsDue, runTotals, type RunsData, type RunTitleMetrics } from "../src/github/runs.ts";
+import { loadActionRuns, parseRunTitleMetrics, runTotals, type RunsData, type RunTitleMetrics } from "../src/github/runs.ts";
 import { loadPageState, pageState } from "../src/github/state.ts";
 import { activeFromOps, loadOps } from "../src/github/ops.ts";
 import { installDom, rawBoardItem, scriptedFetch } from "./helpers.ts";
@@ -338,13 +338,6 @@ describe("shared dashboard state", () => {
 });
 
 describe("Actions reads and metrics", () => {
-  it("polls at 60 seconds only on a visible dashboard, with no overlapping read", () => {
-    assert.equal(runsDue(NOW, false, NOW + 59_999, true, true), false);
-    assert.equal(runsDue(NOW, false, NOW + 60_000, true, true), true);
-    assert.equal(runsDue(NOW, false, NOW + 60_000, false, true), false);
-    assert.equal(runsDue(NOW, false, NOW + 60_000, true, false), false);
-    assert.equal(runsDue(NOW, true, NOW + 60_000, true, true), false);
-  });
   it("conditionally revalidates lists and reuses final per-attempt jobs", async () => {
     const offline = fixtureFetch(FIXTURES);
     const calls: { url: string; headers: Headers }[] = [];

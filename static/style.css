@@ -729,6 +729,25 @@ body:has(.chat-full) { overflow: hidden; }
 .dashboard-summary li { padding: 1px 0; overflow-wrap: anywhere; }
 .dashboard-summary .sum-jump { font-weight: 600; }
 .dashboard-summary li.hot { color: var(--p1); }
+/* The views (shell.ts): a sidebar on a wide screen, tabs at the bottom on a
+   phone or tablet, each 44px tall to tap. The body makes room for whichever
+   shows. Below the sticky header (z-index 5, later in the page), so its
+   menu opens over the tabs. */
+nav.views { position: fixed; top: 0; bottom: 0; left: 0; z-index: 5; width: 148px; display: flex; flex-direction: column; gap: 2px; padding: 12px 8px; background: var(--ground); border-right: 1px solid var(--line); }
+nav.views a { color: var(--ink); text-decoration: none; padding: 8px 10px; border-radius: 6px; }
+nav.views a:hover { background: var(--surface); }
+nav.views a[aria-current="page"] { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+body:has(nav.views:not([hidden])) { padding-left: 164px; }
+@media (max-width: 900px) {
+  nav.views { top: auto; right: 0; width: auto; flex-direction: row; gap: 0; padding: 0 0 env(safe-area-inset-bottom); background: var(--surface); border-right: 0; border-top: 1px solid var(--line); }
+  nav.views a { flex: 1 1 0; min-width: 0; min-height: 44px; display: flex; align-items: center; justify-content: center; padding: 0 2px; border-radius: 0; font-size: 13px; }
+  body:has(nav.views:not([hidden])) { padding-left: 16px; padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
+  /* The PR's sticky review form sits above the tabs, not under them. */
+  body:has(nav.views:not([hidden])) form.review { bottom: calc(44px + env(safe-area-inset-bottom)); }
+}
+@media (max-width: 600px) {
+  body:has(nav.views:not([hidden])) { padding-left: 10px; }
+}
 /* iOS Safari zooms the page in when a text field under 16px takes focus and
    leaves it zoomed, so wherever there is a touch screen (iPads too, hence
    not max-width) every typed-into field gets a 16px floor. !important
