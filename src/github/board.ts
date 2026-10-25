@@ -42,6 +42,9 @@ export interface RawContent {
   state?: string;
   draft?: boolean;
   merged_at?: string | null;
+  closed_at?: string | null;
+  /** Why an issue was closed: completed, not_planned, duplicate, reopened. */
+  state_reason?: string | null;
   updated_at?: string;
   created_at?: string;
   user?: RawUser | null;
@@ -126,6 +129,9 @@ export interface Item {
   /** When the board item itself (a field) last changed. */
   movedAt?: string;
   updatedAt?: string;
+  /** When its issue was closed or its PR merged, and why an issue was closed (the API's state_reason). */
+  closedAt?: string;
+  closedAs?: string;
 }
 
 /** The priorities in queue order; anything else sorts after them. */
@@ -259,6 +265,8 @@ export function parseItem(raw: RawItem): Item {
     item.url = c.html_url;
     opt("ref", parseIssueUrl(c.html_url));
     opt("state", c.merged_at ? "merged" : c.state);
+    opt("closedAt", c.merged_at ?? c.closed_at ?? undefined);
+    opt("closedAs", c.state_reason ?? undefined);
   }
   if (c.user?.login) item.author = c.user.login;
   if (typeof c.comments === "number") item.comments = c.comments;

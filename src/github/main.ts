@@ -50,7 +50,7 @@ import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, refreshDocument, sendDocumentEdit } from "./decisiondocument.ts";
-import { DISPATCH_WORKFLOW, type DispatchRun, inboxCards, loadDispatchRuns, mayAct, offeredReruns } from "./inbox.ts";
+import { DISPATCH_WORKFLOW, type DispatchRun, inboxCards, loadDispatchRuns, mayAct, needCard, offeredReruns } from "./inbox.ts";
 import { fillInbox, type InboxHooks } from "./inboxview.ts";
 import {
   CLASSIC_SCOPES,
@@ -75,7 +75,9 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillAgents, fillBoardStatus, fillChanges, fillDispatch, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { DASHBOARD_CONFIG, type DashboardData, doneByDay, HISTORY_DAYS, type HistoryCache, loadDashboard, loadHistoryCache } from "./dashboard.ts";
+import { dashboardView } from "./dashboardview.ts";
+import { fillAgents, fillBoardStatus, fillChanges, fillDashboard, fillDispatch, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadProposals, type Offered, plan, type Plan } from "./actions.ts";
 import { actionsPanel, proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
@@ -133,6 +135,10 @@ interface State {
   activityEventsError?: string;
   dispatchResults: ResultCache;
   dispatchRunning?: boolean;
+  /** The Dashboard view's own reads as last made, and the finished days' runs kept. */
+  dashboard?: DashboardData;
+  dashboardHistory: HistoryCache;
+  dashboardRunning?: boolean;
   /** What the views show and when each is read (see newLayer). */
   layer: SourceLayer<ViewId>;
   /** The view of the page last shown, which a bare # (e.g. "Back") returns to. */
@@ -385,6 +391,7 @@ function renderChrome(state: State): void {
       fillAgents(state.home, state.active, Date.now(), model.agents);
       state.home.slots.agents.dataset.signature = signature;
     }
+    paintDashboard(state);
   }
   const r = route().route;
   const warnings = [state.error, state.forgeError, state.tokenWarning, state.itemNote];
@@ -748,6 +755,7 @@ async function refreshAgentDispatch(state: State): Promise<boolean> {
     state.dispatch = data.state === "ok" || !state.dispatch ? data : { ...state.dispatch, warnings: data.warnings };
     if (state.home) fillDispatch(state.home, state.dispatch, Date.now());
     paintChanges(state);
+    paintDashboard(state);
     return data.state === "ok";
   } finally {
     state.dispatchRunning = false;
@@ -883,6 +891,46 @@ function paintActive(state: State): void {
   fillUsage(state.home, model.usage ?? undefined, state.active?.local, Date.now());
   fillState(state.home, model);
   fillSummary(state.home, model, state.ops?.controller, Date.now());
+  paintDashboard(state);
+}
+
+/**
+ * Redraw the Dashboard view while it shows, if what it says changed (the
+ * chrome redraws every few seconds; a redraw would take the focus off a
+ * tile). Its approvals are the Approve cards the inbox would show.
+ */
+function paintDashboard(state: State): void {
+  const home = state.home;
+  if (!home || state.closed || !DASHBOARD_CONFIG.enabled || state.view !== "dashboard") return;
+  const now = Date.now();
+  const board = state.active?.board;
+  const inputs = {
+    data: state.dashboard,
+    dispatch: state.dispatch,
+    approvals: state.loaded ? currentNeeds(state).map(needCard).filter((c) => c?.kind === "approve" && !c.answered).length : undefined,
+    usage: state.active?.usage,
+    done: board ? doneByDay(board, now) : undefined,
+    now,
+  };
+  const text = dashboardView(inputs).textContent ?? "";
+  if (home.slots.dashboard.dataset.signature === text) return;
+  home.slots.dashboard.dataset.signature = text;
+  fillDashboard(home, inputs);
+}
+
+/** Re-read the Dashboard view's own sources; false if any part wasn't read (see SourceDef.read). */
+async function refreshDashboard(state: State): Promise<boolean> {
+  if (state.closed || state.dashboardRunning) return false;
+  state.dashboardRunning = true;
+  try {
+    const { data, ok } = await loadDashboard(state.gh, state.dashboardHistory, state.dashboard);
+    if (state.closed) return false;
+    state.dashboard = data;
+    paintDashboard(state);
+    return ok;
+  } finally {
+    state.dashboardRunning = false;
+  }
 }
 
 function paintChanges(state: State): void {
@@ -951,8 +999,9 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       { name: "queue", path: "the Workstream board's items; search of the bot's PRs", cadence: POLL_INTERVAL_MS, views: VIEWS },
       { name: "active", path: "the board, heartbeat, usage snapshot and project status", cadence: OPS_POLL_INTERVAL_MS, views: VIEWS, read: () => refreshActive(get()) },
       { name: "runs", path: "agent workflow runs and their jobs", cadence: RUNS_POLL_MS, views: VIEWS, read: () => refreshActionRuns(get()) },
-      { name: "agent-dispatch", path: "the tracker's dispatch runs, their jobs and finished runs' status comments", cadence: DISPATCH_POLL_MS, views: [SECTION_VIEW.agents, SECTION_VIEW.changes], read: () => refreshAgentDispatch(get()), when: () => get().view === SECTION_VIEW.agents || open((home) => home.sections.changes.details)() },
+      { name: "agent-dispatch", path: "the tracker's dispatch runs, their jobs and finished runs' status comments", cadence: DISPATCH_POLL_MS, views: [SECTION_VIEW.agents, SECTION_VIEW.changes, "dashboard"], read: () => refreshAgentDispatch(get()), when: () => get().view === SECTION_VIEW.agents || get().view === "dashboard" || open((home) => home.sections.changes.details)() },
       { name: "activity-events", path: "the bot's public events (GitHub's X-Poll-Interval)", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.changes], read: () => refreshActivityEvents(get()), when: open((home) => home.sections.changes.details) },
+      { name: "dashboard", path: `${HISTORY_DAYS} days of ${DISPATCH_WORKFLOW} runs (finished days read once), the harness repositories' merge queues, search of approved PRs`, cadence: POLL_INTERVAL_MS, views: ["dashboard"], read: () => refreshDashboard(get()), when: () => DASHBOARD_CONFIG.enabled },
       { name: "ops", path: "devspaces, agent runs and the bot's public events", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.agents], read: () => refreshOps(get()), when: open((home) => home.slots.opsBox) },
       { name: "news", path: "merged PRs of the harness repositories", cadence: NEWS_POLL_MS, views: [SECTION_VIEW.changes], read: () => refreshNews(get()), when: open((home) => home.sections.changes.details) },
       { name: "themes", path: "every open board item", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.priority], read: () => refreshTriage(get()), when: open((home) => home.slots.themesBox) },
@@ -2156,6 +2205,7 @@ async function start(source: TokenSource): Promise<void> {
     sources: {},
     runsRunning: false,
     dispatchResults: new Map(),
+    dashboardHistory: loadHistoryCache(),
     layer: newLayer(() => state),
     view: (opened.route === "home" && opened.view) || DEFAULT_VIEW,
     poller: newPoller(() => state),
