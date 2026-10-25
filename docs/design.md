@@ -185,7 +185,8 @@ review (v2).
 
 **Resolved (2026-09-30):** the board was owned by the `cgwalters-bot`
 user, and GitHub Apps have no account-level Projects permission
-(§1(c)), so it moved to the cgwalters-forge org
+([discussion](https://github.com/orgs/community/discussions/64849)),
+so it moved to the cgwalters-forge org
 (cgwalters-forge/tracker#144), where an App with Projects write can
 update it. App user tokens
 reach only repositories where the App is installed, which the tracker
@@ -316,17 +317,6 @@ first (stale-while-revalidate):
 
 ## Summary
 
-- **Source of truth.**
-  - Work items become markdown files with a small, restricted front matter
-    in an ordinary git repository: `items/<slug>.md`, provisionally in
-    `cgwalters-forge/workstream`.
-  - The app writes your answers as commits, through the contents API.
-  - The bot reads them with `git pull`. It trusts an answer only if **you
-    pushed** the commit that introduced it, which it checks against the
-    forge's push log, not the commit's author fields.
-  - PRs, their descriptions and their commits stay where they already are,
-    on the forge and in git.
-  - The Projects board becomes a one-way mirror, and later optional.
 - **Static site?**
   - Forgejo: yes. Its OAuth2 provider accepts public clients with PKCE, and
     its token endpoint honours the instance's `[cors]` settings.
@@ -356,272 +346,11 @@ first (stale-while-revalidate):
 - **Prior art.** Nothing does this already. We borrow ideas from Gerrit
   NoteDb, Backlog.md, Sveltia CMS and ReviewStack.
 
-## 1. Source of truth: git and markdown
+## 1. Source of truth
 
-*Superseded for now by the revision at the top: the board and issues are
-the backend, not an items repository.*
-
-### What must be stored
-
-1. **The queue: what needs you, by priority.** Today that's spread across:
-   - the Workstream board (Projects v2, owned by the `cgwalters-bot` user):
-     Status, Priority, Workflow, Org, Why, Branch, Gist, and draft bodies;
-   - questions in Why fields, fork-PR bot-meta sections and gists;
-   - the claude.ai prototype, which copied 67 of them into a hosted store.
-2. **Your answers** to decisions, and your triage approvals (triage → todo).
-3. **Review actions on forge PRs:** description edits, reworded or
-   signed-off commits, `/promote`.
-
-Item 3 already has a native home: the PR is a forge object, and its commits
-are git. The app edits them in place and adds no store of its own. The open
-question is where items 1 and 2 live.
-
-### Options
-
-**(a) A git repository of markdown work items.** One file per item.
-- History, diffs and blame come from git.
-- It's plain text: portable to any forge, or none.
-- Both forges' contents API refuse an update whose blob `sha` is stale:
-  - [GitHub](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents)
-    documents 409/422;
-  - on Forgejo a mismatch is `ErrSHADoesNotMatch`, returned as 409 (`routers/api/v1/repo/file.go`).
-- The costs: a board sync if the board is kept, a migration, and a trust
-  check (below).
-
-**(b) Issues or PRs as the markdown source, with labels for status.**
-- Neither forge versions issue bodies in git.
-- Neither has a precondition on `PATCH` of a body: last writer wins. That's
-  why `bot-pr set-body` has to reconstruct your edits from GitHub's edit
-  history.
-- A dedicated tracker repo of issues is (a) without the git history.
-
-**(c) Projects v2 draft bodies (today).**
-- Not git, and GraphQL only, on a quota every agent shares.
-- GitHub Apps can't access user-owned projects: there's no account-level
-  Projects permission, and reports say "Resource not accessible by
-  integration" ([dev.to](https://dev.to/mfauveau/why-your-github-app-cant-see-your-personal-projects-4d39),
-  [discussion](https://github.com/orgs/community/discussions/64849)).
-- Forgejo's REST API has no project endpoints at all (none in
-  [the swagger spec](https://codeberg.org/forgejo/forgejo/src/branch/forgejo/templates/swagger/v1_json.tmpl)).
-  [forgejo#5330](https://codeberg.org/forgejo/forgejo/issues/5330) is
-  open, and [forgejo#9384](https://codeberg.org/forgejo/forgejo/pulls/9384)
-  was closed unmerged to be split up.
-
-**Decision: (a).** It's the only option that is git plus markdown, portable to
-Forgejo, and has a concurrency primitive on both forges.
-
-### Item format
-
-The format is loosely modelled on
-[Backlog.md](https://github.com/MrLesk/Backlog.md) (markdown tasks with front
-matter) but is **not compatible with its tooling**. Backlog.md expects
-`task-N - Title.md` names, an `id`, and its own status values.
-
-```markdown
----
-format: 1
-title: "composefs varlink: keep the org.composefs prefix?"
-status: needs-human
-priority: P2
-rank: 35
-workflow: branch
-kind: decision
-org: composefs
-links: [https://github.com/composefs/composefs-rs/issues/651]
-pr: https://github.com/cgwalters-forge/composefs-rs/pull/7
-created: 2026-09-24
----
-
-Why this item exists and the latest result, in a few sentences.
-
-## Questions
-
-### q1: Keep the org.composefs prefix? composefs.org is NXDOMAIN
-
-The name can't change after v1, and the Go server already uses it.
-
-- A) Register composefs.org and keep org.composefs (recommended)
-- B) Switch to io.github.composefs.*
-- C) Keep the name without owning the domain
-
-<!-- answer q1 BEGIN -->
-<!-- answer q1 END -->
-```
-
-**Rules:**
-- **Front matter is a restricted YAML subset:**
-  - exactly one `key: value` per line;
-  - values are plain or double-quoted scalars, or a flow list `[a, b]`;
-  - no comments, anchors or multi-line values.
-
-  Both sides can then edit one field by rewriting one line, and a full YAML
-  parser still reads the file.
-  - This avoids needing format-preserving YAML libraries. The TypeScript
-    `yaml` library reflows aligned trailing comments: a test with yaml 2.9.1
-    changed two lines to set one field. On the Rust side the only candidate,
-    `yaml-edit`, is young.
-- **`format: 1`** versions the schema. Unknown keys and unknown sections are
-  preserved byte-for-byte, and fixtures check it.
-- **Values:**
-  - `status`: triage, todo, in-progress, draft, needs-human, in-review or
-    done.
-  - `priority`: P0 to P3.
-  - `rank`: orders items within a priority (Projects keeps manual order;
-    files need it spelled out).
-  - `workflow`: branch, analysis, pr or manual.
-  - `kind`: work, decision, review, action or credential.
-- **Answer blocks are delimited by BEGIN/END markers, not headings.**
-  - The app writes only between the markers of one question. It records the
-    chosen letter as a first line `choice: A`, followed by free markdown.
-  - The bot never writes between the markers, so the two writers never
-    touch the same lines.
-  - Headings, lists or anything else inside an answer are just content.
-  - A literal `<!-- answer ... END -->` line typed in an answer is escaped by
-    the app.
-- **One file per item.** The slug is its identity, and done items stay in
-  place.
-- **Every commit carries trailers**, as Gerrit's NoteDb records review state
-  in commit footers (defined in
-  [ChangeNoteFooters.java](https://gerrit.googlesource.com/gerrit/+/refs/heads/master/java/com/google/gerrit/server/notedb/ChangeNoteFooters.java)).
-  - Examples: `Item: composefs-varlink-name-domain`, `Status: needs-human`,
-    `Answered: q1`.
-  - `git log --format='%(trailers)' -- items/X.md` is then the item's
-    history.
-  - Trailers are claims for humans and tools to read, not proof of anything
-    (see Trust).
-- **No private data.** Same rule as the board: an item about a private
-  repository refers to it only by URL. The repository could be private
-  instead; the app doesn't care.
-
-The format gets a spec (`docs/items-format.md`) and fixtures, shared by the
-TypeScript and Rust test suites:
-- parse fixtures;
-- round-trip fixtures (unchanged bytes out);
-- edit fixtures, including "set one field → exactly one line of diff" and
-  "answer q1 → only lines between q1's markers change".
-
-### Who writes what
-
-- **You, through the app:** answers, triage approvals, and edits to
-  `status`, `priority`, `rank` and `workflow`.
-  - Each is one `PUT /repos/{o}/{r}/contents/items/X.md` carrying the blob
-    `sha` the app read. The precondition is per file, not per branch head.
-  - On a conflict (409 or 422), or a 5xx, the app refetches, reapplies your
-    edit and retries with backoff.
-    - The 5xx case matters on Forgejo: its contents API commits in a
-      temporary clone and pushes back, so a race with another push surfaces
-      as a 500 (`services/repository/files/temp_repo.go`,
-      `routers/api/v1/repo/file.go`).
-    - The app shows a conflict only if the same answer block changed
-      underneath.
-  - GitHub asks that contents writes be serialised, so the app sends one at
-    a time.
-- **You, anywhere else:** your editor, the forge's web editor, `jj`. All are
-  equally valid, and the trust check below covers them.
-- **The bot:** the `review-items` CLI (Rust, in this repository) replaces
-  `bot-board set`.
-  - It fetches, applies its edit, commits with trailers, and pushes.
-  - Its edits are programmatic ("set status to X"), so on a rejected push it
-    resets to the new upstream and reapplies them. It never merges or
-    rebases text. Neighbouring front-matter lines touched by both sides would
-    conflict in a rebase, so it doesn't rebase.
-
-### Trust: the bot acts only on what you pushed
-
-**The rule:** the bot acts on an answer, or on a triage → todo approval, only
-if the commit that introduced those lines was **pushed by the `cgwalters`
-login**.
-
-**Author fields are not evidence.**
-- GitHub links a commit to a user "by matching the email address", and your
-  email is public.
-- Both forges' contents and commit APIs accept arbitrary `author` and
-  `committer` fields. On Forgejo see `services/repository/files/file.go`.
-- So the bot's token, if prompt-injected, could create a commit that looks
-  like it's yours.
-- GitHub also doesn't sign contents-API commits made with a user token.
-  Only requests "authenticated as the GitHub App or bot" with no custom
-  author or committer are signed ("Signature verification for bots" in
-  [about commit signature verification](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)).
-  So "Verified" doesn't help either.
-- Trailers are claims too.
-
-**How the bot checks** (`review-items answered`):
-1. For each answer block or status line that changed since the last check,
-   `git blame` the lines. This is per line, not per file: your commit on top
-   of a bot commit doesn't vouch for the bot's lines. That gives the
-   introducing commit C.
-2. Find the push that introduced C:
-   - **GitHub:** [`GET /repos/{o}/{r}/activity`](https://docs.github.com/en/rest/repos/repos#list-repository-activities)
-     lists ref updates with `before`, `after` and `actor` (checked live on
-     this repository).
-   - **Forgejo:** `GET /repos/{o}/{r}/activities/feeds`, where a
-     `commit_repo` entry has `act_user`, `ref_name`, and the pushed range in
-     its content (`CompareURL`, and `Commits`, which is truncated to
-     `FEED_MAX_COMMIT_NUM`, so use the range).
-   - C was introduced by the push whose range contains it: reachable from
-     `after`, and not from `before`.
-3. Act only if that push's actor is `cgwalters`. Otherwise report "unverified
-   answer" to him and ignore it.
-
-This works for contents-API commits, which record a push by the token's
-user, and equally for your own `git push`.
-- Restrict the repository's write access to `cgwalters` and `cgwalters-bot`.
-- The bot runs the check on every poll, well within any activity-log
-  retention. How long that log is retained is undocumented; see the open
-  questions.
-
-### How the bot consumes answers
-
-The coordinator loop gains one step next to `bot-notify`, `bot-pr inbox` and
-`bot-watch`:
-- `git pull --ff-only` of the items clone;
-- then `review-items answered --since refs/bot/seen`, which lists items with
-  verified new answers.
-- Acting on an answer ends with the bot's own commit (e.g.
-  `Acted-on: q1`), so losing the local `refs/bot/seen` ref only means
-  re-reading answers it has already acted on.
-
-This is one `git fetch` plus one activity call per poll, where today it's
-GraphQL board reads.
-
-### The board, and what the mirror loses
-
-**Decision: the files are authoritative. The Projects board becomes a
-derived, one-way mirror** (`review-items sync-board`, using `bot-board`'s
-field resolution). What that changes:
-
-- **Board edits are overwritten.** State this in the board's description. The
-  sync reports any field that differs from the files before overwriting it,
-  so a stray edit is visible rather than silently lost. Triage moves to the
-  app or the files.
-- **Ordering.** Manual in-priority ordering on the board has no equivalent
-  in files, so `rank:` carries it and the sync orders cards by it.
-- **Live cards.** Issue and PR cards on the board show live state; a file's
-  `status` doesn't update itself. `bot-watch` already notices merges and
-  closes; it now rewrites the files (e.g. `status: done`), and the mirror
-  follows.
-- **Answer channels today:** Why-field edits, draft-body edits, and your
-  comments on fork PRs. Why and body edits become answer blocks. PR comments
-  and `/promote` stay as they are, via `bot-pr inbox`.
-- **Issue assignments.** `bot-notify` today adds issues you assign to the bot
-  to the board. It will create an item file instead, with `status: todo`,
-  since it's your action, verified by the notification's actor as now.
-- **Ownership.** The board belongs to the `cgwalters-bot` user, and the
-  pivot plan moves the bot to an org project. The mirror follows wherever the
-  board goes. Nothing in this design needs the board, so after v1 keep it
-  only if you like the board view.
-
-**Migration** is one-time and scripted (`review-items import`), and the result
-is reviewed as a single commit:
-- one file per board item: Why becomes the body; Branch and Gist become
-  links; the `PVTI_` id goes in `project-item:`;
-- the prototype's 67 items, merged by their `board_item` id, with options
-  lettered.
-
-Then the callers of `bot-board set` switch to `review-items`. The
-`bot-state:` archived items (poll state, the lease) aren't work items and
-stay put for now.
+Replaced by the revision at the top: the Workstream board and tracker
+issues are the backend. The earlier proposal, an items repository of
+markdown files mirrored to the board, is in git history.
 
 ## 2. Static-site feasibility
 
@@ -1063,18 +792,14 @@ a direction. This design stays a lightweight client-side app.
 
 ## Open questions for cgwalters
 
-1. **The items repository.**
-   - Is `cgwalters-forge/workstream` right, and public or private?
-   - Is it OK for the board to become a read-only mirror, with edits there
-     overwritten?
-2. **Installs of `cgwalters-review`.**
+1. **Installs of `cgwalters-review`.**
    - Is "Any account" acceptable? It gives the app a public install page,
      but it's unlisted in the Marketplace.
    - On `cgwalters-forge`: selected repositories (you add each new fork), or
      all repositories?
    - Workflows stays off unless you want it.
    - Install on bootc-dev and composefs?
-3. **Your existing app, `cgwaltersbot`.**
+2. **Your existing app, `cgwaltersbot`.**
    - Confirm it stays the bot's identity only, never used for review.
    - Who owns it (your user or an org), and what's its install setting?
    - Are expiring user tokens on?
@@ -1083,17 +808,14 @@ a direction. This design stays a lightweight client-side app.
    plan. For `cgwalters-review` I need its client ID, and the secret
    installed by you on `forge` as the `review` user's credential, never
    through the bot.
-4. **`forge`.**
+3. **`forge`.**
    - Its MagicDNS name.
    - Is the name appearing in Certificate Transparency logs acceptable?
    - Can a dedicated `review` user own the deployment, with the bot's user
      unable to read or write it?
    - Which key signs deploy tags?
-5. **Sign-off identity:** the exact `Signed-off-by` name and email.
-6. **Your Forgejo.**
+4. **Sign-off identity:** the exact `Signed-off-by` name and email.
+5. **Your Forgejo.**
    - Its version, and whether `REQUIRE_SIGNIN_VIEW` is on.
    - Are the `[cors]` and git-HTTP CORS settings acceptable?
    - Static mode, or relay mode (the default)?
-7. **Trust check.** Is "pushed by `cgwalters`, per the forge's push log" the
-   rule you want for answers and triage approvals, including edits you make
-   outside the app?

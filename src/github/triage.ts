@@ -14,7 +14,7 @@
 // commas or spaces, bare or in code spans.
 
 import { parseQuestion, type Question, unfencedLines } from "../answer.ts";
-import { type Item, NO_PRIORITY, parseIssueUrl, PRIORITY_ORDER } from "./board.ts";
+import { type Item, parseIssueUrl, priorityIndex } from "./board.ts";
 import { DONE, FORGE_ORG, TRACKER_REPO, TRIAGE_THEMES, type Verdict, VERDICTS } from "./config.ts";
 
 /** A verdict, or none: an item not yet judged, or with a verdict the app doesn't know. */
@@ -78,14 +78,9 @@ export interface Triage {
   total: number;
 }
 
-function priorityRank(item: Item): number {
-  const i = PRIORITY_ORDER.indexOf(item.priority ?? NO_PRIORITY);
-  return i < 0 ? PRIORITY_ORDER.length : i;
-}
-
 /** By priority, keeping board order within one (the sort is stable). */
 function byPriority(items: readonly Item[]): Item[] {
-  return [...items].sort((a, b) => priorityRank(a) - priorityRank(b));
+  return [...items].sort((a, b) => priorityIndex(a.priority) - priorityIndex(b.priority));
 }
 
 function group(theme: string, items: readonly Item[], filter: TriageFilter): ThemeGroup {

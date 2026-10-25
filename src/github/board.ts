@@ -139,6 +139,12 @@ export const PRIORITY_ORDER: readonly string[] = ["P0", "P1", "P2", "P3"];
 /** Group heading for items with no priority. */
 export const NO_PRIORITY = "No priority";
 
+/** Rank in PRIORITY_ORDER; anything else, none included, ranks after it. */
+export function priorityIndex(p: string | undefined): number {
+  const i = PRIORITY_ORDER.indexOf(p ?? NO_PRIORITY);
+  return i < 0 ? PRIORITY_ORDER.length : i;
+}
+
 const ISSUE_URL_RE = /^https:\/\/github\.com\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/(?:issues|pull)\/(\d+)$/;
 const API_ISSUE_URL_RE = /^https:\/\/api\.github\.com\/repos\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/issues\/(\d+)$/;
 
