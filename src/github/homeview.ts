@@ -17,6 +17,8 @@ import type { Active, AgentSummary } from "./agents.ts";
 import { agentsBody, agentsSummary } from "./agentsview.ts";
 import { blockedBy, type Item } from "./board.ts";
 import { diffBoard, type Snapshot } from "./boardfeed.ts";
+import type { DispatchData } from "./dispatch.ts";
+import { dispatchPanel } from "./dispatchview.ts";
 import { type FeedOptions, feedSection } from "./boardfeedview.ts";
 import type { QueueFilter } from "./filter.ts";
 import type { Heartbeat } from "./heartbeat.ts";
@@ -73,6 +75,8 @@ export interface Slots {
   people: HTMLElement;
   peopleCount: HTMLElement;
   runs: HTMLElement;
+  /** The tracker's dispatch runs, live and recently finished. */
+  dispatch: HTMLElement;
   freshness: HTMLElement;
   status: HTMLElement;
   focus: HTMLElement;
@@ -158,6 +162,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const status = h("section", { class: "dashboard-status", "aria-label": "Status" }, h("h2", {}, "Status"));
   const focus = h("section", { class: "dashboard-focus", "aria-label": "Focus" }, h("h2", {}, "Focus"));
   const runs = h("div", { class: "runs-slot", id: "live-runs" });
+  const dispatch = h("div", { class: "dispatch-slot" }, dispatchPanel(undefined, 0));
   const freshness = h("p", { class: "source-freshness note", "aria-label": "Source freshness" });
   const agents = h("div", { class: "agents-slot" });
   const ops = fold("ops-fold", "Devspaces, agent runs and the bot's activity", hooks.opsToggled);
@@ -189,11 +194,12 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     inView("board", status),
     inView("inbox", peopleSection),
     inView("board", focus),
+    inView("agents", dispatch),
     inView("agents", runs),
     ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details),
     freshness,
   );
-  return { el, sections, slots: { summary, people, peopleCount, runs, freshness, status, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
+  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly }, expected };
 }
 
 export function fillState(home: Home, state: PageState): void {
@@ -461,6 +467,10 @@ export function fillAgents(home: Home, active: Active | undefined, now: number, 
   const s = agentsSummary(active, now, summary);
   setCount(home, "agents", s.count, { title: s.title });
   home.sections.agents.count.classList.toggle("under", s.under);
+}
+
+export function fillDispatch(home: Home, data: DispatchData | undefined, now: number): void {
+  home.slots.dispatch.replaceChildren(dispatchPanel(data, now));
 }
 
 /** The ops detail; returns its element, whose live times main.ts keeps ticking. */

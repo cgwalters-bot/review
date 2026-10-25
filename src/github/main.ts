@@ -6,6 +6,7 @@ import type { Answer } from "../answer.ts";
 import { h } from "../dom.ts";
 import { pageState, type PageState } from "./state.ts";
 import { loadActionRuns, RUNS_POLL_MS, type RunsData } from "./runs.ts";
+import { DISPATCH_POLL_MS, type DispatchData, loadDispatch, type ResultCache } from "./dispatch.ts";
 import { readSource, type Sources } from "./freshness.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
@@ -74,7 +75,7 @@ import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo 
 import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillAgents, fillChanges, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { fillAgents, fillChanges, fillDispatch, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadProposals, type Offered, plan, type Plan } from "./actions.ts";
 import { actionsPanel, proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
@@ -125,6 +126,10 @@ interface State {
   peopleWrites?: number;
   actionRuns?: RunsData;
   runsRunning: boolean;
+  /** The tracker's dispatch runs as last read, and the finished ones' results read so far. */
+  dispatch?: DispatchData;
+  dispatchResults: ResultCache;
+  dispatchRunning?: boolean;
   /** What the views show and when each is read (see newLayer). */
   layer: SourceLayer<ViewId>;
   /** The view of the page last shown, which a bare # (e.g. "Back") returns to. */
@@ -663,6 +668,7 @@ function renderHome(state: State): void {
   paintChanges(state);
   paintOps(state);
   paintThemes(state);
+  fillDispatch(home, state.dispatch, Date.now());
   markSelected(state, false);
   tickSources(state);
 }
@@ -708,6 +714,22 @@ async function refreshActionRuns(state: State): Promise<boolean> {
     return runs.state === "ok";
   } finally {
     state.runsRunning = false;
+  }
+}
+
+/** Re-read the dispatch runs; false if nothing was read (see SourceDef.read). */
+async function refreshAgentDispatch(state: State): Promise<boolean> {
+  if (state.closed || state.dispatchRunning) return false;
+  state.dispatchRunning = true;
+  try {
+    const data = await loadDispatch(state.gh, state.dispatchResults);
+    if (state.closed) return false;
+    // A failed read keeps the cards last read, with why they weren't refreshed.
+    state.dispatch = data.state === "ok" || !state.dispatch ? data : { ...state.dispatch, warnings: data.warnings };
+    if (state.home) fillDispatch(state.home, state.dispatch, Date.now());
+    return data.state === "ok";
+  } finally {
+    state.dispatchRunning = false;
   }
 }
 
@@ -888,7 +910,7 @@ function paintOps(state: State): void {
  * atop every view, and the decisions the header's counts, so every view
  * needs them too. The merged PRs, the ops detail, the themes and the
  * people's asks are read only for their view, while their section or
- * fold is open. A poll asked for early (after an action) re-reads the
+ * fold is open; the dispatch runs only for the Agents view. A poll asked for early (after an action) re-reads the
  * queue only: the others wait for their cadence, which the usual poll
  * interval meets. A refresh he asked for from another view than the
  * inbox doesn't force the decisions' redraw over his unsent picks there.
@@ -903,6 +925,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       { name: "queue", path: "the Workstream board's items; search of the bot's PRs", cadence: POLL_INTERVAL_MS, views: VIEWS },
       { name: "active", path: "the board, heartbeat, usage snapshot and project status", cadence: OPS_POLL_INTERVAL_MS, views: VIEWS, read: () => refreshActive(get()) },
       { name: "runs", path: "agent workflow runs and their jobs", cadence: RUNS_POLL_MS, views: VIEWS, read: () => refreshActionRuns(get()) },
+      { name: "agent-dispatch", path: "the tracker's dispatch runs, their jobs and finished runs' status comments", cadence: DISPATCH_POLL_MS, views: [SECTION_VIEW.agents], read: () => refreshAgentDispatch(get()) },
       { name: "ops", path: "devspaces, agent runs and the bot's public events", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.agents], read: () => refreshOps(get()), when: open((home) => home.slots.opsBox) },
       { name: "news", path: "merged PRs of the harness repositories", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.changes], read: () => refreshNews(get()), when: open((home) => home.sections.changes.details) },
       { name: "themes", path: "every open board item", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.priority], read: () => refreshTriage(get()), when: open((home) => home.slots.themesBox) },
@@ -2105,6 +2128,7 @@ async function start(source: TokenSource): Promise<void> {
   const state: State = {
     sources: {},
     runsRunning: false,
+    dispatchResults: new Map(),
     layer: newLayer(() => state),
     view: (opened.route === "home" && opened.view) || DEFAULT_VIEW,
     poller: newPoller(() => state),
