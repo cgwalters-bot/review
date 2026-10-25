@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parseDocument } from "../src/github/decisiondocument.ts";
 import { type Card, documentCard, needCard } from "../src/github/inbox.ts";
-import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, fillInbox, holdsDraft, type InboxHooks } from "../src/github/inboxview.ts";
+import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, fillInbox, holdsDraft, INBOX_PAGE, type InboxHooks } from "../src/github/inboxview.ts";
+import type { Offered } from "../src/github/actions.ts";
 import type { Item } from "../src/github/board.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
@@ -164,5 +165,25 @@ describe("fillInbox", () => {
     assert.notEqual(cardOf(list, "document:D1"), card);
     assert.ok(cardOf(list, "document:D1")!.classList.contains("card-done"));
     assert.equal(cardOf(list, "document:D1")!.querySelector("form"), null);
+  });
+
+  it("draws the first page of cards, reading only their proposals, and the rest on Show more", () => {
+    const read: number[] = [];
+    const offerBody = async (o: Offered) => {
+      read.push(o.issue);
+      return document.createElement("section");
+    };
+    const offer = (issue: number): Offered => ({ issue, comment: { id: `IC_${issue}`, databaseId: issue, body: "", updatedAt: "2026-10-25T10:00:00Z", author: { login: "planner" }, editor: null, lastEditedAt: null }, proposal: { schema: "agent-board/operator-action/v1", title: `P${issue}`, why: "", actions: [] } });
+    const cards = Array.from({ length: INBOX_PAGE + 2 }, (_, i) => ({ ...entry(`D${i + 1}`), offers: [offer(i + 1)] }));
+    const box = document.createElement("div");
+    const list = document.createElement("div");
+    box.append(list);
+    fillInbox(list, cards, { ...hooks, offerBody });
+    assert.deepEqual([keys(list).length, read], [INBOX_PAGE, Array.from({ length: INBOX_PAGE }, (_, i) => i + 1)]);
+    const more = box.querySelector<HTMLButtonElement>(".inbox-more")!;
+    assert.equal(more.textContent, "Show 2 more of 2");
+    assert.equal(cardOf(list, "document:D1")!.querySelectorAll(".card-body").length, 1, "the decision carries its proposal");
+    more.click();
+    assert.deepEqual([keys(list).length, read.length, box.querySelector(".inbox-more")], [INBOX_PAGE + 2, INBOX_PAGE + 2, null]);
   });
 });

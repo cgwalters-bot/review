@@ -9,6 +9,7 @@ import type { UsageData } from "./usage.ts";
 import type { ProjectStatus } from "./backend.ts";
 import type { Sources } from "./freshness.ts";
 import { RUNS_POLL_MS, type RunsData } from "./runs.ts";
+import { DISPATCH_POLL_MS, type DispatchData } from "./dispatch.ts";
 
 /** What the strip shows: the whole board and the heartbeat, as last read. */
 export interface Active {
@@ -80,6 +81,8 @@ export interface AgentSummary {
   lanes: Record<Lane, number>;
   /** Unconfirmed heartbeat workers and board claims, excluded from running. */
   unconfirmed: number;
+  /** Dispatch runs not started yet (dispatch.yml's live runs not in progress), newest first. */
+  queued: { url: string; title: string }[];
   /** The heartbeat's freshness: undefined when it couldn't be read, null when none is published. */
   heartbeat?: HeartbeatState | null;
 }
@@ -135,8 +138,13 @@ export function actionRunIdentity(url: string | undefined): string | undefined {
   return match ? `${match[1]!.toLowerCase()}/${match[2]!.toLowerCase()}/${match[3]}` : undefined;
 }
 
-/** Merge by concrete run identity, not by issue: local and remote jobs may share an item. */
-export function activeAgents(board: readonly Item[], hb: Heartbeat | null | undefined, now: number, target: number = AGENT_TARGET, execution: { runs?: RunsData | undefined; sources?: Sources } = {}): AgentSummary {
+/**
+ * Merge by concrete run identity, not by issue: local and remote jobs may
+ * share an item. Agent runs are both agent.yml's (`runs`) and the
+ * tracker's dispatch.yml's in-progress list (`dispatch`); its queued ones
+ * haven't started an agent.
+ */
+export function activeAgents(board: readonly Item[], hb: Heartbeat | null | undefined, now: number, target: number = AGENT_TARGET, execution: { runs?: RunsData | undefined; dispatch?: DispatchData | undefined; sources?: Sources } = {}): AgentSummary {
   const stopped = hb?.loopState === "stopped";
   // A stopped coordinator isn't stale to the ops view, but nothing
   // vouches for the workers it last listed any more either.
@@ -173,6 +181,26 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
     for (const item of board) if (actionRunIdentity(item.run) === key) {
       used.add(item.nodeId);
       if (!a.itemUrl) context(a, item);
+    }
+    remote.set(key, a);
+    agents.push(a);
+  }
+  const dispatch = execution.dispatch;
+  const dispatchFresh = dispatch?.state === "ok" && now >= dispatch.at && now - dispatch.at <= 2 * DISPATCH_POLL_MS;
+  for (const run of dispatch?.live ?? []) {
+    const key = actionRunIdentity(run.url);
+    if (!key || remote.has(key) || run.status !== "in_progress") continue;
+    const t = run.target;
+    const a: ActiveAgent = { name: run.title, title: run.title, status: run.step?.name ?? run.status, since: run.startedAt, source: "actions", location: "remote", lane: "unknown", runUrl: run.url, stale: !dispatchFresh };
+    const url = t ? `https://github.com/${t.owner}/${t.repo}/issues/${t.number}` : undefined;
+    const item = board.find((i) => actionRunIdentity(i.run) === key) ?? (url ? itemFor(url, board) : undefined);
+    if (item) {
+      used.add(item.nodeId);
+      context(a, item);
+    } else if (url) {
+      a.itemUrl = url;
+      a.itemRef = refText(url)!;
+      a.lane = urlLane(url);
     }
     remote.set(key, a);
     agents.push(a);
@@ -247,7 +275,7 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
   for (const a of live) lanes[a.lane]++;
   const locations = { remote: 0, local: 0 };
   for (const a of live) locations[a.location]++;
-  const summary: AgentSummary = { executionKnown: hb !== undefined || runs?.state === "ok", agents: [...live, ...unconfirmed], running: live.length, target, lanes, unconfirmed: unconfirmed.length, locations, opencode: live.filter((a) => a.engine === "opencode").length, unknownEngine: live.filter((a) => !a.engine).length };
+  const summary: AgentSummary = { executionKnown: hb !== undefined || runs?.state === "ok" || dispatch?.state === "ok", agents: [...live, ...unconfirmed], running: live.length, target, lanes, unconfirmed: unconfirmed.length, queued: (dispatch?.live ?? []).filter((r) => r.status !== "in_progress").map((r) => ({ url: r.url, title: r.title })), locations, opencode: live.filter((a) => a.engine === "opencode").length, unknownEngine: live.filter((a) => !a.engine).length };
   if (hb === null) summary.heartbeat = null;
   else if (hb) summary.heartbeat = { updatedAt: hb.updatedAt, loopState: hb.loopState, stale: isStale(hb, now) || hbSource === "cached" || hbSource === "unavailable", stopped };
   return summary;

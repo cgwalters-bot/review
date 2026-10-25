@@ -6,9 +6,9 @@ import shared from "./fixtures/operator-actions.json" with { type: "json" };
 import vendor from "../docs/operator-actions.vendor.json" with { type: "json" };
 import schema from "../docs/operator-actions.schema.json" with { type: "json" };
 import { GitHub } from "../src/github/api.ts";
-import { ACTION_CONFIG, actionConfig, checkRulesetSource, comments, execute, loadProposals, marker, normalizeRuleset, plan, proposals, rulesetDigest, RULESET_SOURCE_LIMIT, validateProposal, type Action, type Comment, type Offered, type Proposal } from "../src/github/actions.ts";
+import { ACTION_CONFIG, actionConfig, checkRulesetSource, comments, execute, loadProposals, marker, PROPOSAL_ISSUES, PROPOSAL_LABEL, type ProposalCache, normalizeRuleset, plan, proposals, rulesetDigest, RULESET_SOURCE_LIMIT, validateProposal, type Action, type Comment, type Offered, type Proposal } from "../src/github/actions.ts";
 import { KEYWORDS, matchesActionSchema } from "../src/github/actionschema.ts";
-import { actionsPanel, proposalCard } from "../src/github/actionsview.ts";
+import { proposalCard } from "../src/github/actionsview.ts";
 import { installDom } from "./helpers.ts";
 
 const win = installDom();
@@ -336,9 +336,34 @@ it("accepts only named writers with trusted last editors and exactly one unquote
 it("bounds discovery and refuses truncated or closed proposal issues", async () => {
   const m = mock();
   assert.equal((await loadProposals(m.gh, c)).offers.length, 1);
-  assert.ok(m.calls.some((v) => v.path.includes("per_page=20")));
+  assert.ok(m.calls.some((v) => v.path === `/repos/${c.tracker}/issues?state=open&labels=${PROPOSAL_LABEL}&sort=updated&direction=desc&per_page=${PROPOSAL_ISSUES}`));
   m.more(); await assert.rejects(comments(m.gh, c, 9), /100 comments/);
   const closed = mock(); closed.close(); await assert.rejects(comments(closed.gh, c, 9), /closed/);
+});
+
+it("reads a labelled issue's comments again only once it moved, and says when the index is full", async () => {
+  const o = offer(); const reads: number[] = [];
+  let listed: { number: number; updated_at: string }[] = [{ number: 9, updated_at: "2026-10-25T10:00:00Z" }];
+  const gh = new GitHub(async () => "token", async (url, init) => {
+    if (url.includes(`labels=${PROPOSAL_LABEL}`)) return Response.json(listed);
+    reads.push(JSON.parse(init!.body as string).variables.issue as number);
+    return Response.json({ data: { repository: { issue: { state: "OPEN", comments: { nodes: [o.comment], pageInfo: { hasNextPage: false } } } } } });
+  });
+  const cache: ProposalCache = new Map();
+  // the issues listed, then the comment reads so far, the offers and whether the full index is warned of
+  const steps: [typeof listed, number[], number, boolean][] = [
+    [listed, [9], 1, false],
+    [listed, [9], 1, false],
+    [[{ number: 9, updated_at: "2026-10-25T11:00:00Z" }], [9, 9], 1, false],
+    [[], [9, 9], 0, false],
+    [Array.from({ length: PROPOSAL_ISSUES }, (_, i) => ({ number: 100 + i, updated_at: "2026-10-25T12:00:00Z" })), [9, 9, ...Array.from({ length: PROPOSAL_ISSUES }, (_, i) => 100 + i)], PROPOSAL_ISSUES, true],
+  ];
+  for (const [issues, want, offers, full] of steps) {
+    listed = issues;
+    const result = await loadProposals(gh, c, cache);
+    assert.deepEqual([reads, result.offers.length, result.warnings.some((w) => w.includes("only the"))], [want, offers, full]);
+  }
+  assert.equal(cache.size, PROPOSAL_ISSUES, "an issue no longer labelled is forgotten");
 });
 
 it("keeps valid offers when another issue has unreadable or invalid proposals", async () => {
@@ -484,16 +509,13 @@ it("does not mutate after a competing earlier receipt or a target change after r
   }
 });
 
-it("keeps discovery opt-in, renders plain text and disables stale proposals", async () => {
+it("renders plain text and disables stale proposals", async () => {
   for (const stale of [true, false]) {
     const o = offer(); o.proposal.title = "<img src=x onerror=evil()>"; o.comment.body = `\`\`\`agent-board-action\n${JSON.stringify(o.proposal)}\n\`\`\``;
     const m = mock(o); if (stale) m.issue("/repos/example/tasks/issues/1").state = "closed";
-    const panel = actionsPanel(m.gh, c); document.body.replaceChildren(panel);
-    assert.equal(m.calls.length, 0); assert.equal((panel as HTMLDetailsElement).open, false);
-    panel.querySelector<HTMLButtonElement>("button")!.click();
-    for (let i = 0; i < 100 && !panel.querySelector(".operator-proposal"); i++) await new Promise((r) => setTimeout(r, 1));
+    const panel = await proposalCard(m.gh, c, o, () => false, () => {}); document.body.replaceChildren(panel);
     assert.ok(panel.textContent?.includes(o.proposal.title)); assert.equal(panel.querySelector("img"), null);
-    assert.equal(panel.querySelectorAll<HTMLButtonElement>("button")[1]!.disabled, stale);
+    assert.equal(panel.querySelector<HTMLButtonElement>("button")!.disabled, stale);
     assert.equal(panel.textContent?.includes("Refused: Error: Action 1: Stale"), stale);
     assert.ok(panel.querySelector("pre")?.textContent?.includes("close_issue"));
     assert.equal(win.document.querySelector("script"), null);

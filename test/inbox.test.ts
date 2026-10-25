@@ -5,7 +5,7 @@ import type { Offered, Plan } from "../src/github/actions.ts";
 import { rerunDispatchRun } from "../src/github/backend.ts";
 import type { Item } from "../src/github/board.ts";
 import { type DocumentEntry, type Mark, parseDocument } from "../src/github/decisiondocument.ts";
-import { type Card, type DispatchRun, documentCard, doCard, inboxCards, loadDispatchRuns, needCard, offeredReruns, parseRunTitle, rerunCards, sendCard } from "../src/github/inbox.ts";
+import { attachOffers, type Card, type DispatchRun, documentCard, doCard, inboxCards, linksTo, loadDispatchRuns, needCard, offeredReruns, parseRunTitle, rerunCards, sendCard } from "../src/github/inbox.ts";
 import type { Need } from "../src/github/needs.ts";
 import type { DraftIssue } from "../src/github/reviewdrafts.ts";
 import { scriptedFetch } from "./helpers.ts";
@@ -161,11 +161,54 @@ describe("rerunDispatchRun", () => {
   }
 });
 
+const proposal = (issue: number, id = issue): Offered => ({ issue, comment: { id: `IC_${id}`, databaseId: id, body: "", updatedAt: at(2), author: { login: "planner" }, editor: null, lastEditedAt: null }, proposal: { schema: "agent-board/operator-action/v1", title: `Proposal ${id}`, why: "D15", actions: [] } });
+
 describe("Do cards", () => {
-  const offer: Offered = { issue: 12, comment: { id: "IC_1", databaseId: 5, body: "", updatedAt: at(2), author: { login: "planner" }, editor: null, lastEditedAt: null }, proposal: { schema: "agent-board/operator-action/v1", title: "Create the ruleset", why: "D15", actions: [] } };
-  const plan: Plan = { states: ["o/r#1 · now \"open\" → \"closed\""], expected: ["open"], mutations: [undefined] };
-  it("a proposal whose preconditions hold", () => assert.equal(outcome(doCard(offer, plan)), "present"));
-  it("a proposal whose precondition no longer holds", () => assert.equal(outcome(doCard(offer, undefined)), "absent"));
+  it("a proposal no decision carries, on its tracker issue", () => assert.deepEqual([outcome(doCard(proposal(12))), doCard(proposal(12)).where], ["present", "cgwalters-forge/tracker#12"]));
+});
+
+describe("attachOffers", () => {
+  const doc = parseDocument([
+    "### D15 Create the org ruleset for the workflow checker\nAbout: cgwalters-forge/tracker#12\n- [ ] A) Create it\nReply:",
+    "### D16 Pick a name\nSee https://github.com/cgwalters-forge/tracker/issues/13 for the proposal.\n- [ ] A) This\nReply:",
+    "### D17 Unrelated\nAbout: example/work#12\nMentions cgwalters-forge/tracker#140 and other/tracker#14.\n- [ ] A) Yes\nReply:",
+  ].join("\n\n"));
+  const cards = (): Card[] => [
+    ...doc.map((e) => documentCard(e, undefined)!),
+    needCard(answerNeed({ key: "item:I_7" }, { body: "Run the proposal on cgwalters-forge/tracker#15 first; see also cgwalters-forge/tracker#16." }))!,
+    needCard(answerNeed({ key: "item:I_8", where: "cgwalters-forge/tracker#16" }, { nodeId: "I_8", url: "https://github.com/cgwalters-forge/tracker/issues/16", ref: { owner: "cgwalters-forge", repo: "tracker", number: 16 } }))!,
+    needCard(approveNeed())!,
+  ];
+  // proposal issues; which card carries each (by key), or "do" for a card of its own
+  const cases: [string, number[], string[]][] = [
+    ["a decision About the proposal's issue carries it (D15)", [12], ["document:D15"]],
+    ["a decision linking to the issue by URL", [13], ["document:D16"]],
+    ["an ask whose question links to it", [15], ["item:I_7"]],
+    ["an ask on the proposal's own issue", [7], ["item:I_7"]],
+    ["the issue a card is about wins over an earlier card's link to it", [16], ["item:I_8"]],
+    ["#14 is not #140, and another repository's #14 is not the tracker's", [14], ["do"]],
+    ["a proposal with no decision is a card of its own", [99], ["do"]],
+    ["a decision carries every proposal on its issue", [12, 12], ["document:D15", "document:D15"]],
+  ];
+  for (const [name, issues, want] of cases) it(name, () => {
+    const out = attachOffers(cards(), issues.map((n, i) => proposal(n, 100 + i)));
+    const carrier = (id: number) => out.find((c) => c.offers?.some((o) => o.comment.databaseId === id))?.key ?? (out.some((c) => c.kind === "do" && c.offer.comment.databaseId === id) ? "do" : "none");
+    assert.deepEqual(issues.map((_, i) => carrier(100 + i)), want);
+    assert.equal(out.filter((c) => c.kind !== "do").length, cards().length, "no decision is dropped or doubled");
+  });
+
+  it("finds a link only as a whole reference", () => {
+    const cases: [string, boolean][] = [
+      ["cgwalters-forge/tracker#12", true],
+      ["(cgwalters-forge/tracker#12)", true],
+      ["https://github.com/cgwalters-forge/tracker/issues/12#issuecomment-1", true],
+      ["cgwalters-forge/tracker#123", false],
+      ["evil-cgwalters-forge/tracker#12", false],
+      ["https://github.com/cgwalters-forge/tracker/issues/120", false],
+      ["#12", false],
+    ];
+    for (const [text, want] of cases) assert.equal(linksTo(text, "cgwalters-forge/tracker", 12), want, text);
+  });
 });
 
 describe("document entry cards", () => {
@@ -194,7 +237,7 @@ describe("document entry cards", () => {
 });
 
 describe("inboxCards", () => {
-  it("lists the waiting cards by kind, then those he did", () => {
+  it("lists a dated card before undated ones, these by kind, then those he did", () => {
     const entries = parseDocument("### D2 Ask\n- [ ] A) Yes\nReply:\n\n### D3 Done here\n- [x] A) Yes\nReply:\n");
     const cards = inboxCards({
       needs: [approveNeed(), answerNeed({ done: true }), answerNeed({ key: "item:I_2" })],
@@ -203,6 +246,24 @@ describe("inboxCards", () => {
       runs: [run(1, "o/r#5", 1, "completed", "failure")],
       now: NOW,
     });
-    assert.deepEqual(cards.map((c) => `${c.kind}${c.answered ? " (answered)" : ""}`), ["document", "answer", "approve", "send", "rerun", "document (answered)", "answer (answered)"]);
+    assert.deepEqual(cards.map((c) => `${c.kind}${c.answered ? " (answered)" : ""}`), ["rerun", "document", "answer", "approve", "send", "document (answered)", "answer (answered)"]);
+  });
+
+  describe("orders by board Priority, then age", () => {
+    const doc = (id: string, about: string, asked?: string) => `### ${id} Ask\nAbout: ${about}${asked ? `, asked ${asked}` : ""}\n- [ ] A) Yes\nReply:`;
+    const priorities: Record<string, string> = { "example/work#1": "P2", "example/work#2": "P0", "cgwalters-forge/tracker#30": "P1", "o/r#5": "P0" };
+    // name, the inputs, the card keys in order
+    const cases: [string, Omit<Parameters<typeof inboxCards>[0], "now" | "priorityOf">, string[]][] = [
+      ["P0 before P2, whatever the kind", { document: { entries: parseDocument([doc("D1", "example/work#1"), doc("D2", "example/work#2")].join("\n\n")), marks: new Map() } }, ["document:D2", "document:D1"]],
+      ["a need's own Priority", { needs: [answerNeed({ key: "a", priority: "P2" }), answerNeed({ key: "b", priority: "P0" }, { nodeId: "I_2" })] }, ["b", "a"]],
+      ["the older first at one Priority", { document: { entries: parseDocument([doc("D3", "example/work#3", "2026-10-20"), doc("D4", "example/work#4", "2026-10-10")].join("\n\n")), marks: new Map() } }, ["document:D4", "document:D3"]],
+      ["one without a Priority after those with one", { document: { entries: parseDocument([doc("D5", "example/work#9"), doc("D6", "example/work#1")].join("\n\n")), marks: new Map() } }, ["document:D6", "document:D5"]],
+      ["a proposal's own card by its issue's Priority", { offers: [proposal(31), proposal(30)], runs: [run(1, "o/r#5", 1, "completed", "failure")] }, ["rerun:o/r#5", "do:30", "do:31"]],
+      ["a decision carrying a proposal keeps its own place", { offers: [proposal(12)], document: { entries: parseDocument([doc("D7", "cgwalters-forge/tracker#12"), doc("D8", "example/work#2")].join("\n\n")), marks: new Map() } }, ["document:D8", "document:D7"]],
+    ];
+    for (const [name, input, want] of cases) it(name, () => {
+      const cards = inboxCards({ ...input, priorityOf: (item) => priorities[item], now: NOW });
+      assert.deepEqual(cards.map((c) => c.key), want);
+    });
   });
 });

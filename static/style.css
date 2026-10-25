@@ -586,7 +586,8 @@ details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font
 }
 
 /* The inbox's cards (decisions-config.json's inbox): kind chip, title and age, one line, one action. */
-.inbox-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.inbox-tail { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.inbox-more { margin-top: 8px; }
 .row.card { display: block; padding: 12px 14px; cursor: default; }
 .row.card:focus { outline: none; border-color: var(--accent); }
 .row.card-done { opacity: .7; }
@@ -781,7 +782,6 @@ details.sub-fold > div { padding-top: 8px; }
 .chat-full .chat-log { max-height: none; display: block; }
 body:has(.chat-full) { overflow: hidden; }
 /* Proposal text and literal mutations must wrap without widening a phone. */
-.operator-actions { padding: .75rem; }
 .operator-proposal { min-width: 0; overflow-wrap: anywhere; }
 .operator-proposal pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .operator-proposal ol { padding-left: 1.5rem; }

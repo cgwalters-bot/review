@@ -78,8 +78,8 @@ import type { Active } from "./agents.ts";
 import { DASHBOARD_CONFIG, type DashboardData, doneByDay, HISTORY_DAYS, type HistoryCache, loadDashboard, loadHistoryCache } from "./dashboard.ts";
 import { dashboardView } from "./dashboardview.ts";
 import { fillAgents, fillBoardStatus, fillChanges, fillDashboard, fillDispatch, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
-import { ACTION_CONFIG, loadProposals, type Offered, plan, type Plan } from "./actions.ts";
-import { actionsPanel, proposalCard } from "./actionsview.ts";
+import { ACTION_CONFIG, loadProposals, type Offered, PROPOSAL_LABEL, type ProposalCache } from "./actions.ts";
+import { proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
 import { draftCard, draftReviewForm, reviewDraftsPanel } from "./reviewdraftsview.ts";
 import { loadProjectStatus } from "./backend.ts";
@@ -482,11 +482,9 @@ function mountHome(state: State): Home {
     el.setAttribute(VIEW_ATTR, SECTION_VIEW.needs);
     state.home!.el.prepend(el);
   };
+  // Proposals show only as the inbox's cards.
   if (DECISIONS_CONFIG.inbox) mountInbox(state, state.home);
-  else {
-    if (ACTION_CONFIG) inbox(actionsPanel(state.gh, ACTION_CONFIG));
-    if (REVIEW_DRAFT_CONFIG) inbox(reviewDraftsPanel(state.gh, REVIEW_DRAFT_CONFIG, render));
-  }
+  else if (REVIEW_DRAFT_CONFIG) inbox(reviewDraftsPanel(state.gh, REVIEW_DRAFT_CONFIG, render));
   showMain(state.home.el);
   return state.home;
 }
@@ -501,56 +499,49 @@ interface Inbox {
   document?: { body: string; marks: Map<string, Mark> };
   drafts?: DraftIssue[];
   runs?: DispatchRun[];
-  /** Proposals as last loaded by hand, with their plans when they held. */
-  offers?: { offer: Offered; plan?: Plan }[];
+  /** The open proposals, from the labelled tracker issues (loadProposals). */
+  offers?: Offered[];
+  /** Each labelled issue's proposals, re-read only once the issue moves. */
+  proposals: ProposalCache;
   /** Document writes, one after another, each on the body the last left. */
   writes: Promise<void>;
   /** Proposal executions: one at a time, and no reload of the proposals (which would redraw its card) meanwhile. */
   busy: boolean;
-  load?: HTMLButtonElement;
-}
-
-/** A proposal started or finished executing. */
-function setInboxBusy(inbox: Inbox, busy: boolean): void {
-  inbox.busy = busy;
-  if (inbox.load) inbox.load.disabled = busy;
 }
 
 /**
  * The inbox's cards, in place of the Decisions rows, the decisions
- * document and the opt-in panels: Draft review and loading proposals
- * (still by hand, never on a poll) head the list.
+ * document and the opt-in panels. It opens on the first card; Draft
+ * review follows the list.
  */
 function mountInbox(state: State, home: Home): void {
   const list = h("div", { class: "inbox-cards" });
   const status = h("p", { class: "note", role: "status" });
   const empty = h("p", { class: "empty", hidden: "" }, "All caught up: nothing needs you right now.");
-  const head = h("div", { class: "inbox-head" });
-  const inbox: Inbox = { list, status, notes: new Map(), empty, writes: Promise.resolve(), busy: false };
+  const tail = h("div", { class: "inbox-tail" });
+  const inbox: Inbox = { list, status, notes: new Map(), empty, proposals: new Map(), writes: Promise.resolve(), busy: false };
   state.inbox = inbox;
-  if (REVIEW_DRAFT_CONFIG) head.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => void refreshDrafts(state)));
-  if (ACTION_CONFIG) {
-    const config = ACTION_CONFIG;
-    const load = h("button", { type: "button", class: "small" }, "Load proposals");
-    inbox.load = load;
-    load.addEventListener("click", () => {
-      if (load.disabled || inbox.busy) return;
-      load.disabled = true;
-      inboxNote(inbox, "proposals", "Reading proposals…");
-      // Each proposal's plan reads its targets: one that no longer holds is no card.
-      void loadProposals(state.gh, config).then(async ({ offers, warnings }) => {
-        const planned: { offer: Offered; plan?: Plan }[] = [];
-        for (const offer of offers) planned.push({ offer, ...(await plan(state.gh, config, offer.proposal.actions).then((p) => ({ plan: p }), () => ({}))) });
-        inbox.offers = planned;
-        inboxNote(inbox, "proposals", warnings.map((w) => `Refused issue: ${w}`).join(" "));
-        paintInbox(state);
-      }).catch((e: unknown) => inboxNote(inbox, "proposals", `Couldn't read the proposals: ${message(e)}`)).finally(() => { load.disabled = inbox.busy; });
-    });
-    head.append(load);
-  }
+  if (REVIEW_DRAFT_CONFIG) tail.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => void refreshDrafts(state)));
   home.slots.decisionDocument.hidden = true;
   home.slots.needs.hidden = true;
-  home.sections.needs.body.prepend(head, status, list, empty);
+  home.sections.needs.body.prepend(status, list, empty, tail);
+}
+
+/** Re-read the proposals through their label; none while one executes, as that would redraw its card. False if nothing was read. */
+async function refreshProposals(state: State): Promise<boolean> {
+  const inbox = state.inbox;
+  if (!inbox || !ACTION_CONFIG || inbox.busy) return false;
+  try {
+    const { offers, warnings } = await loadProposals(state.gh, ACTION_CONFIG, inbox.proposals);
+    if (inbox.busy) return false;
+    inbox.offers = offers;
+    inboxNote(inbox, "proposals", warnings.map((w) => `Refused issue: ${w}`).join(" "));
+    paintInbox(state);
+    return true;
+  } catch (e) {
+    inboxNote(inbox, "proposals", `Couldn't read the proposals: ${message(e)}`);
+    return false;
+  }
 }
 
 /** Say (or, with "", stop saying) why `what` can't be shown. */
@@ -571,7 +562,11 @@ function inboxHooks(state: State): InboxHooks {
     rerun: async (run) => rerunDispatchRun(state.gh, run.url, await offeredReruns(state.gh, run)),
     ...(REVIEW_DRAFT_CONFIG ? { draftBody: (c) => draftCard(state.gh, REVIEW_DRAFT_CONFIG!, render, c.draft) } : {}),
     ...(ACTION_CONFIG ? {
-      offerBody: (c) => proposalCard(state.gh, ACTION_CONFIG!, c.offer, () => state.inbox?.busy === true, (v) => { if (state.inbox) setInboxBusy(state.inbox, v); }, c.plan),
+      offerBody: (offer) => proposalCard(state.gh, ACTION_CONFIG!, offer, () => state.inbox?.busy === true, (v) => {
+        if (!state.inbox) return;
+        state.inbox.busy = v;
+        if (!v) paintInbox(state);
+      }),
     } : {}),
   };
 }
@@ -607,7 +602,8 @@ function answerEntry(state: State, shown: DocumentEntry, letter: string, reply: 
 function paintInbox(state: State, force = false): void {
   const inbox = state.inbox;
   const home = state.home;
-  if (!inbox || !home || state.closed) return;
+  // A redraw while a proposal executes could replace the card showing its progress.
+  if (!inbox || !home || state.closed || inbox.busy) return;
   let document: { entries: ReturnType<typeof parseDocument>; marks: Map<string, Mark> } | undefined;
   try {
     if (inbox.document) document = { entries: parseDocument(inbox.document.body), marks: inbox.document.marks };
@@ -615,10 +611,12 @@ function paintInbox(state: State, force = false): void {
   } catch (e) {
     inboxNote(inbox, "document", `The decisions document can't be read: ${message(e)}`);
   }
-  // What the board knows of an item's state, for the Rerun cards.
-  const states = new Map([...(state.active?.board ?? []), ...state.items].flatMap((i) => (i.ref && i.state ? [[refKey(i.ref).toLowerCase(), i.state] as const] : [])));
+  // What the board knows of an item's state, for the Rerun cards, and its Priority, for the order.
+  const board = [...(state.active?.board ?? []), ...state.items];
+  const states = new Map(board.flatMap((i) => (i.ref && i.state ? [[refKey(i.ref).toLowerCase(), i.state] as const] : [])));
+  const priorities = new Map(board.flatMap((i) => (i.ref && i.priority ? [[refKey(i.ref).toLowerCase(), i.priority] as const] : [])));
   const now = Date.now();
-  const cards = inboxCards({ needs: state.needs, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}), ...(inbox.runs ? { runs: inbox.runs } : {}), itemState: (item) => states.get(item), ...(inbox.offers ? { offers: inbox.offers } : {}), now });
+  const cards = inboxCards({ needs: state.needs, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}), ...(inbox.runs ? { runs: inbox.runs } : {}), itemState: (item) => states.get(item), priorityOf: (item) => priorities.get(item), ...(inbox.offers ? { offers: inbox.offers } : {}), now });
   fillInbox(inbox.list, cards, inboxHooks(state), force);
   const waiting = cards.filter((c) => !c.answered).length;
   inbox.empty.hidden = cards.length > 0;
@@ -707,7 +705,7 @@ function currentNeeds(state: State): Need[] {
 }
 
 function snapshot(state: State): PageState {
-  return pageState({ active: state.active, entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, runs: state.actionRuns, sources: state.sources });
+  return pageState({ active: state.active, entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, runs: state.actionRuns, dispatch: state.dispatch, sources: state.sources });
 }
 
 /** Re-read the agent runs; false if nothing was read (see SourceDef.read). */
@@ -755,7 +753,8 @@ async function refreshAgentDispatch(state: State): Promise<boolean> {
     state.dispatch = data.state === "ok" || !state.dispatch ? data : { ...state.dispatch, warnings: data.warnings };
     if (state.home) fillDispatch(state.home, state.dispatch, Date.now());
     paintChanges(state);
-    paintDashboard(state);
+    // Its in-progress runs are agents: the summary's and the Agents header's count.
+    renderChrome(state);
     return data.state === "ok";
   } finally {
     state.dispatchRunning = false;
@@ -980,10 +979,11 @@ function paintOps(state: State): void {
  * bot's PRs) is the poll loop's own read, on every view and behind an
  * entry too, as the header's counts and moving on after an action come
  * from it. The board, heartbeat, usage and agent runs fill the summary
- * atop every view, and the decisions the header's counts, so every view
- * needs them too. The merged PRs, the ops detail, the themes and the
+ * atop Usage and the Agents header, and feed the state JSON, and the
+ * decisions the header's counts, so every view reads them. The merged PRs, the ops detail, the themes and the
  * people's asks are read only for their view, while their section or
- * fold is open; dispatch runs serve Agents and the open Activity stream.
+ * fold is open; dispatch runs serve Agents, the open Activity stream and
+ * the summary's agent count on Usage.
  * A poll asked for early (after an action) re-reads the
  * queue only: the others wait for their cadence, which the usual poll
  * interval meets. A refresh he asked for from another view than the
@@ -999,7 +999,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       { name: "queue", path: "the Workstream board's items; search of the bot's PRs", cadence: POLL_INTERVAL_MS, views: VIEWS },
       { name: "active", path: "the board, heartbeat, usage snapshot and project status", cadence: OPS_POLL_INTERVAL_MS, views: VIEWS, read: () => refreshActive(get()) },
       { name: "runs", path: "agent workflow runs and their jobs", cadence: RUNS_POLL_MS, views: VIEWS, read: () => refreshActionRuns(get()) },
-      { name: "agent-dispatch", path: "the tracker's dispatch runs, their jobs and finished runs' status comments", cadence: DISPATCH_POLL_MS, views: [SECTION_VIEW.agents, SECTION_VIEW.changes, "dashboard"], read: () => refreshAgentDispatch(get()), when: () => get().view === SECTION_VIEW.agents || get().view === "dashboard" || open((home) => home.sections.changes.details)() },
+      { name: "agent-dispatch", path: "the tracker's dispatch runs, their jobs and finished runs' status comments", cadence: DISPATCH_POLL_MS, views: [SECTION_VIEW.agents, SECTION_VIEW.changes, SECTION_VIEW.usage, "dashboard"], read: () => refreshAgentDispatch(get()), when: () => get().view !== SECTION_VIEW.changes || open((home) => home.sections.changes.details)() },
       { name: "activity-events", path: "the bot's public events (GitHub's X-Poll-Interval)", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.changes], read: () => refreshActivityEvents(get()), when: open((home) => home.sections.changes.details) },
       { name: "dashboard", path: `${HISTORY_DAYS} days of ${DISPATCH_WORKFLOW} runs (finished days read once), the harness repositories' merge queues, search of approved PRs`, cadence: POLL_INTERVAL_MS, views: ["dashboard"], read: () => refreshDashboard(get()), when: () => DASHBOARD_CONFIG.enabled },
       { name: "ops", path: "devspaces, agent runs and the bot's public events", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.agents], read: () => refreshOps(get()), when: open((home) => home.slots.opsBox) },
@@ -1010,6 +1010,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       // The inbox's own reads, only while it is on (DECISIONS_CONFIG.inbox).
       { name: "dispatch", path: `the last day's ${DISPATCH_WORKFLOW} runs in ${TRACKER_REPO}`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDispatch(get()), when: () => get().inbox !== undefined },
       { name: "drafts", path: "the open review-draft issues", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDrafts(get()), when: () => get().inbox !== undefined && REVIEW_DRAFT_CONFIG !== undefined },
+      { name: "proposals", path: `the ${PROPOSAL_LABEL} issues in ${TRACKER_REPO} and, once changed, their comments`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshProposals(get()), when: () => get().inbox !== undefined && ACTION_CONFIG !== undefined },
     ],
     () => (get().closed ? undefined : visibleView(document, HOME_CLASS)),
   );

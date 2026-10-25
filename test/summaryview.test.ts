@@ -39,8 +39,8 @@ describe("the summary", () => {
     assert.match(lines[1]!, /^Queued 1 run · Agent: review example\/work#4$/);
     assert.equal(lines[2], "Scheduler mode and last passes not read: they are read when the ops detail is opened");
     assert.deepEqual(lines.slice(3), [
-      "Claude 42% used · 52% of week gone · ~81% at reset · stale: read 23m ago",
-      `OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`,
+      "Claude 42% used · 52% of week gone · ~81% at reset · not held: 10 points of headroom · stale: read 23m ago",
+      `OpenAI 80% used · 32% of week gone · ~253% at reset · held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`,
       "Mistral spend not published · $300 a month, 28% gone",
     ]);
     assert.ok(home.slots.summary.querySelectorAll("li")[4]!.classList.contains("hot"));
@@ -55,13 +55,13 @@ describe("the summary", () => {
     fillSummary(home, { ...held, agents: { ...held.agents, executionKnown: true, unconfirmed: 7 } }, undefined, NOW);
     const lines = [...home.slots.summary.querySelectorAll("li")].map(text);
     assert.match(lines[0]!, /^Agents \d+ running.* · 7 unconfirmed: claimed or last seen, not confirmed running/);
-    assert.equal(lines[3], "OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · held: no new runs; resume time not published; running runs continue");
+    assert.equal(lines[3], "OpenAI 80% used · 32% of week gone · ~253% at reset · held: no new runs; resume time not published; running runs continue");
 
     // A dispatch time already past promises no end, and the reading's age says why.
     const later = Date.parse("2026-10-13T12:00:00Z");
     fillSummary(home, pageState({ active: { warnings: [], at: later, usage: { state: "ok", usage } }, runs }, later), undefined, later);
     const openaiLine = [...home.slots.summary.querySelectorAll("li")].map(text).find((l) => l.startsWith("OpenAI"));
-    assert.equal(openaiLine, `OpenAI 80% used · 32% of week gone · ~253% at reset · over pace: 30% allowed by now · held: no new runs (was due to end ${time("2026-10-13T00:57:18.315Z")}; awaiting a new reading); running runs continue · stale: read 3d ago`);
+    assert.equal(openaiLine, `OpenAI 80% used · 32% of week gone · ~253% at reset · held: no new runs (was due to end ${time("2026-10-13T00:57:18.315Z")}; awaiting a new reading); running runs continue · stale: read 3d ago`);
   });
 
   it("keeps its lines while what they say is unchanged, and says when usage can't be read", () => {
@@ -154,12 +154,26 @@ describe("the summary", () => {
     assert.ok(![...home.slots.summary.querySelectorAll("a")].some((a) => a.getAttribute("href")?.startsWith("javascript:")));
   });
 
-  it("marks a pool over pace that the scheduler hasn't held yet", () => {
-    const home = homeSkeleton(noHooks);
-    const claude = { ...usage.pools!.claude!, usedPercent: 60, observedAt: "2026-10-09T13:50:00.000Z" };
-    fillSummary(home, pageState({ active: { warnings: [], at: NOW, usage: { state: "ok", usage: { ...usage, pools: { claude } } } }, runs }, NOW), undefined, NOW);
-    const line = [...home.slots.summary.querySelectorAll("li")].find((l) => text(l).startsWith("Claude"))!;
-    assert.equal(text(line), "Claude 60% used · 52% of week gone · ~116% at reset · over pace: 49% allowed by now");
-    assert.ok(line.classList.contains("hot"));
+  describe("says what the pass does with a pool: held, else its headroom over pace and burst, capped at the target", () => {
+    // used, pace (allowed_percent), burst, target, hold; the words after the projection, and whether the line is hot
+    const cases: [string, number, number, number | undefined, number | undefined, boolean, string, boolean][] = [
+      ["the issue's OpenAI reading: under pace plus burst", 18, 3, 50, 95, false, " · not held: 35 points of headroom", false],
+      ["no burst published: pace alone", 18, 30, undefined, undefined, false, " · not held: 12 points of headroom", false],
+      ["burst capped at the target", 90, 60, 50, 95, false, " · not held: 5 points of headroom", false],
+      ["over pace and burst, not held yet", 60, 49, 3, 95, false, " · over pace: 52% allowed by now", true],
+      ["held", 80, 30, 3, 95, true, " · held: no new runs; resume time not published; running runs continue", true],
+    ];
+    for (const [name, used, allowed, burst, target, hold, want, hot] of cases) it(name, () => {
+      const home = homeSkeleton(noHooks);
+      const claude = { ...usage.pools!.claude!, usedPercent: used, allowedPercent: allowed, hold, observedAt: "2026-10-09T13:50:00.000Z" };
+      delete claude.burst;
+      delete claude.targetPercent;
+      if (burst !== undefined) claude.burst = burst;
+      if (target !== undefined) claude.targetPercent = target;
+      fillSummary(home, pageState({ active: { warnings: [], at: NOW, usage: { state: "ok", usage: { ...usage, pools: { claude } } } }, runs }, NOW), undefined, NOW);
+      const line = [...home.slots.summary.querySelectorAll("li")].find((l) => text(l).startsWith("Claude"))!;
+      assert.equal(text(line).replace(/^.* at reset/, ""), want);
+      assert.equal(line.classList.contains("hot"), hot);
+    });
   });
 });

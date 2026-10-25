@@ -87,6 +87,18 @@ export interface UsagePool {
   nextDispatchAt?: string;
   /** The window's length; a week when the snapshot doesn't say. */
   windowMinutes: number;
+  /** Points the pass lets use run ahead of allowedPercent, and the percent it never lets it pass, when the snapshot says. */
+  burst?: number;
+  targetPercent?: number;
+}
+
+/**
+ * The percent used the pass allows by now: the pace plus the burst, never
+ * past the target, as agent-board's pass/usage.rs holds a paced pool
+ * (`used > min(allowed + burst, target)`). Without a burst, the pace.
+ */
+export function poolLimit(pool: UsagePool): number {
+  return Math.min(pool.allowedPercent + (pool.burst ?? 0), pool.targetPercent ?? Infinity);
 }
 
 /** A pool's window, in minutes, when the snapshot doesn't give one. */
@@ -250,6 +262,10 @@ function parsePool(raw: unknown): UsagePool | undefined {
   // Only a held pool waits for it; a bad or missing time leaves the hold without an end.
   const next = raw.hold ? time(raw.next_dispatch_at) : undefined;
   if (next) pool.nextDispatchAt = next;
+  const burst = count(raw.burst, MAX_PERCENT);
+  if (burst !== undefined) pool.burst = burst;
+  const target = count(raw.target_percent, MAX_PERCENT);
+  if (target !== undefined) pool.targetPercent = target;
   return pool;
 }
 
