@@ -22,20 +22,14 @@ const AGENT_JOB = /(?:^|\/ )agent$/;
 const STATUS_MARKER = "<!-- agentic-job-status -->";
 const runMarker = (id: number): string => `<!-- agentic-job-run: ${id} -->`;
 
-/** What a run's title says it works on: `KIND OWNER/REPO#N (POOL)`. */
-export interface DispatchTitle {
-  kind: string;
-  owner: string;
-  repo: string;
-  number: number;
-  pool: string;
-}
+/** What a run's title says it works on: `KIND OWNER/REPO#N`, then ` (POOL)` when one was given and a ` [CONFIG]` tag for a non-default config. */
+export type DispatchTitle = NonNullable<ReturnType<typeof parseDispatchTitle>>;
 
-const TITLE = /^(\S+) ([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)#([1-9]\d{0,9}) \(([^()\s]+)\)$/;
+const TITLE = /^(\S+) ([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)#([1-9]\d{0,9})(?: \(([^()\s]+)\))?(?: \[[^[\]\s]+\])?$/;
 
-export function parseDispatchTitle(title: string | undefined): DispatchTitle | undefined {
+export function parseDispatchTitle(title: string | undefined) {
   const m = TITLE.exec(title?.trim() ?? "");
-  return m ? { kind: m[1]!, owner: m[2]!, repo: m[3]!, number: Number(m[4]), pool: m[5]! } : undefined;
+  return m ? { kind: m[1]!, owner: m[2]!, repo: m[3]!, number: Number(m[4]), pool: m[5] } : undefined;
 }
 
 /** The step a run is at: its job's name, the step's, and when the step started. */

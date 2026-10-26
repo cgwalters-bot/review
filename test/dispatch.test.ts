@@ -55,7 +55,9 @@ describe("dispatch run titles", () => {
   const cases: [string, ReturnType<typeof parseDispatchTitle>][] = [
     ["implement cgwalters-forge/review#154 (claude)", { kind: "implement", owner: "cgwalters-forge", repo: "review", number: 154, pool: "claude" }],
     ["triage cgwalters-forge/agent-board#325 (openai)", { kind: "triage", owner: "cgwalters-forge", repo: "agent-board", number: 325, pool: "openai" }],
-    ["implement cgwalters-forge/review#154", undefined],
+    ["implement cgwalters-forge/review#154", { kind: "implement", owner: "cgwalters-forge", repo: "review", number: 154, pool: undefined }],
+    ["implement cgwalters-forge/review#154 (claude) [acp-experiment]", { kind: "implement", owner: "cgwalters-forge", repo: "review", number: 154, pool: "claude" }],
+    ["implement cgwalters-forge/review#154 [acp-experiment]", { kind: "implement", owner: "cgwalters-forge", repo: "review", number: 154, pool: undefined }],
     ["pass: Follow up ended triages", undefined],
     ["implement cgwalters-forge/review#0 (claude)", undefined],
   ];
