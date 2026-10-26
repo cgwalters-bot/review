@@ -237,6 +237,15 @@ describe("explicit run-title metrics", () => {
 });
 
 describe("shared dashboard state", () => {
+  it("makes 19 requests per load, 2 of them searches", async () => {
+    const fixtures = fixtureFetch(FIXTURES);
+    const urls: string[] = [];
+    await loadPageState(new GitHub(async () => "fixture", (url, init) => (urls.push(url), fixtures(url, init))), NOW);
+    // 21 before loaders reading the same URL at once shared one request.
+    assert.equal(urls.length, 19);
+    assert.equal(urls.filter((u) => u.includes("/search/")).length, 2);
+  });
+
   it("uses API fixtures in the CLI and keeps the snapshot JSON-safe", async () => {
     const state = await loadPageState(new GitHub(async () => "fixture", fixtureFetch(FIXTURES)), NOW);
     assert.equal(state.schema, "review-state/v1");

@@ -302,9 +302,12 @@ test("a checkbox refuses to write over a document changed since it was read, and
 test("a refresh waits for a tap still writing", async () => {
   let server = tasks;
   let release!: () => void;
+  let patching!: () => void;
   const barrier = new Promise<void>((resolve) => (release = resolve));
+  const patched = new Promise<void>((resolve) => (patching = resolve));
   const gh = new GitHub(async () => "token", async (_, init) => {
     if (init?.method === "PATCH") {
+      patching();
       await barrier;
       server = JSON.parse(String(init.body)).body;
     }
@@ -314,6 +317,8 @@ test("a refresh waits for a tap still writing", async () => {
   await refreshDocument(gh, slot, render, target);
   const box = slot.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
   const tapped = tap(box);
+  // Edited once the tap's re-read passed, so the tap is still writing.
+  await patched;
   server = tasks.replace("Tick what", "Edited: tick what");
   await refreshDocument(gh, slot, render, target);
   assert.ok(slot.contains(box));
