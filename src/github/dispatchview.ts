@@ -17,7 +17,7 @@ const itemUrl = (run: DispatchRun): string | undefined =>
 function heading(run: DispatchRun): (Node | string)[] {
   const t = run.target;
   if (!t) return [h("span", { class: "dr-title" }, run.title)];
-  return [h("span", { class: "kind" }, t.kind), " ", link(itemUrl(run), `${t.owner}/${t.repo}#${t.number}`), " ", h("span", { class: "dr-pool" }, t.pool)];
+  return [h("span", { class: "kind" }, t.kind), " ", link(itemUrl(run), `${t.owner}/${t.repo}#${t.number}`), ...(t.pool ? [" ", h("span", { class: "dr-pool" }, t.pool)] : [])];
 }
 
 function stepLine(run: DispatchRun, now: number): HTMLElement {
