@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { activeAgents, type ActiveAgent, isClaimed, laneOf } from "../src/github/agents.ts";
+import { type Active, activeAgents, type ActiveAgent, isClaimed, laneOf } from "../src/github/agents.ts";
 import { AGENT_ROW_CLASS, agentsBody, agentsSummary } from "../src/github/agentsview.ts";
 import { GitHub } from "../src/github/api.ts";
 import { type Item, parseItem } from "../src/github/board.ts";
@@ -149,7 +149,8 @@ describe("activeAgents", () => {
       assert.equal(s.running, running);
       assert.deepEqual(s.lanes, { harness, upstream, unknown });
       assert.equal(s.unconfirmed, unconfirmed);
-      assert.equal(s.target, 4);
+      assert.equal(s.target, undefined);
+      assert.equal(activeAgents(board, hb, NOW, 4).target, 4);
     });
   }
 
@@ -215,16 +216,21 @@ describe("agentsBody", () => {
     item("PVTI_t", `${TRACKER}/173`, { lead: "fsck", org: "bootc-dev" }),
   ];
 
-  it("shows the lanes, each agent, the heartbeat's age, and the count against the target in the summary", () => {
-    const data = { board, local: heartbeat([worker("fsck", `${TRACKER}/173`), worker("old", "https://github.com/bootc-dev/bootc/issues/9")], 3 * 60 * MIN), warnings: [], at: NOW };
+  it("shows the lanes, each agent, the heartbeat's age, and the count against the pass's WIP limit in the summary", () => {
+    const data: Active = { board, local: heartbeat([worker("fsck", `${TRACKER}/173`), worker("old", "https://github.com/bootc-dev/bootc/issues/9")], 3 * 60 * MIN), warnings: [], at: NOW };
+    // Not published by an older pass: said, not a number made up here.
+    assert.deepEqual(agentsSummary(data, NOW), { count: "0", title: "0 working; the pass's WIP limit is not published", under: false });
+    assert.match(text(agentsBody(data, NOW)), /^0 agents \(WIP limit not published\) · /);
+    data.holds = { at: "2026-10-26T00:00:00Z", wip: { limit: 4, inFlight: 2 }, holds: [] };
     const el = agentsBody(data, NOW);
     const t = text(el);
+    assert.match(t, /^0\/4 agents · /);
     assert.match(t, /harness 0 · upstream 0/);
     assert.match(t, /\+3 unconfirmed/);
     assert.match(t, /heartbeat 3h ago/);
     assert.deepEqual([...el.querySelectorAll(`.${AGENT_ROW_CLASS} strong`)].map((s) => s.textContent), ["wfc", "fsck", "old"]);
     assert.equal(el.querySelectorAll(`.${AGENT_ROW_CLASS}.stale`).length, 3);
-    assert.deepEqual(agentsSummary(data, NOW), { count: "0/4", title: "0 working, aiming for about 4", under: true });
+    assert.deepEqual(agentsSummary(data, NOW), { count: "0/4", title: "0 working, the pass's WIP limit 4", under: true });
   });
 
   it("links a remote agent run to its run", () => {

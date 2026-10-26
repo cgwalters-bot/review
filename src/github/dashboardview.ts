@@ -18,7 +18,7 @@ import {
   successRate,
 } from "./dashboard.ts";
 import type { DispatchData } from "./dispatch.ts";
-import { poolRows } from "./opsview.ts";
+import { poolLabel, poolRows } from "./opsview.ts";
 import { viewHash } from "./shell.ts";
 import type { UsageData } from "./usage.ts";
 
@@ -34,7 +34,6 @@ export interface DashboardInputs {
   now: number;
 }
 
-const POOL_NAMES = { claude: "Claude", openai: "OpenAI" } as const;
 const RESULT_LABEL: Record<keyof DayRuns, string> = { success: "succeeded", failure: "failed", cancelled: "cancelled", other: "ended otherwise", running: "running" };
 const CHART = { bar: 10, gap: 3, height: 60 };
 
@@ -51,7 +50,7 @@ function tiles(i: DashboardInputs): HTMLElement {
   const inQueue = queues?.queues.reduce((n, q) => n + q.count, 0);
   const waiting = i.data?.approved ? approvedNotQueued(i.data.approved, queues).length : undefined;
   const pools = i.usage?.state === "ok" ? i.usage.usage.pools : undefined;
-  const held = pools ? (Object.keys(POOL_NAMES) as (keyof typeof POOL_NAMES)[]).filter((p) => pools[p]?.hold) : undefined;
+  const held = pools ? Object.keys(pools).filter((p) => pools[p]!.hold) : undefined;
   const n = (v: number | undefined) => (v === undefined ? "…" : String(v));
   return h(
     "div",
@@ -59,7 +58,7 @@ function tiles(i: DashboardInputs): HTMLElement {
     tile(viewHash("agents"), `${n(running)}/${DASHBOARD_CONFIG.runCap}`, "runs in flight / cap", live ? `${queued} queued` : "reading dispatch runs…"),
     tile(viewHash("inbox"), n(i.approvals), "approvals waiting", "PRs waiting on your review"),
     tile(APPROVED_URL, n(inQueue), "PRs in merge queues", waiting === undefined ? "reading approved PRs…" : `${waiting} approved, not queued`),
-    tile(viewHash("usage"), n(held?.length), "pools held", held === undefined ? (i.usage?.state === "unreadable" ? "usage unreadable with this token" : "reading usage…") : held.length ? held.map((p) => POOL_NAMES[p]).join(", ") : "none: new runs can start"),
+    tile(viewHash("usage"), n(held?.length), "pools held", held === undefined ? (i.usage?.state === "unreadable" ? "usage unreadable with this token" : "reading usage…") : held.length ? held.map(poolLabel).join(", ") : "none: new runs can start"),
   );
 }
 

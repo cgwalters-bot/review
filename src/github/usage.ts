@@ -45,8 +45,12 @@ const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
  * dozen, and the comment itself is capped at 32 KiB by the publisher.
  */
 export const MAX_RUNS = 200;
-/** A pool's name in a run: claude, openai, mistral, or a newer one. */
+/** A pool's name in a run or the snapshot: claude, openai, mistral, or a newer one. */
 const POOL_RE = /^[a-z][a-z0-9_-]{0,23}$/;
+/** Pools read from a snapshot; a pass configures a few. */
+const MAX_POOLS = 8;
+/** Why the pass holds a pool: pace, window, no-reading, grant, or a newer one, shown as it is. */
+const REASON_RE = /^[a-z][a-z-]{0,31}$/;
 /** OWNER/REPO#N, as the heartbeat's workers name their items. */
 export const ITEM_RE = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d{0,9})$/;
 /** An Actions run id is a positive integer; GitHub's are far below this. */
@@ -73,30 +77,29 @@ export interface UsageWindow {
   tokens: Tokens;
 }
 
-export interface UsagePool {
+/** A pool's window as the pass read it. */
+export interface PoolReading {
   usedPercent: number;
   /** The scheduler's allowance at observedAt: its target times the share of the window gone, roughly. */
   allowedPercent: number;
   resetsAt: string;
   observedAt: string;
-  /** True when the scheduler dispatches no new work on this pool; running work goes on. */
-  hold: boolean;
-  /** When the scheduler said it would dispatch on this pool again (next_dispatch_at), for a held pool that gave one. */
-  nextDispatchAt?: string;
   /** The window's length; a week when the snapshot doesn't say. */
   windowMinutes: number;
-  /** Points the pass lets use run ahead of allowedPercent, and the percent it never lets it pass, when the snapshot says. */
-  burst?: number;
-  targetPercent?: number;
 }
 
-/**
- * The percent used the pass allows by now: the pace plus the burst, never
- * past the target, as agent-board's pass/usage.rs holds a paced pool
- * (`used > min(allowed + burst, target)`). Without a burst, the pace.
- */
-export function poolLimit(pool: UsagePool): number {
-  return Math.min(pool.allowedPercent + (pool.burst ?? 0), pool.targetPercent ?? Infinity);
+/** A pool's entry, with the pass's decision on it (agent-board docs/pass.md). */
+export interface UsagePool {
+  /** True when the scheduler dispatches no new work on this pool; running work goes on. */
+  hold: boolean;
+  /** Why it holds (pace, window, no-reading, grant, …); absent when not held, or not published. */
+  reason?: string;
+  /** When the scheduler said it would dispatch on this pool again (next_dispatch_at), for a held pool that gave one. */
+  nextDispatchAt?: string;
+  /** The percent used past which the pass holds a paced pool, when the snapshot says. */
+  limitPercent?: number;
+  /** Absent for a pool held without a reading, or a grant's without a window. */
+  reading?: PoolReading;
 }
 
 /** A pool's window, in minutes, when the snapshot doesn't give one. */
@@ -120,7 +123,7 @@ export interface PoolPace {
  * window's end and length (OpenAI's week runs from its own reset, not a
  * calendar week), and projects the percent used to the window's end.
  */
-export function poolPace(pool: UsagePool): PoolPace {
+export function poolPace(pool: PoolReading): PoolPace {
   const length = pool.windowMinutes * 60_000;
   const gonePercent = Math.max(0, Math.min(100, 100 * (1 - (Date.parse(pool.resetsAt) - Date.parse(pool.observedAt)) / length)));
   const hours = pool.windowMinutes / 60;
@@ -202,7 +205,8 @@ export interface Usage {
   /** Each worker's subagents' tokens (itself and its reviewer), all told, by the heartbeat's worker name. */
   workers: { name: string; tokens: Tokens }[];
   commentUrl?: string;
-  pools?: Partial<Record<"claude" | "openai", UsagePool>>;
+  /** Every pool the snapshot has an entry for, by name. */
+  pools?: Record<string, UsagePool>;
   mistral?: MistralUsage;
   /** The runs the snapshot attributes spend to; undefined when it carries no `runs` list at all. */
   runs?: RunUsage[];
@@ -241,23 +245,24 @@ function parseWindow(raw: unknown): UsageWindow | undefined {
   return w;
 }
 
+/** Every entry with the pass's decision is kept, held ones without a reading too. */
 function parsePool(raw: unknown): UsagePool | undefined {
-  if (!isObject(raw)) return undefined;
+  if (!isObject(raw) || typeof raw.hold !== "boolean") return undefined;
+  const pool: UsagePool = { hold: raw.hold };
+  const reason = raw.hold ? str(raw.reason, REASON_RE) : undefined;
+  if (reason) pool.reason = reason;
+  // Only a held pool waits for it; a bad or missing time leaves the hold without an end.
+  const next = raw.hold ? time(raw.next_dispatch_at) : undefined;
+  if (next) pool.nextDispatchAt = next;
+  const limit = count(raw.limit_percent, MAX_PERCENT);
+  if (limit !== undefined) pool.limitPercent = limit;
   const usedPercent = count(raw.used_percent, MAX_PERCENT);
   const allowedPercent = count(raw.allowed_percent, MAX_PERCENT);
   const resetsAt = time(raw.resets_at);
   const observedAt = time(raw.observed_at);
-  if (usedPercent === undefined || allowedPercent === undefined || !resetsAt || !observedAt || typeof raw.hold !== "boolean") return undefined;
   // A year at most: past that the "window" is no plan's.
   const minutes = count(raw.window_minutes, 366 * 24 * 60);
-  const pool: UsagePool = { usedPercent, allowedPercent, resetsAt, observedAt, hold: raw.hold, windowMinutes: minutes && minutes >= 1 ? minutes : WEEK_MINUTES };
-  // Only a held pool waits for it; a bad or missing time leaves the hold without an end.
-  const next = raw.hold ? time(raw.next_dispatch_at) : undefined;
-  if (next) pool.nextDispatchAt = next;
-  const burst = count(raw.burst, MAX_PERCENT);
-  if (burst !== undefined) pool.burst = burst;
-  const target = count(raw.target_percent, MAX_PERCENT);
-  if (target !== undefined) pool.targetPercent = target;
+  if (usedPercent !== undefined && allowedPercent !== undefined && resetsAt && observedAt) pool.reading = { usedPercent, allowedPercent, resetsAt, observedAt, windowMinutes: minutes && minutes >= 1 ? minutes : WEEK_MINUTES };
   return pool;
 }
 
@@ -392,8 +397,8 @@ export function parseUsage(body: string | null | undefined): Usage | undefined {
   const raw = fencedJson(body, USAGE_MARKER);
   if (raw?.schema !== SCHEMA) return undefined;
   const pools: NonNullable<Usage["pools"]> = {};
-  for (const name of ["claude", "openai"] as const) {
-    const pool = isObject(raw.pools) ? parsePool(raw.pools[name]) : undefined;
+  for (const [name, entry] of isObject(raw.pools) ? Object.entries(raw.pools).slice(0, MAX_POOLS) : []) {
+    const pool = POOL_RE.test(name) ? parsePool(entry) : undefined;
     if (pool) pools[name] = pool;
   }
   const updatedAt = time(raw.updated_at);

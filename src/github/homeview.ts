@@ -10,7 +10,6 @@ import { h } from "../dom.ts";
 import { chatButton, chatItem } from "./chatitem.ts";
 import { TRACKER_REPO } from "./config.ts";
 import { DECISIONS_CONFIG } from "./decisiondocument.ts";
-import { CONTROLLER, parseControllerConfig } from "./controller.ts";
 import { runsPanel } from "./runsview.ts";
 import type { PageState } from "./state.ts";
 import type { Renderer } from "../markdown.ts";
@@ -52,18 +51,6 @@ export const HOME_CLASS = "home";
 export const SECTION_CLASS = "sec";
 export const COUNT_CLASS = "sec-count";
 export const VIEW_ALL_CLASS = "view-all";
-
-function statusInterval(): number | undefined {
-  try {
-    // The poll's pass took over the coordinator's (tracker has no coordinator.yml), so its interval.
-    return parseControllerConfig(CONTROLLER).hosted.find((p) => p.label === "Poll")?.staleAfterMinutes;
-  } catch {
-    // Invalid ops configuration must not prevent the dashboard rendering.
-    return undefined;
-  }
-}
-
-const STATUS_INTERVAL = statusInterval();
 
 /** A section's parts. */
 export interface SectionEls {
@@ -399,14 +386,10 @@ function fullTitles(slot: HTMLElement, board: readonly Item[] | undefined): void
 export function fillStatus(home: Home, status: ProjectStatus | null | undefined, render: Renderer, error?: string, now = Date.now(), board?: readonly Item[]): void {
   const slot = home.slots.statusNote;
   const timestamp = status ? Date.parse(status.createdAt) : NaN;
-  const interval = STATUS_INTERVAL;
   const age = () => {
     const el = slot.querySelector<HTMLElement>(".status-age");
     if (!el) return;
     el.replaceChildren(...(status && Number.isFinite(timestamp) ? ["Published ", agoLabel(status.createdAt, now)] : ["Status age unknown"]));
-    const stale = interval !== undefined && now - timestamp > interval * 60_000;
-    el.classList.toggle("hot", stale);
-    if (stale) el.append(" · stale");
   };
   age();
   if (status && slot.dataset.signature === JSON.stringify(status)) {
@@ -536,14 +519,6 @@ export function fillDashboard(home: Home, inputs: DashboardInputs): void {
 /** The ops detail; returns its element, whose live times main.ts keeps ticking. */
 export function fillOps(home: Home, ops: Ops | undefined, now: number): HTMLElement {
   const el = opsDetail(ops, now);
-  // Keep pasted evidence only while the same completed job is shown.
-  // Reuse its nodes rather than persisting private logs or retaining them
-  // across navigation/sign-out. A new run deliberately starts unknown.
-  const previous = [...home.slots.ops.querySelectorAll<HTMLElement>(".ctl-output")];
-  for (const output of el.querySelectorAll<HTMLElement>(".ctl-output")) {
-    const old = previous.find(p => p.dataset.run && p.dataset.run === output.dataset.run);
-    if (old) output.replaceWith(old);
-  }
   home.slots.ops.replaceChildren(el);
   return el;
 }

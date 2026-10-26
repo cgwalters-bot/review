@@ -167,11 +167,13 @@ decisions beyond the first fifteen are in collapsed **Watching**.
 
 A **summary** heads the Usage view (not the Inbox, which opens on its first
 card), a line each: the agents running by pool (engine), each linked; the
-agent runs queued; the board scheduler's
-mode (dispatching or previewing), the poll's last pass and the broker
-probe's last run (`broker ok 12m ago`, or its conclusion: `skipped` while
-tracker's `BROKER_OUTAGE` isn't `apply`), once the ops detail has read them;
-and each pool's line as below, with held, headroom, over pace and stale spelt out.
+agent runs queued; the board pass's mode, the runs it started (or in a
+preview would start), its candidates, live epics and WIP, as it publishes
+them with its holds (`wip` and `pass`, "not published" in an older
+snapshot), and the broker probe's last run (`broker ok 12m ago`, or its
+conclusion: `skipped` while tracker's `BROKER_OUTAGE` isn't `apply`), once
+the ops detail has read it; and each pool's line as below, held and why, or
+its headroom, spelt out.
 Agents running are the in-progress runs of `agent.yml` in the devspace
 repository and of tracker's `dispatch.yml` (read while Agents, Usage or the
 open Activity stream shows), and fresh heartbeat jobs; queued runs of either
@@ -183,23 +185,22 @@ detail, whose reads then start as if opened by hand). Merge queues are not in
 it: nothing on the page reads them yet.
 
 **Weekly subscription usage** heads the Usage view, always open. It
-reads Claude and OpenAI from `bot-usage/v1`'s `pools`, one compact row each: a
-thin bar of the percent used with a tick at what the pass allows by now
-(the pace, `allowed_percent`, plus the pool's `burst` points, never past
-`target_percent`, as agent-board's pass holds a pool), coloured as a warning
-when over it or held, and a label
+reads every entry of `bot-usage/v1`'s `pools` (Claude and OpenAI first), one
+compact row each: a thin bar of the percent used with a tick at the pass's
+`limit_percent`, coloured as a warning when held, and a label
 such as "50% used · 8% of week gone · ~636% at reset": the share of the window
 gone is worked out from the pool's `resets_at` and `window_minutes` (a week by
 default) at the time it was observed, and the projection is the rate so far
 carried to the window's end (none before 5% of it). The label also says what
-the pass does: an unheld pool's headroom under that limit ("not held: 35 points
-of headroom"), or "over pace" past it until the pass holds it, and when the
-pass holds new work on the pool (`hold`): "held: no new runs until
-HH:MM" with the date from `next_dispatch_at` when the snapshot gives it,
-and "running runs continue". A missing resume time is explicit; a past one
-says it was due to end and awaits a new reading, never promises a restart.
-The label also says when a stale reading was
-taken. Each row expands to the exact percentages, reset time and when it was
+the pass decided, as it published it: an unheld pool's headroom under its limit
+("not held: 35 points of headroom"), and when the pass holds new work on the
+pool (`hold`), why (`reason`: `pace`, `no-reading`, `grant`, …) and until when:
+"held (pace): no new runs until HH:MM" with the date from `next_dispatch_at`
+when the snapshot gives it, and "running runs continue". A missing resume
+time, reason or limit is said to be not published, never worked out here; a
+past resume time says it was due to end and awaits a new reading, never
+promises a restart. A pool held without a reading (`no-reading`) has no bar.
+Each row expands to the exact percentages, reset time and when it was
 observed. When the snapshot has a `mistral` object (the broker's requests and
 tokens since it started; it has no plan window, so no pace) a Mistral row
 follows them. If the publisher configures an `allowance` in it (`limit_usd`,
@@ -355,14 +356,14 @@ showing only its first paragraph until Expand. Issue references link to GitHub
 (bare `#N` uses the configured tracker repository); code and existing links are
 left alone. HTML comments, such as the writer's marker, are hidden as on
 GitHub, and a link to a board item whose title the writer cut short shows
-the item's full title. Its publication time and age update on refresh, with a
-stale warning after the Poll's configured `staleAfterMinutes` interval. **Focus** shows active epics by priority,
+the item's full title. Its publication time and age update on refresh. **Focus** shows active epics by priority,
 sub-issue progress and running child items; paused or parked epics are gray.
 An epic whose sub-issues are all closed reads "Ready to close" with what keeps
 it open (its open asks, else its Status) rather than a stale Needs human, and a
 missing Status is flagged in red as a board bug.
 **Agents** shows remote/local placement, engine, item and age, the count
-against `AGENT_TARGET`, and OpenCode's share. Engines come from the optional
+against the pass's published WIP limit (`wip.limit` in its holds; "not
+published" without it), and OpenCode's share. Engines come from the optional
 board Engine field or heartbeat worker `engine`; absent engines stay unknown.
 The running count combines live `agent.yml` Actions runs (remote) and fresh
 heartbeat jobs without a devspace (local). The board's Lead/Run fields supply
@@ -593,27 +594,21 @@ The separate capture bar still files a note onto the board (below).
 
 **Controller**, first in the ops detail, says whether shutting the
 interactive session down would stop anything. Its hosted pieces are the
-workflows, or jobs of one, listed in `src/github/controller.json`: each
+workflows listed in `src/github/controller.json`: each
 with its last finished run (conclusion, age, link) and one running now.
-Poll and Broker probe show a linked **last pass N minutes ago**, derived
-from Actions runs (and the configured job for Poll), never the heartbeat
-comment. Their `staleAfterMinutes: 60` warns after an hour without a
-completed pass (both are scheduled every 10–15 minutes, which GitHub may
+Broker probe shows a linked **last pass N minutes ago**, derived
+from Actions runs, never the heartbeat
+comment. Its `staleAfterMinutes: 60` warns after an hour without a
+completed pass (it is scheduled every 10–15 minutes, which GitHub may
 start late or drop); queued or running successors do not hide that warning,
 and failed passes retain their failure status. The age and warning update
 while the page stays open. This setting is opt-in per hosted piece, accepts
-1–10080 minutes, and adds no reads beyond the existing bounded run/job lists.
+1–10080 minutes, and adds no reads beyond the existing bounded run lists.
 Missing workflows, unreadable sources and no completed pass remain explicit,
-not evidence of a live controller. Tracker has no `coordinator.yml`: the
-poll's pass plans the epics now, so there is no Coordinator piece. This does
-not implement the broader agent-run/usage migration in tracker#422.
-A workflow with no runs yet shows as not built; a job missing from its
-last few runs, as not seen. The board scheduler's mode (preview or
-acting) and how many items its last pass would start or started are read
-from that job's annotations (see Controller output below). The log has
-them too, but it redirects to blob storage, which the page's
-`connect-src` refuses; until the job publishes them, the row says
-unknown and links to the job. `read: "in-flight"` lists every run in flight with its title. The interactive session (the controller chat)
+not evidence of a live controller.
+A workflow with no runs yet shows as not built. What the board pass did is
+not read from its runs: it publishes that with its holds (see the summary).
+`read: "in-flight"` lists every run in flight with its title. The interactive session (the controller chat)
 counts as present only while its heartbeat is fresh, as Local agents
 judges it (15 minutes, or asleep until a wake time it gave); otherwise
 the panel says new work starts only from the board scheduler.
@@ -848,33 +843,3 @@ permissions aren't reported).
 
 The answers and reviews it posts are real, so test against throwaway
 items.
-## Controller output
-
-The board row reads the scheduler's last pass from the board job's check-run
-annotations, the one place on api.github.com that carries it (summaries have
-no API; logs redirect outside the app's API-only token boundary). The
-contract, for tracker's `schedule.cjs`: one
-`::notice title=Board scheduler::LINE` per line of the pass, in order, each
-line exactly as printed (`[dry-run] ` before each line of a preview). The
-panel takes the notices with that title, joins their messages and parses
-them with the formats below. Actions keeps at most 10 notices a step and 50
-a job, so a pass longer than that is cut short: with fewer item lines than the
-header's candidates, the row says "at least" and keeps the paste box. The panel
-reads one page of 100. For the latest finished board job that is one GET of
-`/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations`, the id taken
-from the job's `check_run_url` (not the job's id), kept in the response cache
-(a finished job's annotations don't change), so refreshes don't repeat it; a
-403 or 404 is remembered for that check run until the next sign-in and shown
-as unknown, not an error.
-
-Without such a notice (tracker doesn't emit them yet), the row says
-**unknown**, not zero, links to the job and offers a box for pasted
-scheduler/census output from its log. That input stays in the panel, is
-limited to 128 KiB, makes no network request and is not persisted.
-
-The current scheduler and census formats live in `src/github/controller.json`
-and are covered by `test/controller-output.test.ts`. Unknown scheduler wording keeps
-the raw line rather than guessing a count. Census lines are shown verbatim as
-text, not used to infer scheduling counts. The coordinator summary line planned
-for tracker#572 slice 4 is not available yet; add its format and fixtures when
-the producer lands rather than inventing its output now.

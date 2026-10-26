@@ -60,8 +60,9 @@ function heartbeatText(s: AgentSummary, now: number, why: string): { text: strin
 export function agentsSummary(data: Active | undefined, now: number, summary?: AgentSummary): { count: string; title: string; under: boolean } {
   if (!data && !summary?.executionKnown) return { count: "…", title: "reading Actions and the heartbeat", under: false };
   if (!summary?.executionKnown && !data?.board && data?.local === undefined) return { count: "?", title: data?.warnings.join("\n") || "couldn't read Actions or the heartbeat", under: false };
-  const s = summary ?? activeAgents(data?.board ?? [], data?.local, now);
-  return { count: `${s.running}/${s.target}`, title: `${s.running} working, aiming for about ${s.target}`, under: s.running < s.target };
+  const s = summary ?? activeAgents(data?.board ?? [], data?.local, now, data?.holds?.wip?.limit);
+  if (s.target === undefined) return { count: String(s.running), title: `${s.running} working; the pass's WIP limit is not published`, under: false };
+  return { count: `${s.running}/${s.target}`, title: `${s.running} working, the pass's WIP limit ${s.target}`, under: s.running < s.target };
 }
 
 /**
@@ -74,7 +75,7 @@ export function agentsBody(data: Active | undefined, now: number, summary?: Agen
     sec.append(h("p", { class: "note", title: data?.warnings.join("\n") ?? "" }, data ? "Couldn't read the board or the heartbeat." : "Reading…"));
     return sec;
   }
-  const s = summary ?? activeAgents(data?.board ?? [], data?.local, now);
+  const s = summary ?? activeAgents(data?.board ?? [], data?.local, now, data?.holds?.wip?.limit);
   const why = data?.warnings.length ? `\n${data.warnings.join("\n")}` : "";
   const hb = heartbeatText(s, now, why);
   const lanes = (["harness", "upstream", "unknown"] as const).filter((l) => s.lanes[l] > 0 || l !== "unknown").map((l) => `${LANE_LABEL[l]} ${s.lanes[l]}`);
@@ -82,7 +83,7 @@ export function agentsBody(data: Active | undefined, now: number, summary?: Agen
     h(
       "div",
       { class: "as-head" },
-      h("span", { class: "as-lanes" }, `${s.running}/${s.target} agents · remote ${s.locations.remote} · local ${s.locations.local} · OpenCode ${s.running ? Math.round(100 * s.opencode / s.running) : 0}% (${s.opencode}/${s.running})${s.unknownEngine ? ` · ${s.unknownEngine} engine unknown` : ""} · ${lanes.join(" · ")}`),
+      h("span", { class: "as-lanes" }, `${s.running}${s.target === undefined ? " agents (WIP limit not published)" : `/${s.target} agents`} · remote ${s.locations.remote} · local ${s.locations.local} · OpenCode ${s.running ? Math.round(100 * s.opencode / s.running) : 0}% (${s.opencode}/${s.running})${s.unknownEngine ? ` · ${s.unknownEngine} engine unknown` : ""} · ${lanes.join(" · ")}`),
       s.unconfirmed ? h("span", { class: "as-unconfirmed warn", title: "claims or sightings without current execution evidence" }, `+${s.unconfirmed} unconfirmed`) : null,
       h("span", { class: `as-hb ${hb.cls}`, title: hb.title }, ...(s.heartbeat ? [s.heartbeat.stopped ? "coordinator stopped · heartbeat " : "heartbeat ", agoLabel(s.heartbeat.updatedAt, now)] : [hb.text])),
       data?.board ? null : h("span", { class: "warn", title: `The board couldn't be read; Actions runs and heartbeat jobs can still be counted.${why}` }, "board unread"),

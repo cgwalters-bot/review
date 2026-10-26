@@ -6,7 +6,7 @@
 import { h, link, svg } from "../dom.ts";
 import { type IssueRef, type Item, parseIssueUrl } from "./board.ts";
 import { AGENT_WORKFLOW, BOT_LOGIN, DEVSPACE_REPO, DEVSPACE_WORKFLOW, HEARTBEAT_ISSUE, HEARTBEAT_STALE_MS, OPS_EVENTS_SHOWN, OPS_WINDOW_HOURS, TRACKER_REPO, USAGE_REPO } from "./config.ts";
-import { type ControllerData, type PieceState, sessionPresent, schedulerPass, MAX_CONTROLLER_OUTPUT } from "./controller.ts";
+import { type ControllerData, type PieceState, sessionPresent } from "./controller.ts";
 import { PRESET_LABEL, PRESET_TITLE } from "./filter.ts";
 import { type Heartbeat, isStale, type LocalWorker } from "./heartbeat.ts";
 import {
@@ -23,7 +23,7 @@ import {
   workGroups,
   type WorkGroup,
 } from "./ops.ts";
-import { type MistralBudget, type MistralUsage, poolLimit, poolPace, type RunUsage, spendByRun, type SpendTotal, type Tokens, tokenTotal, UNKNOWN_KIND, type Usage, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
+import { type MistralBudget, type MistralUsage, poolPace, type PoolReading, type RunUsage, spendByRun, type SpendTotal, type Tokens, tokenTotal, UNKNOWN_KIND, type Usage, type UsageData, type UsagePool, type UsageWindow } from "./usage.ts";
 import { age, ageLabel, ago, agoLabel, clock, pill, time } from "./view.ts";
 
 const SECOND = 1000;
@@ -374,15 +374,20 @@ interface Consumer {
   tokens: Tokens;
 }
 
-/** The subscription pools of bot-usage/v1, in the order shown. */
-const POOLS = [["claude", "Claude"], ["openai", "OpenAI"]] as const;
+/** The subscription pools always shown, first; the snapshot's others follow, under its word for them. */
+const POOL_LABELS: Record<string, string> = { claude: "Claude", openai: "OpenAI" };
 /** Names a pool's expander, so a redraw can keep it open. */
 export const POOL_ATTR = "data-pool";
 /** The pool bar's box: a 6-unit track with the pace tick standing 2 units proud of it on each side. */
 const POOL_BAR = { width: 100, height: 10, track: 6, tick: 1 };
 
+export const poolLabel = (name: string): string => POOL_LABELS[name] ?? name;
+
+/** The pools shown, in order: Claude and OpenAI, then every other the snapshot has. */
+export const poolNames = (pools: Usage["pools"]): string[] => [...new Set([...Object.keys(POOL_LABELS), ...Object.keys(pools ?? {})])];
+
 /** A pool's label and sentence: the percent used, the share of the window gone, and the projection to its end. */
-export function poolWords(pool: UsagePool): { short: string; long: string } {
+export function poolWords(pool: PoolReading): { short: string; long: string } {
   const pace = poolPace(pool);
   const projected = pace.projectedPercent === undefined ? "" : ` · ~${Math.round(pace.projectedPercent)}% at reset`;
   return {
@@ -391,44 +396,38 @@ export function poolWords(pool: UsagePool): { short: string; long: string } {
   };
 }
 
-/** A reading older than this is stale: the usage publisher has not reported since. */
-export const poolStale = (pool: UsagePool, now: number): boolean => now - Date.parse(pool.observedAt) > HEARTBEAT_STALE_MS;
-
 /**
- * What a bare "held" and "stale" left to be guessed: that the scheduler
- * starts no new work on the pool (running work goes on), until when if
- * the snapshot said, and how old a stale reading is. "" for neither.
- * An unheld pool says its headroom under what the pass allows (poolLimit),
- * or, past it, that it is over pace: the pass holds it on its next reading.
+ * What the pass decided on the pool, as it published it: held, why and
+ * until when (running work goes on), else its headroom under the pass's
+ * limit. What the snapshot lacks is said to be not published.
  */
-export function poolStateWords(pool: UsagePool, now: number): { held: string; room: string; stale: HTMLElement | null } {
+export function poolStateWords(pool: UsagePool, now: number): { held: string; room: string } {
   // A time already past (a reading from before it, not since updated) is no end to promise.
   const next = pool.nextDispatchAt && (Date.parse(pool.nextDispatchAt) > now ? ` until ${clock(Date.parse(pool.nextDispatchAt))} (${time(pool.nextDispatchAt)})` : ` (was due to end ${time(pool.nextDispatchAt)}; awaiting a new reading)`);
-  const limit = poolLimit(pool);
-  const room = limit - pool.usedPercent;
+  const limit = pool.limitPercent;
   return {
-    held: !pool.hold ? "" : ` · held: no new runs${next || "; resume time not published"}; running runs continue`,
-    room: pool.hold ? "" : room >= 0 ? ` · not held: ${Math.round(room)} points of headroom` : ` · over pace: ${Math.round(limit)}% allowed by now`,
-    stale: poolStale(pool, now) ? h("span", { class: "pool-stale" }, " · stale: read ", agoLabel(pool.observedAt, now)) : null,
+    held: !pool.hold ? "" : ` · held (${pool.reason ?? "reason not published"}): no new runs${next || "; resume time not published"}; running runs continue`,
+    room: pool.hold ? "" : limit === undefined ? " · not held; limit not published" : pool.reading ? ` · not held: ${Math.round(limit - pool.reading.usedPercent)} points of headroom` : " · not held",
   };
 }
 
 /**
  * One pool as a compact row: its name, a thin bar of the percent used
- * with a tick at what the scheduler allows by now, and a short label of
- * the percent used against the share of the window gone. The sentence it
- * replaces (exact percents, reset, observation time) is in its expander.
+ * with a tick at the pass's limit, and a short label of the percent used
+ * against the share of the window gone. The sentence it replaces (exact
+ * percents, reset, observation time) is in its expander.
  */
-function poolRow(name: string, label: string, pool: UsagePool | undefined, now: number, snapshotAt: string): HTMLElement {
+function poolRow(name: string, pool: UsagePool | undefined, now: number, snapshotAt: string): HTMLElement {
+  const label = poolLabel(name);
   if (!pool) return h("div", { class: "pool-sum none" }, h("span", { class: "pool-name" }, label), " ", h("span", { class: "pool-label" }, "No reading · ", snapshotAt ? h("span", {}, "snapshot ", agoLabel(snapshotAt, now)) : "snapshot age unknown", "."));
-  const used = pool.usedPercent.toFixed(1);
-  const limit = poolLimit(pool);
-  const allowed = `${limit.toFixed(1)}%${pool.burst ? ` (pace ${pool.allowedPercent.toFixed(1)}% + ${pool.burst} burst${limit < pool.allowedPercent + pool.burst ? ", capped at the target" : ""})` : ""}`;
-  const over = pool.usedPercent > limit;
-  const stale = poolStale(pool, now);
   const state = poolStateWords(pool, now);
   const flags = `${state.room}${state.held}`;
-  const words = poolWords(pool);
+  const reading = pool.reading;
+  if (!reading) return h("div", { class: `pool-sum none${pool.hold ? " over" : ""}`, [POOL_ATTR]: name }, h("span", { class: "pool-name" }, label), " ", h("span", { class: "pool-label" }, `No reading${flags}`));
+  const used = reading.usedPercent.toFixed(1);
+  const limit = pool.limitPercent;
+  const allowed = limit === undefined ? undefined : `${limit.toFixed(1)}% allowed by now`;
+  const words = poolWords(reading);
   const clamp = (n: number, max: number) => String(Math.max(0, Math.min(max, n)));
   const y = String((POOL_BAR.height - POOL_BAR.track) / 2);
   const track = { x: "0", y, height: String(POOL_BAR.track), rx: String(POOL_BAR.track / 2) };
@@ -442,38 +441,38 @@ function poolRow(name: string, label: string, pool: UsagePool | undefined, now: 
       "aria-label": `${label} weekly usage`,
       "aria-valuemin": "0",
       "aria-valuemax": "100",
-      "aria-valuenow": clamp(pool.usedPercent, 100),
-      "aria-valuetext": `${used}% used, ${allowed} allowed by now${flags.replaceAll(" ·", ",")}${stale ? ", stale" : ""}`,
+      "aria-valuenow": clamp(reading.usedPercent, 100),
+      "aria-valuetext": `${used}% used${allowed ? `, ${allowed}` : ""}${flags.replaceAll(" ·", ",")}`,
     },
     svg("rect", { class: "track", ...track, width: String(POOL_BAR.width) }),
-    svg("rect", { class: "fill", ...track, width: clamp(pool.usedPercent, POOL_BAR.width) }),
-    svg("rect", { class: "tick", x: clamp(limit - POOL_BAR.tick / 2, POOL_BAR.width - POOL_BAR.tick), y: "0", width: String(POOL_BAR.tick), height: String(POOL_BAR.height) }),
+    svg("rect", { class: "fill", ...track, width: clamp(reading.usedPercent, POOL_BAR.width) }),
+    limit === undefined ? null : svg("rect", { class: "tick", x: clamp(limit - POOL_BAR.tick / 2, POOL_BAR.width - POOL_BAR.tick), y: "0", width: String(POOL_BAR.tick), height: String(POOL_BAR.height) }),
   );
   return h(
     "details",
-    { class: `pool${pool.hold || over ? " over" : ""}`, [POOL_ATTR]: name },
+    { class: `pool${pool.hold ? " over" : ""}`, [POOL_ATTR]: name },
     h(
       "summary",
       { class: "pool-sum" },
       h("span", { class: "pool-name" }, label),
       " ",
       bar,
-      h("span", { class: "pool-label" }, words.short, flags, state.stale),
+      h("span", { class: "pool-label" }, words.short, flags),
     ),
     h(
       "div",
       { class: "pool-detail" },
-      h("p", {}, `${words.long}. The tick is what the pass allows by now: ${allowed}${flags}.`),
-      h("p", {}, `${resetText(pool.resetsAt, now)} (${time(pool.resetsAt)}).`),
-      // The snapshot is the Usage workflow's (see the controller panel): stale means it has not published since.
-      h("p", {}, "Observed ", agoLabel(pool.observedAt, now), `${stale ? " · stale: the usage publisher has not reported since" : ""}.`),
+      h("p", {}, `${words.long}${allowed ? `. The tick is the pass's limit: ${allowed}` : ""}${flags}.`),
+      h("p", {}, `${resetText(reading.resetsAt, now)} (${time(reading.resetsAt)}).`),
+      // A reading the pass found too old is held as no-reading, so its age alone is no warning.
+      h("p", {}, "Observed ", agoLabel(reading.observedAt, now), "."),
     ),
   );
 }
 
-/** A bar per plan pool, with its pace tick and hold, as the Usage and Dashboard views show them. */
+/** A bar per plan pool, with the pass's limit and hold, as the Usage and Dashboard views show them. */
 export function poolRows(usage: Usage, now: number): HTMLElement[] {
-  return POOLS.map(([name, label]) => poolRow(name, label, usage.pools?.[name], now, usage.updatedAt || usage.observedAt || ""));
+  return poolNames(usage.pools).map((name) => poolRow(name, usage.pools?.[name], now, usage.updatedAt || usage.observedAt || ""));
 }
 
 const usd = (v: number) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -615,9 +614,6 @@ export function weeklyUsage(data: UsageData | undefined, now: number): HTMLEleme
   return sec;
 }
 
-/** A pool's label in the run table: the meter's name for the ones it shows, the snapshot's word for a newer one. */
-const POOL_LABEL = new Map<string, string>([...POOLS, ["mistral", "Mistral"]]);
-
 /** "implement 12.3M (3 runs) · review 4.1M (1 run)": a total's name, tokens and run count. */
 function totalsText(totals: readonly SpendTotal[]): string {
   return totals.map((t) => `${t.name} ${tokensText(t.tokens)} (${t.runs} ${t.runs === 1 ? "run" : "runs"})`).join(" · ");
@@ -630,7 +626,7 @@ function runRow(r: RunUsage, now: number): HTMLElement {
   return h(
     "tr",
     {},
-    h("td", {}, POOL_LABEL.get(r.pool) ?? r.pool),
+    h("td", {}, r.pool === "mistral" ? "Mistral" : poolLabel(r.pool)),
     h("td", r.kind ? {} : { class: "unknown" }, r.kind ?? UNKNOWN_KIND),
     h("td", {}, r.repository),
     h("td", {}, item ? link(`https://github.com/${item[1]}/issues/${item[2]}`, r.item ?? "") : h("span", { class: "unknown" }, "—")),
@@ -751,8 +747,7 @@ function updatePassAge(el: Element, now: number): void {
 function pieceRow(p: PieceState, now: number): HTMLElement {
   const { piece } = p;
   const name = h("span", { class: "name" }, h("strong", {}, piece.label), " ", h("span", { class: "what" }, piece.what));
-  if (p.state === "absent") return h("li", { class: "ctl" }, status("s-unknown", "not built", `${piece.repo} has no runs of ${piece.workflow}${piece.job ? `'s ${piece.job} job` : ""} yet`), name);
-  if (p.state === "unseen") return h("li", { class: "ctl" }, status("s-unknown", "not seen", `its ${piece.job} job isn't in the last runs of ${piece.workflow}: not built yet, or skipped`), name);
+  if (p.state === "absent") return h("li", { class: "ctl" }, status("s-unknown", "not built", `${piece.repo} has no runs of ${piece.workflow} yet`), name);
   if (p.state === "uncached") return h("li", { class: "ctl" }, status("s-unknown", "…", "not cached; loading"), name, h("span", { class: "when" }, "loading…"));
   if (p.state === "error") return h("li", { class: "ctl" }, status("o-failed", "unread", p.error ?? ""), name, h("span", { class: "when" }, "couldn't read its runs"));
   const st = p.last ? conclusionStatus(p.last.conclusion) : p.running ? status("s-ready", "running", "running, none finished yet") : status("s-unknown", "no run", "");
@@ -776,26 +771,6 @@ function pieceRow(p: PieceState, now: number): HTMLElement {
       p.running ? h("span", { class: "now", title: `started ${time(p.running.at)}` }, p.last ? " · " : "", link(p.running.url, `${p.running.status && p.running.status !== "in_progress" ? p.running.status.replace(/_/g, " ") : "running"} now ↗`)) : "",
     ),
   );
-  if (piece.read === "scheduler") {
-    const detail = h("div", { class: "detail" });
-    const show = (pass: ReturnType<typeof schedulerPass>) => {
-      detail.replaceChildren();
-      detail.append(h("span", {}, pass.mode === "unknown" ? "unknown · see the job's log " : `${pass.mode} · ${pass.liveEpics} live epics · ${pass.candidates} candidates · ${pass.mode === "preview" ? "would start" : "started"} ${pass.partial ? `at least ${pass.starts} (only ${pass.items!.length} of ${pass.candidates} items published)` : pass.starts}`));
-      if (pass.mode === "unknown" && p.last) detail.append(link(p.last.url, "↗"));
-      if (pass.raw) detail.append(h("pre", {}, pass.raw));
-      for (const line of [...(pass.items ?? []), ...(pass.census ?? [])]) detail.append(h("div", {}, line));
-    };
-    show(p.scheduler ?? { mode: "unknown" });
-    // Read whole from the job's notices: nothing to paste.
-    if (p.scheduler && p.scheduler.mode !== "unknown" && !p.scheduler.partial) li.append(detail);
-    else {
-      // Do not set maxlength: browsers truncate an oversized paste before
-      // input, which could turn a partial log into a false "started 0".
-      const input = h("textarea", { "aria-label": "Scheduler and census output", rows: "4" }) as HTMLTextAreaElement;
-      input.addEventListener("input", () => show(schedulerPass(input.value)));
-      li.append(h("div", { class: "ctl-output", "data-run": p.last ? `${piece.repo}/${piece.workflow}/${piece.job}/${p.last.url}/${p.last.at}` : "" }, detail, h("details", {}, h("summary", {}, "Read pasted job output"), h("p", {}, `Paste up to ${MAX_CONTROLLER_OUTPUT / 1024} KiB of the linked job's scheduler and epic census output. This stays in this panel; GitHub summaries have no API and log redirects are blocked by this app's token boundary.`), input)));
-    }
-  }
   if (p.inFlight) {
     li.append(
       p.inFlight.length

@@ -51,10 +51,12 @@ export function pageState(input: StateInput, now = Date.now()) {
     schema: "review-state/v1", generatedAt: new Date(now).toISOString(),
     status: active?.status ?? null,
     people, decisions: input.decisions ?? [],
-    agents: activeAgents(active?.board ?? [], active?.local, now, undefined, { runs: input.runs, dispatch: input.dispatch, sources }),
+    agents: activeAgents(active?.board ?? [], active?.local, now, active?.holds?.wip?.limit, { runs: input.runs, dispatch: input.dispatch, sources }),
     focus: active?.board ?? [],
     runs: input.runs && totals ? { ...input.runs, totals } : null,
     usage: active?.usage ?? null,
+    /** The pass's published holds, WIP and summary. */
+    holds: active?.holds ?? null,
     sources,
   };
 }
