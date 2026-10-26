@@ -368,11 +368,6 @@ export function askProblem(q: AskFacts, want?: AskKind, scope: AskScope = TRACKE
   return undefined;
 }
 
-/** Why a question can't take an answer; see askProblem. */
-export function questionProblem(q: AskFacts, scope: AskScope = TRACKER_SCOPE): string | undefined {
-  return askProblem(q, "question", scope);
-}
-
 /** An ask issue in the tracker, open or closed, of any kind. */
 export function isAsk(item: Item): boolean {
   return askKind(item) !== undefined;

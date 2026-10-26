@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GitHub } from "../src/github/api.ts";
-import { DECISIONS_CONFIG, DOCUMENT_CHANGED_NOTE, DOCUMENT_KEPT, MAX_ABOUT, answerDocument, answerShownEntry, documentView, parseDocument, readMarks, refreshDocument, sendDocumentAnswer, toggleDocument } from "../src/github/decisiondocument.ts";
+import { DECISIONS_CONFIG, DOCUMENT_CHANGED_NOTE, DOCUMENT_KEPT, MAX_ABOUT, answerDocument, answerShownEntry, documentView, parseDocument, readMarks, refreshDocument, sendDocumentEdit, toggleDocument } from "../src/github/decisiondocument.ts";
 import recorded from "./fixtures/decision-about.json" with { type: "json" };
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
@@ -49,7 +49,7 @@ test("concurrent edit refuses PATCH", async () => {
     calls++;
     return new Response(JSON.stringify({ body: body + "other edit" }));
   });
-  await assert.rejects(sendDocumentAnswer(gh, path, body, "D12", "A", "yes"), /changed, reload/);
+  await assert.rejects(sendDocumentEdit(gh, path, body, (b) => answerDocument(b, "D12", "A", "yes")), /changed, reload/);
   assert.equal(calls, 1);
 });
 

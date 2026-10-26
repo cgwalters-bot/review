@@ -2,9 +2,9 @@
 // predicate with its own leave rule (#135, §2 of its design):
 //
 // - Answer and Approve: the "Needs you" rows (needs.ts), an ask on an open
-//   issue and a review request at an unreviewed head; answered dims the
-//   card until the bot acts, the item closing or the head being reviewed
-//   removes it.
+//   issue, a hold of the pass's only he releases and a review request at an
+//   unreviewed head; answered dims the card until the bot acts, the item
+//   closing, the pass releasing it or the head being reviewed removes it.
 // - Send: an open review-draft issue; ticking its send box dims it until the
 //   tracker's workflow closes the issue.
 // - Rerun: the newest dispatch run of an item, failed or cancelled in the
@@ -83,7 +83,7 @@ export function needCard(n: Need): Card | undefined {
   if (!open(item?.state)) return undefined;
   const approve = n.action === "review" || n.action === "promote";
   if (n.action === "review" && n.entry?.wait?.reviewedCurrentHead) return undefined;
-  const url = n.entry?.pr?.url ?? item?.url;
+  const url = n.hold?.url ?? n.entry?.pr?.url ?? item?.url;
   return {
     kind: approve ? "approve" : "answer",
     need: n,

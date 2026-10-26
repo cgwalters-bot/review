@@ -51,7 +51,7 @@ import { chatPanel, type ChatPanel } from "./chat.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, refreshDocument, sendDocumentEdit } from "./decisiondocument.ts";
 import { DISPATCH_WORKFLOW, type DispatchRun, inboxCards, loadDispatchRuns, mayAct, needCard, offeredReruns } from "./inbox.ts";
-import { fillInbox, type InboxHooks } from "./inboxview.ts";
+import { fillInbox, type InboxHooks, passLine } from "./inboxview.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
@@ -491,6 +491,8 @@ function mountHome(state: State): Home {
 
 interface Inbox {
   list: HTMLElement;
+  /** The pass's holds: when from, and what holds every new run (passLine). */
+  pass: HTMLElement;
   /** Why something it reads can't be shown, over the cards. */
   status: HTMLElement;
   /** Those reasons, by what was read. */
@@ -519,12 +521,12 @@ function mountInbox(state: State, home: Home): void {
   const status = h("p", { class: "note", role: "status" });
   const empty = h("p", { class: "empty", hidden: "" }, "All caught up: nothing needs you right now.");
   const tail = h("div", { class: "inbox-tail" });
-  const inbox: Inbox = { list, status, notes: new Map(), empty, proposals: new Map(), writes: Promise.resolve(), busy: false };
+  const inbox: Inbox = { list, pass: h("div"), status, notes: new Map(), empty, proposals: new Map(), writes: Promise.resolve(), busy: false };
   state.inbox = inbox;
   if (REVIEW_DRAFT_CONFIG) tail.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => void refreshDrafts(state)));
   home.slots.decisionDocument.hidden = true;
   home.slots.needs.hidden = true;
-  home.sections.needs.body.prepend(status, list, empty, tail);
+  home.sections.needs.body.prepend(inbox.pass, status, list, empty, tail);
 }
 
 /** Re-read the proposals through their label; none while one executes, as that would redraw its card. False if nothing was read. */
@@ -618,6 +620,7 @@ function paintInbox(state: State, force = false): void {
   const now = Date.now();
   const cards = inboxCards({ needs: state.needs, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}), ...(inbox.runs ? { runs: inbox.runs } : {}), itemState: (item) => states.get(item), priorityOf: (item) => priorities.get(item), ...(inbox.offers ? { offers: inbox.offers } : {}), now });
   fillInbox(inbox.list, cards, inboxHooks(state), force);
+  inbox.pass.replaceChildren(state.active?.holds ? passLine(state.active.holds, now) : "");
   const waiting = cards.filter((c) => !c.answered).length;
   inbox.empty.hidden = cards.length > 0;
   setCount(home, "needs", String(waiting), { title: `${waiting} cards waiting on you`, hot: waiting > 0 });

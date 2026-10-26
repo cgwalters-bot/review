@@ -11,7 +11,6 @@ import { refKey, type Verdict, type VerdictState } from "./forge.ts";
 import type { Item } from "./board.ts";
 import type { VerdictEntry, WaitingPr } from "./prs.ts";
 import { type Entry, onBot } from "./queue.ts";
-import { type Decision, decisionLabel } from "./triage.ts";
 import { afterReview } from "./waiting.ts";
 
 /** One row of a list he steps through. */
@@ -66,18 +65,6 @@ export function triageStops(order: readonly Item[], entries: readonly Entry[], l
     const e = queued.get(key);
     return [{ key, href, title: i.title, waiting: e ? e.settled !== true && !onBot(e) : !links.settled(i) }];
   });
-}
-
-/** The key of a decision's card, as a stop of the decisions view. */
-export const decisionKey = (d: Decision): string => `decision:${d.item.nodeId}`;
-
-/** A decision's name in the "Done: …" line, e.g. "D7: Pick a name". */
-export const decisionTitle = (d: Decision): string => `${decisionLabel(d)}: ${d.title}`;
-
-/** The decisions view's cards, in its order; answered ones are settled. All live on `hash`, answered in place. */
-export function decisionStops(decisions: readonly Decision[], answered: ReadonlySet<string>, hash: string): Stop[] {
-  // One without an issue has no form: nothing to move on to there.
-  return decisions.map((d) => ({ key: decisionKey(d), href: hash, title: decisionTitle(d), waiting: !answered.has(d.item.nodeId) && d.item.ref !== undefined }));
 }
 
 /**

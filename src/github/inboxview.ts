@@ -8,14 +8,15 @@ import type { Answer } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import { chatButton, chatItem } from "./chatitem.ts";
-import { TRACKER_REPO } from "./config.ts";
+import { HEARTBEAT_STALE_MS, TRACKER_REPO } from "./config.ts";
 import { DECISIONS_CONFIG } from "./decisiondocument.ts";
 import { questionOf } from "./board.ts";
 import type { DocumentEntry } from "./decisiondocument.ts";
 import type { Offered } from "./actions.ts";
+import type { Holds } from "./holds.ts";
 import { type Card, CARD_LABEL, type DispatchRun } from "./inbox.ts";
 import { ACTION_LABEL, ACTION_TITLE, type Need } from "./needs.ts";
-import { age, answerForm, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
+import { age, agoLabel, answerForm, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
 
 export const CARD_CLASS = "card";
 export const CARD_DONE_CLASS = "card-done";
@@ -138,6 +139,16 @@ function action(c: Card, hooks: InboxHooks): Node | null {
     case "send":
     case "do": return null;
   }
+}
+
+/**
+ * The pass's holds, said once over the cards: when they are from, stale
+ * past the usage panel's threshold, and what holds every new run (wip, pools).
+ */
+export function passLine(holds: Holds, now: number): HTMLElement {
+  const stale = now - Date.parse(holds.at) > HEARTBEAT_STALE_MS;
+  const pass = holds.holds.filter((x) => x.item === null).map((x) => `${x.kind}: ${x.reason}`);
+  return h("p", { class: `note pass-holds${stale ? " warn" : ""}` }, "Pass holds as of ", agoLabel(holds.at, now), stale ? " · stale" : "", pass.length ? ` · new runs wait: ${pass.join("; ")}` : "");
 }
 
 /** A slot filled with `body` when it arrives (it reads its targets on drawing). */

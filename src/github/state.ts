@@ -38,7 +38,7 @@ export function pageState(input: StateInput, now = Date.now()) {
   }
   if (active?.local === null && sources.heartbeat && sources.heartbeat.state !== "unavailable") sources.heartbeat = { ...sources.heartbeat, state: "unavailable", error: "No heartbeat published" };
   if (active?.usage?.state !== undefined && active.usage.state !== "ok" && sources.usage && sources.usage.state !== "unavailable") sources.usage = { ...sources.usage, state: "unavailable", error: active.usage.state === "unreadable" ? "Usage repository inaccessible" : "No usage published" };
-  const people = buildNeeds({ entries: input.entries ?? [], decisions: input.decisions, decisionsAnswered: input.decisionsAnswered ?? new Set(), answeredHere: input.answeredHere ?? new Set(), board: active?.board });
+  const people = buildNeeds({ entries: input.entries ?? [], decisions: input.decisions, decisionsAnswered: input.decisionsAnswered ?? new Set(), answeredHere: input.answeredHere ?? new Set(), board: active?.board, holds: active?.holds });
   const staleRuns = sources.runs?.state === "unavailable" && input.runs?.state === "ok";
   const totals = input.runs ? runTotals(input.runs, staleRuns ? Math.min(now, input.runs.at) : now) : undefined;
   if (staleRuns && totals) {

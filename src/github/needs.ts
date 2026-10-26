@@ -1,5 +1,6 @@
 // Concrete operator asks, each once: unanswered questions, explicit
-// current-head review requests, approved forks to promote and escalations.
+// current-head review requests, approved forks to promote, and the holds
+// the scheduler's pass publishes as only his to release (holds.ts).
 // The broader legacy queue is kept in Watching and By priority.
 
 import { askProblem, blockedBy, isQuestion, type Item, NO_PRIORITY, PRIORITY_ORDER, waitingSince } from "./board.ts";
@@ -9,6 +10,7 @@ import { type Decision, decisionLabel } from "./triage.ts";
 import { isBot } from "./authors.ts";
 import { OPERATOR } from "./config.ts";
 import { isForgeDraft, promotionAction, refKey } from "./forge.ts";
+import type { Hold, Holds } from "./holds.ts";
 
 /** The one thing a row asks of him. */
 export type NeedAction = "answer" | "review" | "write" | "promote";
@@ -44,6 +46,8 @@ export interface Need {
   parent?: Entry;
   /** The decision it is, when it is one (answering it works the same). */
   decision?: Decision;
+  /** The pass's hold it is, when it is one. */
+  hold?: Hold;
   /** An open question he can answer on this page. */
   inPlace: boolean;
   why?: string;
@@ -51,8 +55,8 @@ export interface Need {
   done?: boolean;
 }
 
-/** What an entry that waits on him asks of him; "none" for one that does not wait on him at all. */
-function actionOf(e: Entry): NeedAction | "none" {
+/** What an entry that waits on him asks of him; "none" for one that does not wait on him at all. With `labels`, his labels too (handedOff). */
+function actionOf(e: Entry, labels: boolean): NeedAction | "none" {
   if (e.kind === "pr") {
     const promotion = e.pr ? promotionAction(e.pr, e.verdict) : undefined;
     if (promotion) return promotion;
@@ -66,22 +70,27 @@ function actionOf(e: Entry): NeedAction | "none" {
   const item = e.item;
   if (!item || item.kind === "draft" || item.state !== "open") return "none";
   if (isQuestion(item)) return askProblem(item, "question") === undefined ? "answer" : "none";
-  if (item.labels.includes("needs-human") || (item.labels.includes("escalate") && item.assignees.includes(OPERATOR))) return "write";
+  if (labels && (item.labels.includes("needs-human") || (item.labels.includes("escalate") && item.assignees.includes(OPERATOR)))) return "write";
   // Legacy review/chore asks and inferred board blockers are Watching.
   return "none";
 }
 
-/** The bot's `escalate`, or the `needs-human` the scheduler holds an item on. */
+/**
+ * The bot's `escalate`, or the `needs-human` the scheduler holds an item on.
+ * The fallback for a page without the pass's holds snapshot, which decides
+ * this instead: delete it, and the `labels` it is behind, once
+ * agent-board#360's snapshot is deployed.
+ */
 const handedOff = (item: Item) => item.labels.some((l) => l === "escalate" || l === "needs-human");
 
-function needOf(e: Entry, parent: Entry | undefined): Need | undefined {
-  const action = actionOf(e);
+function needOf(e: Entry, parent: Entry | undefined, labels: boolean): Need | undefined {
+  const action = actionOf(e, labels);
   if (action === "none") return undefined;
   const n: Need = { key: e.key, action, title: e.title, where: e.where, href: e.href, entry: e, inPlace: action === "answer" && e.item?.ref !== undefined };
   const why = e.pr ? action === "promote" ? "You approved the current head; send /promote to publish it upstream." : action === "write" ? "You approved the current head; the upstream human-text policy requires your title, description and commit messages." : "Your review is requested for the current, unreviewed head." : e.item?.why;
   if (why) n.why = why;
   if (e.pr && action === "promote") n.href = e.pr.url;
-  if (e.item && handedOff(e.item) && e.item.url) n.href = e.item.url;
+  if (labels && e.item && handedOff(e.item) && e.item.url) n.href = e.item.url;
   const priority = effectivePriority(e);
   if (priority) n.priority = priority;
   const since = e.pr ? e.wait?.askedAt : e.since;
@@ -93,6 +102,19 @@ function needOf(e: Entry, parent: Entry | undefined): Need | undefined {
 /** The refKey of the issue an entry or decision is, lowercased, for matching the two. */
 const issueKey = (item: Item | undefined): string | undefined => (item?.ref ? refKey(item.ref).toLowerCase() : undefined);
 
+/** A hold only he releases: its question, else its item's board title, with the pass's reason under it. */
+function holdNeed(hold: Hold & { item: string }, board: readonly Item[]): Need {
+  const item = board.find((i) => issueKey(i) === hold.item.toLowerCase());
+  const title = item?.title ?? hold.item;
+  const n: Need = { key: `hold:${hold.item.toLowerCase()}`, action: "write", title: hold.question ?? title, where: hold.question && item ? `${hold.item} · ${title}` : hold.item, href: hold.url ?? "#", inPlace: false, hold, why: hold.reason };
+  if (item) n.entry = { key: `item:${item.nodeId}`, kind: "item", title, where: hold.item, href: `#item/${item.nodeId}`, item };
+  const priority = hold.priority ?? item?.priority;
+  if (priority) n.priority = priority;
+  const since = item && waitingSince(item);
+  if (since) n.since = since;
+  return n;
+}
+
 export interface NeedsInput {
   board?: readonly Item[] | undefined;
   /** The queue, ranked (buildEntries). */
@@ -103,6 +125,8 @@ export interface NeedsInput {
   decisionsAnswered?: ReadonlySet<string>;
   /** Keys of rows answered from this page: kept (dimmed) after they stop waiting. */
   answeredHere?: ReadonlySet<string>;
+  /** The pass's holds; without them, his labels say what is handed to him (handedOff). */
+  holds?: Holds | undefined;
 }
 
 /**
@@ -116,15 +140,16 @@ export function buildNeeds(input: NeedsInput): Need[] {
   const done: Need[] = [];
   const board = input.board ?? [];
   const keep = input.answeredHere ?? new Set<string>();
+  const labels = input.holds === undefined;
   const push = (e: Entry, parent: Entry | undefined) => {
     // Waiting on the bot, or already answered: not his, unless he answered it from here.
     if (onBot(e)) return;
     if (e.settled) {
-      const n = keep.has(e.key) ? needOf({ ...e, settled: false }, parent) : undefined;
+      const n = keep.has(e.key) ? needOf({ ...e, settled: false }, parent, labels) : undefined;
       if (n) done.push({ ...n, done: true });
       return;
     }
-    const n = needOf(e, parent);
+    const n = needOf(e, parent, labels);
     if (n) out.push(n);
   };
   for (const e of input.entries) {
@@ -132,7 +157,7 @@ export function buildNeeds(input: NeedsInput): Need[] {
     for (const c of e.children ?? []) push(c, e);
   }
   const listed = new Set(input.entries.flatMap((e) => [e, ...(e.children ?? [])]).filter((e) => e.kind !== "pr").map((e) => e.item?.nodeId));
-  for (const item of board) {
+  if (labels) for (const item of board) {
     const since = waitingSince(item);
     if (!listed.has(item.nodeId) && handedOff(item) && item.ref) push({ key: `item:${item.nodeId}`, kind: "item", title: item.title, where: refKey(item.ref), href: `#item/${item.nodeId}`, item, ...(item.priority ? { priority: item.priority } : {}), ...(since ? { since } : {}) }, undefined);
   }
@@ -152,6 +177,13 @@ export function buildNeeds(input: NeedsInput): Need[] {
     const priority = board.find((i) => issueKey(i) === issueKey(d.item))?.priority ?? d.item.priority;
     if (priority) n.priority = priority;
     (answered ? done : out).push(answered ? { ...n, done: true } : n);
+  }
+  // An item that is already a row (a question, a decision) stays that row.
+  const rowed = new Set(out.concat(done).flatMap((n) => issueKey(n.entry?.item ?? n.decision?.item) ?? []));
+  for (const hold of input.holds?.holds ?? []) {
+    if (!hold.operator || !hold.item || rowed.has(hold.item.toLowerCase())) continue;
+    rowed.add(hold.item.toLowerCase());
+    out.push(holdNeed({ ...hold, item: hold.item }, board));
   }
   const time = (n: Need) => {
     const t = n.since ? Date.parse(n.since) : Number.NaN;

@@ -32,7 +32,7 @@ describe("config: the board", () => {
   });
 
   it("uses distinct ask labels", () => {
-    const labels = [config.QUESTION_LABEL, config.REVIEW_LABEL, config.CHORE_LABEL, config.DECISION_LABEL, config.CAPTURE_LABEL];
+    const labels = [config.QUESTION_LABEL, config.REVIEW_LABEL, config.CHORE_LABEL, config.CAPTURE_LABEL];
     assert.equal(new Set(labels).size, labels.length);
   });
 

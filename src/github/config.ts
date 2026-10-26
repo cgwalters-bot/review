@@ -111,11 +111,6 @@ export const REVIEW_LABEL = "review";
 /** ... on an issue asking him for any other action. */
 export const CHORE_LABEL = "chore";
 /**
- * The label the bot adds to a question that is a triage decision, titled
- * "D<n>: ..." and listing the items it unblocks (see triage.ts).
- */
-export const DECISION_LABEL = "decision";
-/**
  * The label on an issue he files from the capture bar: the bot hasn't
  * triaged it yet. bot-notify in homegit routes his open issues carrying
  * it, and the bot removes it once it has turned the issue into work.
@@ -221,7 +216,7 @@ export const HEARTBEAT_ISSUE = 176;
  * The plan's usage is private: bin/bot-heartbeat keeps it in the one
  * comment by BOT_LOGIN on this issue ("Bot usage", locked) of a private
  * repository, read with the viewer's own token. Nothing of it is in the
- * build.
+ * build. The pass's holds snapshot (holds.ts) is another comment there.
  */
 export const USAGE_REPO = "cgwalters-forge/bot-ops";
 export const USAGE_ISSUE = 1;

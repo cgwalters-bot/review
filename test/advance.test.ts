@@ -3,7 +3,6 @@ import { describe, it } from "node:test";
 import {
   type AdvanceFacts,
   decideAdvance,
-  decisionStops,
   EDITED_ATTR,
   overlayVerdicts,
   overlayWaiting,
@@ -205,7 +204,7 @@ describe("overlayWaiting", () => {
   });
 });
 
-describe("triageStops and decisionStops", () => {
+describe("triageStops", () => {
   const item = (n: number) => parseItem(rawBoardItem(n, { Status: "Needs human" }));
   const entry = (n: number, over: Partial<Entry> = {}): Entry => ({ key: `item:PVTI_t${n}`, kind: "item", title: `item ${n}`, where: "w", href: `#item/PVTI_t${n}`, ...over });
 
@@ -227,19 +226,6 @@ describe("triageStops and decisionStops", () => {
     // From 1, the next still waiting is 3: 2 opens on GitHub, 4 and 5 are settled.
     assert.equal(pickNext(got, "item:PVTI_t1", got)?.key, "item:PVTI_t3");
     assert.equal(pickNext(got, "item:PVTI_t3", got)?.key, "item:PVTI_t6");
-  });
-
-  it("steps through the decisions in place, skipping answered ones", () => {
-    const withRef = (n: number) => ({ ...item(n), ref: { owner: "cgwalters-forge", repo: "tracker", number: n } });
-    const ds = [7, 8, 9].map((n) => parseDecision({ ...withRef(n), title: `D${n}: pick` }));
-    const answered = new Set(["PVTI_t8"]);
-    const got = decisionStops(ds, answered, "#decisions");
-    assert.deepEqual(got.map((s) => [s.key, s.href, s.title, s.waiting]), [
-      ["decision:PVTI_t7", "#decisions", "D7: pick", true],
-      ["decision:PVTI_t8", "#decisions", "D8: pick", false],
-      ["decision:PVTI_t9", "#decisions", "D9: pick", true],
-    ]);
-    assert.equal(pickNext(got, "decision:PVTI_t7", got)?.key, "decision:PVTI_t9");
   });
 });
 

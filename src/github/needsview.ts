@@ -14,7 +14,6 @@ import { ACTION_LABEL, ACTION_TITLE, ALL_PRIORITIES, matchesPriority, type Need,
 import { decisionLabel, shortRef } from "./triage.ts";
 import { age, answerForm, askText, excerpt, KIND_LABEL, KIND_TITLE, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, rowText, SINCE_ATTR, sinceTitle, STATE_LABEL } from "./view.ts";
 
-/** Characters of the ask shown on a row before "The whole question". */
 /** The prefix the bot puts before a question in the board's Why field. */
 const WHY_ASK_RE = /^Q:\s*/;
 /** Rows of the answer text box in a row: a short note, not the item view's four. */

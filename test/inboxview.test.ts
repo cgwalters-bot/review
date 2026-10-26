@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parseDocument } from "../src/github/decisiondocument.ts";
 import { type Card, documentCard, needCard } from "../src/github/inbox.ts";
-import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, fillInbox, holdsDraft, INBOX_PAGE, type InboxHooks } from "../src/github/inboxview.ts";
+import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, fillInbox, holdsDraft, INBOX_PAGE, type InboxHooks, passLine } from "../src/github/inboxview.ts";
 import type { Offered } from "../src/github/actions.ts";
 import type { Item } from "../src/github/board.ts";
+import type { Hold } from "../src/github/holds.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
 import { ITEM_CHAT_EVENT, type ChatItem } from "../src/github/chatitem.ts";
@@ -185,5 +186,20 @@ describe("fillInbox", () => {
     assert.equal(cardOf(list, "document:D1")!.querySelectorAll(".card-body").length, 1, "the decision carries its proposal");
     more.click();
     assert.deepEqual([keys(list).length, read.length, box.querySelector(".inbox-more")], [INBOX_PAGE + 2, INBOX_PAGE + 2, null]);
+  });
+});
+
+describe("passLine", () => {
+  const wip: Hold = { item: null, url: null, epic: false, kind: "wip", reason: "2 of 2 runs active", operator: false, priority: null, question: null };
+  const human = { ...wip, item: "o/r#1", url: "https://github.com/o/r/issues/1", kind: "needs-human", reason: "labelled needs-human", operator: true };
+  // name, minutes old, holds, the line, whether it warns
+  const cases: [string, number, Hold[], string, boolean][] = [
+    ["fresh, with what holds every new run", 5, [wip, human], "Pass holds as of 5m ago · new runs wait: wip: 2 of 2 runs active", false],
+    ["not yet stale at the usage panel's threshold", 15, [human], "Pass holds as of 15m ago", false],
+    ["stale past it", 60, [human], "Pass holds as of 1h ago · stale", true],
+  ];
+  for (const [name, minutes, holds, text, warn] of cases) it(name, () => {
+    const el = passLine({ at: new Date(hooks.now - minutes * 60_000).toISOString(), holds }, hooks.now);
+    assert.deepEqual([el.textContent, el.classList.contains("warn")], [text, warn]);
   });
 });

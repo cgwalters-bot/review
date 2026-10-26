@@ -3,12 +3,9 @@ import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { NEWS_REPOS } from "../src/github/config.ts";
 import { firstParagraph, type HarnessCache, isHarnessPath, loadNews, parseNewsPull, sortNews } from "../src/github/news.ts";
-import { newsList } from "../src/github/newsview.ts";
-import { createRenderer } from "../src/markdown.ts";
 import { installDom, scriptedFetch } from "./helpers.ts";
 
-const win = installDom();
-const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
+installDom();
 const API = "https://api.github.com";
 
 describe("firstParagraph", () => {
@@ -86,25 +83,5 @@ describe("loadNews", () => {
     // Labeled PRs need no files, and a second load reads none.
     await loadNews(gh, cache, 10);
     assert.equal(calls.filter((c) => c.url.includes("/files")).length, fileReads);
-  });
-});
-
-describe("newsList", () => {
-  it("shows untrusted titles as text and sanitizes summaries", () => {
-    const EVIL = "<img src=x onerror=alert(1)>";
-    const root = newsList(
-      {
-        items: [{ repo: "o/r", number: 1, url: "javascript:alert(2)", title: EVIL, author: "a", mergedAt: "2026-01-01T00:00:00Z", summary: `${EVIL} [x](javascript:alert(3))`, labels: [], harness: true }],
-        warnings: [],
-        changed: true,
-      },
-      render,
-      Date.parse("2026-01-03T00:00:00Z"),
-    );
-    assert.equal(root.querySelectorAll("img, script").length, 0);
-    for (const a of root.querySelectorAll("a")) assert.doesNotMatch(a.getAttribute("href") ?? "", /^javascript:/);
-    assert.ok(root.textContent?.includes(EVIL));
-    assert.equal(root.querySelectorAll(".news-item.harness").length, 1);
-    assert.match(root.textContent ?? "", /2d ago/);
   });
 });

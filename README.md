@@ -150,8 +150,14 @@ in the header turns this off (remembered per browser).
 current concrete asks: unanswered open tracker questions assigned to the
 operator, PRs explicitly requesting the operator's review of an unreviewed
 head (any author; drafts only in the forge, where the bot asks on its
-drafts), and open items labelled `escalate` assigned to
-the operator. PRs approved by the operator at the current head are excluded,
+drafts), and the holds the scheduler's pass publishes as only the
+operator's to release (`agent-board/holds/v1`, the bot's comment on the
+private usage issue, read with the viewer's token): its question leads,
+the pass's reason under it. Only while no snapshot can be read are open
+items labelled `needs-human`, or `escalate` and assigned to the operator,
+listed instead. Over the inbox's cards a line gives the snapshot's age,
+stale past the usage panel's threshold, and what holds every new run
+(WIP, pools). PRs approved by the operator at the current head are excluded,
 including human-text forks. Bot review guides are advisory; the dashboard
 does not infer approval or human-text promotion readiness from them.
 Rows show **Answer**, **Review**, or **Write text**, the reason,
@@ -338,7 +344,7 @@ is unavailable, the section shows a warning and retains review-request search
 results. Repository access is still needed for private PRs, timelines and CI.
 
 Questions retain their inline answer forms and draft protection. Reviews
-open the existing head-checked review pane; **Write text** on an escalation
+open the existing head-checked review pane; **Write text** on a hold
 opens its GitHub issue.
 
 **Status** is computed from the board as read: Changed (moved in the last

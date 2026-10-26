@@ -184,10 +184,6 @@ export async function sendDocumentEdit(gh: GitHub, path: string, shown: string, 
   return body;
 }
 
-export function sendDocumentAnswer(gh: GitHub, path: string, shown: string, id: string, letter: string, reply: string): Promise<string> {
-  return sendDocumentEdit(gh, path, shown, (body) => answerDocument(body, id, letter, reply));
-}
-
 /** What an entry's About item says now: closed or merged resolves the entry; comments since the ask only mark it. */
 // `item` is the About it was read for: a redraw from a newer body (a refused
 // send) can carry marks read for an older one, and they then apply only to

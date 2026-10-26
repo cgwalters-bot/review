@@ -11,7 +11,7 @@
 import { GitHubError, type GitHub, RateLimited } from "./api.ts";
 import { isBot } from "./authors.ts";
 import { USAGE_ISSUE, USAGE_REPO } from "./config.ts";
-import type { RawComment } from "./heartbeat.ts";
+import { fencedJson, isObject, type RawComment, str, time } from "./heartbeat.ts";
 import config from "./usage-config.json" with { type: "json" };
 
 /**
@@ -24,8 +24,6 @@ export const USAGE_CONFIG = config as { mistralAllowance: { repo: string; path: 
 /** The comment's first line. */
 export const USAGE_MARKER = "<!-- bot-usage v1 -->";
 const SCHEMA = "bot-usage/v1";
-const JSON_FENCE_RE = /^```json\n([\s\S]*?)\n```$/m;
-const TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 /** A window's kind: five_hour, seven_day, or a newer one. */
 const KIND_RE = /^[a-z][a-z0-9_]{0,23}$/;
@@ -50,7 +48,7 @@ export const MAX_RUNS = 200;
 /** A pool's name in a run: claude, openai, mistral, or a newer one. */
 const POOL_RE = /^[a-z][a-z0-9_-]{0,23}$/;
 /** OWNER/REPO#N, as the heartbeat's workers name their items. */
-const ITEM_RE = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d{0,9})$/;
+export const ITEM_RE = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d{0,9})$/;
 /** An Actions run id is a positive integer; GitHub's are far below this. */
 const MAX_RUN_ID = Number.MAX_SAFE_INTEGER;
 const DAY_MS = 24 * 60 * 60_000;
@@ -213,12 +211,6 @@ export interface Usage {
 /** What the ops view knows of the usage: the snapshot, none published yet, or a repository this token can't read. */
 export type UsageData = { state: "ok"; usage: Usage } | { state: "none" } | { state: "unreadable" };
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const str = (v: unknown, re: RegExp): string | undefined => (typeof v === "string" && re.test(v) ? v : undefined);
-const time = (v: unknown): string | undefined => {
-  const s = str(v, TIME_RE);
-  return s && !Number.isNaN(Date.parse(s)) ? s : undefined;
-};
 const count = (v: unknown, max: number): number | undefined => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= max ? v : undefined);
 
 function parseTokens(raw: unknown): Tokens | undefined {
@@ -397,16 +389,8 @@ function parseMistral(raw: unknown): MistralUsage | undefined {
 
 /** The usage in a comment's body, or undefined if it isn't one. Malformed windows and workers are left out. */
 export function parseUsage(body: string | null | undefined): Usage | undefined {
-  if (!body?.startsWith(USAGE_MARKER)) return undefined;
-  const m = JSON_FENCE_RE.exec(body);
-  if (!m?.[1]) return undefined;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(m[1]);
-  } catch {
-    return undefined;
-  }
-  if (!isObject(raw) || raw.schema !== SCHEMA) return undefined;
+  const raw = fencedJson(body, USAGE_MARKER);
+  if (raw?.schema !== SCHEMA) return undefined;
   const pools: NonNullable<Usage["pools"]> = {};
   for (const name of ["claude", "openai"] as const) {
     const pool = isObject(raw.pools) ? parsePool(raw.pools[name]) : undefined;

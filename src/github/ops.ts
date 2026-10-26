@@ -29,6 +29,7 @@ import { CONTROLLER, type ControllerData, loadController } from "./controller.ts
 import { isOwnOrg, itemOrg, type Preset } from "./filter.ts";
 import { type Heartbeat, loadHeartbeat } from "./heartbeat.ts";
 import { loadUsage, type UsageData } from "./usage.ts";
+import { loadHolds } from "./holds.ts";
 import { mapLimit } from "./prs.ts";
 import { readSource, type Sources } from "./freshness.ts";
 
@@ -578,21 +579,24 @@ function guarded(warnings: string[]) {
  * What the agents, changes and usage sections need, and no more: the
  * whole board, the heartbeat and the usage, all conditional reads that
  * cost nothing while unchanged. The ops detail reads the same three, so
- * either read serves the other.
+ * either read serves the other. The inbox's holds are the usage issue's
+ * comments again: one more 304.
  */
 export async function loadActive(gh: GitHub, now: number = Date.now()): Promise<Active> {
   const warnings: string[] = [];
   const sources: Sources = {};
-  const [board, local, usage] = await Promise.all([
+  const [board, local, usage, holds] = await Promise.all([
     readSource(sources, "board", (source) => loadWholeBoard(source).then((q) => q.items), gh),
     readSource(sources, "heartbeat", (source) => loadHeartbeat(source), gh),
     readSource(sources, "usage", (source) => loadUsage(source), gh),
+    loadHolds(gh),
   ]);
   for (const [name, source] of Object.entries(sources)) if (source.error) warnings.push(`Couldn't read ${name}: ${source.error}`);
   const active: Active = { warnings, at: now, sources };
   if (board) active.board = board;
   if (local !== undefined) active.local = local;
   if (usage) active.usage = usage;
+  if (holds) active.holds = holds;
   return active;
 }
 
