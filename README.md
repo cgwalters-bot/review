@@ -153,12 +153,11 @@ head (any author; drafts only in the forge, where the bot asks on its
 drafts), and the holds the scheduler's pass publishes as only the
 operator's to release (`agent-board/holds/v1`, the bot's comment on the
 private usage issue, read with the viewer's token): its question leads,
-the pass's reason under it. Only while no snapshot can be read are open
-items labelled `needs-human`, or `escalate` and assigned to the operator,
-listed instead. Over the inbox's cards a line gives the snapshot's age,
-stale past the usage panel's threshold, and what holds every new run
-(WIP, pools). PRs approved by the operator at the current head are excluded,
-including human-text forks. Bot review guides are advisory; the dashboard
+the pass's reason under it. Over the inbox's cards a line gives the
+snapshot's age, stale past the usage panel's threshold, and what holds
+every new run (WIP, pools), or says that no snapshot could be read;
+labels are never read in its place. PRs approved by the operator at the
+current head are excluded, including human-text forks. Bot review guides are advisory; the dashboard
 does not infer approval or human-text promotion readiness from them.
 Rows show **Answer**, **Review**, or **Write text**, the reason,
 ask age and repository reference. P0 comes first, then the blocked epic's

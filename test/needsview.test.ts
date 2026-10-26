@@ -177,8 +177,8 @@ describe("needRow", () => {
     assert.equal(other.querySelector("a.action")?.textContent, "Answer");
     // A token GitHub hasn't named may be his: the form is there.
     assert.ok(needRow(q, { ...hooks(), login: undefined }).querySelector("form.answer"));
-    const review = first([tracked("PVTI_r", 22, { labels: ["escalate"], body: "Ask: Look at it\n" })]);
-    const row = needRow(review, hooks());
+    const hold = { item: "cgwalters-forge/tracker#22", url: `${TRACKER}/22`, epic: false, kind: "needs-human", reason: "labelled needs-human", operator: true, priority: null, question: null };
+    const row = needRow(buildNeeds({ entries: [], holds: { at: "2026-10-26T00:00:00Z", holds: [hold] } })[0]!, hooks());
     assert.equal(row.querySelector("form"), null);
     const action = row.querySelector<HTMLAnchorElement>("a.action");
     assert.equal(action?.getAttribute("href"), `${TRACKER}/22`);
@@ -349,12 +349,6 @@ describe("needRow location", () => {
     assert.match(text(el), /^upstream\/widget#2500 · tracks tracker#123 · age unknown$/);
     // A board Org other than the PR's owner is still shown.
     assert.match(text(tag(reviewEntry(tracked("PVTI_t", 123, { org: "containers" })))), /^upstream\/widget#2500 · tracks tracker#123 · containers · /);
-  });
-
-  it("keeps the issue as the location of an escalation row", () => {
-    const el = needRow(first([tracked("PVTI_e", 31, { labels: ["escalate"], org: "containers" })]), hooks()).querySelector(".tag")!;
-    assert.deepEqual(links(el), [["tracker#31", `${TRACKER}/31`]]);
-    assert.match(text(el), /^tracker#31 · containers · /);
   });
 
   it("does not repeat the PR when its board item is the PR itself", () => {

@@ -12,6 +12,7 @@ import { buildEntries, type Entry } from "../src/github/queue.ts";
 import { needsSignature } from "../src/github/needsview.ts";
 import { PREVIEW_ROWS, SECTION_TITLE, SECTIONS, type SectionId } from "../src/github/sections.ts";
 import type { RawComment } from "../src/github/heartbeat.ts";
+import type { Holds } from "../src/github/holds.ts";
 import { findUsage, type MistralAllowance, parseUsage, USAGE_MARKER, type UsageData } from "../src/github/usage.ts";
 import { clock, time } from "../src/github/view.ts";
 import { createRenderer } from "../src/markdown.ts";
@@ -43,6 +44,11 @@ function questions(n: number): Item[] {
   return Array.from({ length: n }, (_, i) =>
     tracked(`PVTI_q${i}`, 100 + i, { labels: ["question"], body: `Blocks: ${TRACKER}/9\nQ: which ${i}?\nOptions:\nA) this\nB) that\n`, priority: "P1", createdAt: `2026-01-${String(i + 1).padStart(2, "0")}T00:00:00Z` }),
   );
+}
+
+/** n holds only the operator releases, at the priority `priority` gives each. */
+function held(n: number, priority: (i: number) => string = () => "P1"): Holds {
+  return { at: "2026-10-26T00:00:00Z", holds: Array.from({ length: n }, (_, i) => ({ item: `cgwalters-forge/tracker#${100 + i}`, url: `${TRACKER}/${100 + i}`, epic: false, kind: "needs-human", reason: "labelled needs-human", operator: true, priority: priority(i), question: null })) };
 }
 
 const needsHooks = (sent: unknown[] = []) => ({
@@ -420,8 +426,7 @@ describe("operator dashboard", () => {
 
   it("keeps overflow in collapsed Watching and reveals it for action continuation", () => {
     const home = homeSkeleton(hooks(["needs"]));
-    const entries = buildEntries(questions(DECISION_LIMIT + 3).map((q) => ({ ...q, labels: ["escalate"] })), [], new Map());
-    fillNeeds(home, buildNeeds({ entries }), needsHooks(), entries);
+    fillNeeds(home, buildNeeds({ entries: [], holds: held(DECISION_LIMIT + 3) }), needsHooks(), []);
     document.body.replaceChildren(home.el);
     assert.equal(walkRows(home.el).length, DECISION_LIMIT);
     const overflow = home.slots.needs.querySelector<HTMLElement>(".watching .need")!;
@@ -432,9 +437,7 @@ describe("operator dashboard", () => {
   it("filters by priority before the limit, so a chip's rows are in the list, not in Watching", () => {
     const home = homeSkeleton(hooks(["needs"]));
     // The last three, ranked after the P1s, are past the limit unfiltered.
-    const items = questions(DECISION_LIMIT + 3).map((q, i) => ({ ...q, labels: ["escalate"], priority: i < DECISION_LIMIT ? "P1" : "P2" }));
-    const entries = buildEntries(items, [], new Map());
-    fillNeeds(home, buildNeeds({ entries }), { ...needsHooks(), priority: "P2" }, entries);
+    fillNeeds(home, buildNeeds({ entries: [], holds: held(DECISION_LIMIT + 3, (i) => (i < DECISION_LIMIT ? "P1" : "P2")) }), { ...needsHooks(), priority: "P2" }, []);
     document.body.replaceChildren(home.el);
     const shown = () => walkRows(home.el).map((r) => r.getAttribute("data-priority"));
     const watching = () => text(home.slots.needs.querySelector(".watching summary"));

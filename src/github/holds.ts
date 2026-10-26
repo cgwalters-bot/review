@@ -65,7 +65,7 @@ export function findHolds(comments: readonly RawComment[]): Holds | undefined {
   return parseHolds(c?.body);
 }
 
-/** The published holds, read with the viewer's token; undefined on any failure, as if none were published. */
+/** The published holds, read with the viewer's token; undefined on any failure or when none is published, which the inbox says as not read. */
 export async function loadHolds(gh: GitHub): Promise<Holds | undefined> {
   try {
     const { data } = await gh.get<RawComment[]>(usagePath);
