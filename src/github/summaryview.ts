@@ -3,24 +3,23 @@
 // the section with the detail. It reads nothing of its own: it is made
 // from what the sections already read, so it adds no GitHub request and
 // follows their refresh rules (none while the tab is hidden). The
-// scheduler's line needs the controller's runs, which only the ops
-// detail reads; until it is opened the line says so. Each line says what
-// its state means (new work held until when, a stale reading's age, agents
-// not confirmed running) rather than a bare word to be looked up.
+// scheduler's line takes the pass from its published holds, and the broker
+// probe's run from the controller, which only the ops detail reads; until
+// it is opened the line says so. Each line says what its state means (new
+// work held until when and why, agents not confirmed running) rather than
+// a bare word to be looked up.
 
 import { h, link } from "../dom.ts";
 import type { ActiveAgent } from "./agents.ts";
-import type { ControllerData, PieceState } from "./controller.ts";
-import { monthGone, poolStateWords, poolWords } from "./opsview.ts";
+import type { ControllerData } from "./controller.ts";
+import { monthGone, poolLabel, poolNames, poolStateWords, poolWords } from "./opsview.ts";
 import type { PageState } from "./state.ts";
-import { poolLimit } from "./usage.ts";
 import { agoLabel, time } from "./view.ts";
 
 /** Agents linked by name on the line; the rest are counted. */
 const AGENTS_LINKED = 4;
 /** Statuses of a run that hasn't started. */
 const QUEUED = new Set(["queued", "waiting", "pending", "requested"]);
-const POOLS = [["claude", "Claude"], ["openai", "OpenAI"]] as const;
 
 export interface SummaryTargets {
   /** Open (if need be) and scroll to a section of the page. */
@@ -65,35 +64,35 @@ function queuedLine(state: PageState, targets: SummaryTargets): HTMLElement {
 }
 
 /**
- * The board scheduler's mode (what BOARD_DISPATCH makes it do), the poll's
- * last pass and the broker probe's last run (it has only a schedule, so
+ * What the board pass did and its WIP, as it published them with its
+ * holds, and the broker probe's last run (it has only a schedule, so
  * every run is the default branch's). The probe's job runs only
  * while tracker's BROKER_OUTAGE is apply, so otherwise it reads "skipped".
  */
-function schedulerLine(controller: ControllerData | undefined, now: number, targets: SummaryTargets): HTMLElement {
+function schedulerLine(state: PageState, controller: ControllerData | undefined, now: number, targets: SummaryTargets): HTMLElement {
   const line = h("li", {}, jump("ops", "Scheduler", targets), " ");
-  if (!controller) return (line.append("mode and last passes not read: they are read when the ops detail is opened"), line);
-  const piece = (label: string): PieceState | undefined => controller.pieces.find((p) => p.piece.label === label);
-  const pass = (p: PieceState | undefined): (string | HTMLElement)[] => !p?.last ? ["no pass"] : [`${p.last.conclusion === "success" ? "ok" : p.last.conclusion ?? "ended"} `, agoLabel(p.last.at, now, `finished ${time(p.last.at)}`)];
-  const board = piece("Board scheduler");
-  const mode = board?.scheduler?.mode;
+  const holds = state.holds;
+  const p = holds?.pass;
+  const of = (n: number | null, what: string) => (n === null ? "" : ` · ${n} ${what}`);
   line.append(
-    `board ${mode === "acting" ? "dispatching: starting new runs" : mode === "preview" ? "previewing (dry run): not starting runs" : "mode unknown"}`,
-    " · poll ", ...pass(piece("Poll")),
-    " · broker ", ...pass(piece("Broker probe")),
+    !holds ? "pass not read" : !p ? "pass not published" : `${p.mode === "preview" ? `previewing (dry run): would start ${p.started}` : `${p.mode}: started ${p.started}`}${of(p.candidates, "candidates")}${of(p.liveEpics, "live epics")}`,
+    holds ? (holds.wip ? ` · WIP ${holds.wip.inFlight ?? "?"}/${holds.wip.limit}` : " · WIP not published") : "",
+    holds ? h("span", {}, " · as of ", agoLabel(holds.at, now)) : "",
   );
+  const probe = controller?.pieces.find((x) => x.piece.label === "Broker probe");
+  line.append(" · broker ", ...(!controller ? ["not read: it is read when the ops detail is opened"] : !probe?.last ? ["no pass"] : [`${probe.last.conclusion === "success" ? "ok" : probe.last.conclusion ?? "ended"} `, agoLabel(probe.last.at, now, `finished ${time(probe.last.at)}`)]));
   return line;
 }
 
 function resourcesLines(state: PageState, now: number, targets: SummaryTargets): HTMLElement[] {
   const usage = state.usage?.state === "ok" ? state.usage.usage : undefined;
   if (!usage) return [h("li", {}, jump("weekly-usage", "Resources", targets), !state.usage ? " not read yet" : state.usage.state === "unreadable" ? " unreadable with this token" : " not published")];
-  const lines = POOLS.flatMap(([name, label]) => {
+  const lines = poolNames(usage.pools).flatMap((name) => {
     const pool = usage.pools?.[name];
     if (!pool) return [];
-    // What the pass does with it: held, else its headroom or that it is over pace and not held yet.
-    const { held, room, stale } = poolStateWords(pool, now);
-    return [h("li", pool.hold || pool.usedPercent > poolLimit(pool) ? { class: "hot" } : {}, jump("weekly-usage", label, targets), ` ${poolWords(pool).short}${room}${held}`, stale)];
+    // What the pass decided on it: held and why, else its headroom.
+    const { held, room } = poolStateWords(pool, now);
+    return [h("li", pool.hold ? { class: "hot" } : {}, jump("weekly-usage", poolLabel(name), targets), ` ${pool.reading ? poolWords(pool.reading).short : "no reading"}${room}${held}`)];
   });
   const m = usage.mistral;
   if (m?.allowance) lines.push(h("li", {}, jump("weekly-usage", "Mistral", targets), ` $${m.allowance.spentUsd.toFixed(2)}${m.allowance.estimated ? " est." : ""} of $${m.allowance.limitUsd} this month`));
@@ -106,6 +105,6 @@ export function summaryView(state: PageState, controller: ControllerData | undef
   return h(
     "section",
     { class: "dashboard-summary", "aria-label": "Summary" },
-    h("ul", {}, agentsLine(state, targets), queuedLine(state, targets), schedulerLine(controller, now, targets), ...resourcesLines(state, now, targets)),
+    h("ul", {}, agentsLine(state, targets), queuedLine(state, targets), schedulerLine(state, controller, now, targets), ...resourcesLines(state, now, targets)),
   );
 }

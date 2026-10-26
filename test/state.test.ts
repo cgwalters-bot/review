@@ -33,7 +33,8 @@ describe("confirmed shared agent execution", () => {
 
   it("counts and renders Actions-only agents when board and heartbeat are unread", async () => {
     const runs = await readRuns();
-    const active = { warnings: ["board unavailable", "heartbeat unavailable"], at: NOW };
+    // The count is against the WIP limit the pass published with its holds.
+    const active = { warnings: ["board unavailable", "heartbeat unavailable"], at: NOW, holds: { at: new Date(NOW).toISOString(), wip: { limit: 4, inFlight: 1 }, holds: [] } };
     const state = pageState({ active, runs }, NOW);
     assert.equal(state.agents.running, 1);
     assert.deepEqual(state.agents.locations, { remote: 1, local: 0 });
@@ -133,7 +134,7 @@ describe("confirmed shared agent execution", () => {
     assert.equal(pageState({ runs }, NOW - 1).agents.running, 0, "future-dated reads aren't live evidence");
     assert.equal(pageState({ active, runs }, NOW).agents.running, 3);
     const empty = pageState({ runs: { ...runs, runs: [] } }, NOW);
-    assert.equal(agentsSummary(undefined, NOW, empty.agents).count, "0/4");
+    assert.equal(agentsSummary(undefined, NOW, empty.agents).count, "0", "no holds read: no limit made up");
   });
 
   it("keeps completed status authoritative over duplicate active rows, and separates repositories", async () => {

@@ -2,7 +2,7 @@
 // The board supplies context, never proof that a claimed agent still runs.
 
 import { type Item, parseIssueUrl, priorityIndex, repoOf } from "./board.ts";
-import { AGENT_TARGET, IN_PROGRESS, TRACKER_REPO } from "./config.ts";
+import { IN_PROGRESS, TRACKER_REPO } from "./config.ts";
 import { isOwnOrg, itemOrg } from "./filter.ts";
 import { type Heartbeat, isStale } from "./heartbeat.ts";
 import type { UsageData } from "./usage.ts";
@@ -79,7 +79,8 @@ export interface AgentSummary {
   agents: ActiveAgent[];
   /** Confirmed live Actions runs and fresh local heartbeat jobs. */
   running: number;
-  target: number;
+  /** The pass's WIP limit (holds.ts); absent until it is published. */
+  target?: number;
   /** The running ones by lane. */
   lanes: Record<Lane, number>;
   /** Unconfirmed heartbeat workers and board claims, excluded from running. */
@@ -142,7 +143,7 @@ export function actionRunIdentity(url: string | undefined): string | undefined {
  * tracker's dispatch.yml's in-progress list (`dispatch`); its queued ones
  * haven't started an agent.
  */
-export function activeAgents(board: readonly Item[], hb: Heartbeat | null | undefined, now: number, target: number = AGENT_TARGET, execution: { runs?: RunsData | undefined; dispatch?: DispatchData | undefined; sources?: Sources } = {}): AgentSummary {
+export function activeAgents(board: readonly Item[], hb: Heartbeat | null | undefined, now: number, target?: number, execution: { runs?: RunsData | undefined; dispatch?: DispatchData | undefined; sources?: Sources } = {}): AgentSummary {
   const stopped = hb?.loopState === "stopped";
   // A stopped coordinator isn't stale to the ops view, but nothing
   // vouches for the workers it last listed any more either.
@@ -273,7 +274,7 @@ export function activeAgents(board: readonly Item[], hb: Heartbeat | null | unde
   for (const a of live) lanes[a.lane]++;
   const locations = { remote: 0, local: 0 };
   for (const a of live) locations[a.location]++;
-  const summary: AgentSummary = { executionKnown: hb !== undefined || runs?.state === "ok" || dispatch?.state === "ok", agents: [...live, ...unconfirmed], running: live.length, target, lanes, unconfirmed: unconfirmed.length, queued: (dispatch?.live ?? []).filter((r) => r.status !== "in_progress").map((r) => ({ url: r.url, title: r.title })), locations, opencode: live.filter((a) => a.engine === "opencode").length, unknownEngine: live.filter((a) => !a.engine).length };
+  const summary: AgentSummary = { executionKnown: hb !== undefined || runs?.state === "ok" || dispatch?.state === "ok", agents: [...live, ...unconfirmed], running: live.length, ...(target === undefined ? {} : { target }), lanes, unconfirmed: unconfirmed.length, queued: (dispatch?.live ?? []).filter((r) => r.status !== "in_progress").map((r) => ({ url: r.url, title: r.title })), locations, opencode: live.filter((a) => a.engine === "opencode").length, unknownEngine: live.filter((a) => !a.engine).length };
   if (hb === null) summary.heartbeat = null;
   else if (hb) summary.heartbeat = { updatedAt: hb.updatedAt, loopState: hb.loopState, stale: isStale(hb, now) || hbSource === "cached" || hbSource === "unavailable", stopped };
   return summary;

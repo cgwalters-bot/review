@@ -67,8 +67,9 @@ describe("operator dashboard", () => {
     const usage = findUsage(fixture<RawComment[]>("usage-snapshot.json"))!;
     fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-18T14:44:00Z"));
     const shown = text(home.slots.weekly);
-    assert.match(shown, /Claude.*73\.0% used.*allows by now: 76\.2% \(pace 73\.2% \+ 3 burst\) · not held: 3 points of headroom\./);
-    assert.match(shown, /OpenAI.*1\.0% used.*allows by now: 18\.4% \(pace 15\.4% \+ 3 burst\) · not held: 17 points of headroom\./);
+    // Published before limit_percent: said, not worked out from its burst and target.
+    assert.match(shown, /Claude.*73\.0% used.*at this rate · not held; limit not published\./);
+    assert.match(shown, /OpenAI.*1\.0% used.*at this rate · not held; limit not published\./);
     assert.doesNotMatch(shown, /· held|stale/);
     assert.match(text(home.slots.weekly.querySelector(".mistral .pool-sum")), /\$41\.25 \/ \$300/);
     assert.ok(shown.includes("Published 2m ago."), shown);
@@ -110,12 +111,12 @@ describe("operator dashboard", () => {
     assert.match(text(home.slots.weekly.querySelector(".spend")), /No run finished in the last day\./);
   });
 
-  it("reads both published pools, marks held and over-pace usage, and keeps questions open", () => {
+  it("reads both published pools, marks held usage, and keeps questions open", () => {
     const home = homeSkeleton(hooks());
     const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-pools.json"))}\n\`\`\``)!;
     fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-09T14:00:00Z"));
-    assert.match(text(home.slots.weekly), /Claude.*42\.0% used with 51\.5% of the week gone, so ~81% by its end at this rate\. The tick is what the pass allows by now: 52\.2% \(pace 49\.2% \+ 3 burst\) · not held: 10 points of headroom\./);
-    assert.match(text(home.slots.weekly), /OpenAI.*80\.0% used with 31\.7% of the week gone.*allows by now: 33\.1% \(pace 30\.1% \+ 3 burst\) · held: no new runs until /);
+    assert.match(text(home.slots.weekly), /Claude.*42\.0% used with 51\.5% of the week gone, so ~81% by its end at this rate · not held; limit not published\./);
+    assert.match(text(home.slots.weekly), /OpenAI.*80\.0% used with 31\.7% of the week gone.* · held \(pace\): no new runs until /);
     assert.match(text(home.slots.weekly), /Publication time unknown/);
     assert.match(text(home.slots.weekly.querySelector(".pool-sum.mistral")), /^Mistral 2,500 requests · 1,234,567 tokens since the broker started$/);
     assert.equal(home.slots.weekly.querySelector(".mistral [role=progressbar]"), null, "counters have no bar");
@@ -154,47 +155,65 @@ describe("operator dashboard", () => {
     assert.equal(home.sections.needs.details.nextElementSibling, home.slots.status);
   });
 
-  it("shows each pool as a compact bar with a pace tick, the sentence folded away", () => {
+  it("shows each pool as a compact bar with the pass's limit as its tick, the sentence folded away", () => {
     const home = homeSkeleton(hooks());
-    const usage = parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture("usage-pools.json"))}\n\`\`\``)!;
-    const at = (iso: string) => fillUsage(home, { state: "ok", usage }, undefined, Date.parse(iso));
+    const read = (file: string) => parseUsage(`${USAGE_MARKER}\n\`\`\`json\n${JSON.stringify(fixture(file))}\n\`\`\``)!;
     const pool = (name: string) => home.slots.weekly.querySelector<HTMLDetailsElement>(`details[data-pool="${name}"]`)!;
     const attrs = (el: Element | null, ...names: string[]) => names.map((n) => el?.getAttribute(n));
-    at("2026-10-09T13:50:00Z");
-    // pool, its label, over pace or held, [valuenow, valuetext], the fill's width and the tick's x
+    const until = `until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")})`;
+    // The snapshot, without limit_percent, and with the limits the pass published.
+    const older = read("usage-pools.json");
+    const pools = older.pools!;
+    const usage = { ...older, pools: { claude: { ...pools.claude!, limitPercent: 52.2 }, openai: { ...pools.openai!, limitPercent: 33.1 } } };
+    // snapshot, pool, its label, held, [valuenow, valuetext], the fill's width and the tick's x (null for none)
     const cases = [
-      ["claude", "42% used · 52% of week gone · ~81% at reset · not held: 10 points of headroom", false, ["42", "42.0% used, 52.2% (pace 49.2% + 3 burst) allowed by now, not held: 10 points of headroom"], "42", "51.7129230406746"],
-      ["openai", `80% used · 32% of week gone · ~253% at reset · held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`, true, ["80", `80.0% used, 33.1% (pace 30.1% + 3 burst) allowed by now, held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`], "80", "32.60736748511905"],
+      [older, "claude", "42% used · 52% of week gone · ~81% at reset · not held; limit not published", false, ["42", "42.0% used, not held; limit not published"], "42", null],
+      [older, "openai", `80% used · 32% of week gone · ~253% at reset · held (pace): no new runs ${until}; running runs continue`, true, ["80", `80.0% used, held (pace): no new runs ${until}; running runs continue`], "80", null],
+      [usage, "claude", "42% used · 52% of week gone · ~81% at reset · not held: 10 points of headroom", false, ["42", "42.0% used, 52.2% allowed by now, not held: 10 points of headroom"], "42", "51.7"],
+      [usage, "openai", `80% used · 32% of week gone · ~253% at reset · held (pace): no new runs ${until}; running runs continue`, true, ["80", `80.0% used, 33.1% allowed by now, held (pace): no new runs ${until}; running runs continue`], "80", "32.6"],
     ] as const;
-    for (const [name, label, over, aria, fill, tick] of cases) {
+    for (const [snapshot, name, label, over, aria, fill, tick] of cases) {
+      fillUsage(home, { state: "ok", usage: snapshot }, undefined, Date.parse("2026-10-09T13:50:00Z"));
       const d = pool(name);
       assert.equal(d.open, false, name);
       assert.equal(text(d.querySelector(".pool-label")), label);
       assert.equal(d.classList.contains("over"), over, name);
       const bar = d.querySelector("summary [role=progressbar]");
       assert.deepEqual(attrs(bar, "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"), ["0", "100", ...aria]);
-      assert.deepEqual([attrs(bar!.querySelector(".fill"), "width")[0], attrs(bar!.querySelector(".tick"), "x")[0]], [fill, tick]);
-      assert.match(text(d.querySelector(".pool-detail")), /pass allows by now: .*resets .*Observed [^·]*\.$/);
-      assert.doesNotMatch(text(d.querySelector(".pool-detail")), /stale/);
+      assert.deepEqual([attrs(bar!.querySelector(".fill"), "width")[0], bar!.querySelector(".tick")?.getAttribute("x") ?? null], [fill, tick]);
+      assert.match(text(d.querySelector(".pool-detail")), tick ? /rate\. The tick is the pass's limit: .*resets .*Observed [^·]*\.$/ : /rate · (not held; limit not published|held).*resets .*Observed [^·]*\.$/);
     }
     assert.equal(home.slots.weekly.querySelector(".warn"), null, "no warning boxes");
 
     pool("openai").open = true;
-    at("2026-10-10T14:00:00Z");
+    // A day on, the reading is as the pass left it: no staleness of the app's own.
+    fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-10T14:00:00Z"));
     assert.deepEqual([pool("claude").open, pool("openai").open], [false, true], "a redraw keeps his expander open");
-    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% used · 52% of week gone · ~81% at reset · not held: 10 points of headroom · stale: read 1d ago");
-    assert.match(pool("claude").querySelector("[role=progressbar]")!.getAttribute("aria-valuetext")!, /, stale$/);
-    assert.match(text(pool("claude").querySelector(".pool-detail")), /Observed 1d ago · stale: the usage publisher has not reported since\.$/);
+    assert.equal(text(pool("claude").querySelector(".pool-label")), "42% used · 52% of week gone · ~81% at reset · not held: 10 points of headroom");
+    assert.match(text(pool("claude").querySelector(".pool-detail")), /Observed 1d ago\.$/);
 
-    fillUsage(home, { state: "ok", usage: { ...usage, pools: { claude: { ...usage.pools!.claude!, usedPercent: 130, allowedPercent: 100, targetPercent: 200 } } } }, undefined, Date.parse("2026-10-09T13:50:00Z"));
+    const claude = usage.pools.claude;
+    fillUsage(home, { state: "ok", usage: { ...usage, pools: { claude: { ...claude, limitPercent: 200, reading: { ...claude.reading!, usedPercent: 130 } } } } }, undefined, Date.parse("2026-10-09T13:50:00Z"));
     const full = pool("claude").querySelector("[role=progressbar]")!;
     assert.deepEqual([attrs(full, "aria-valuenow")[0], attrs(full.querySelector(".fill"), "width")[0], attrs(full.querySelector(".tick"), "x")[0]], ["100", "100", "99"]);
     assert.match(text(home.slots.weekly.querySelector(".pool-sum.none")), /OpenAI No reading · snapshot age unknown/);
 
     // Two hours into a week: the share gone, but too early to project.
-    fillUsage(home, { state: "ok", usage: { ...usage, pools: { openai: { ...usage.pools!.openai!, observedAt: "2026-10-07T10:47:12.000Z", usedPercent: 3 } } } }, undefined, Date.parse("2026-10-07T10:50:00Z"));
-    assert.equal(text(pool("openai").querySelector(".pool-label")), `3% used · 1% of week gone · held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`);
+    const openai = usage.pools.openai;
+    fillUsage(home, { state: "ok", usage: { ...usage, pools: { openai: { ...openai, reading: { ...openai.reading!, observedAt: "2026-10-07T10:47:12.000Z", usedPercent: 3 } } } } }, undefined, Date.parse("2026-10-07T10:50:00Z"));
+    assert.equal(text(pool("openai").querySelector(".pool-label")), `3% used · 1% of week gone · held (pace): no new runs ${until}; running runs continue`);
     assert.match(text(pool("openai").querySelector(".pool-detail")), /too early to project/);
+  });
+
+  it("shows a pool the pass holds without a reading, and a newer pool, as the pass published them", () => {
+    const home = homeSkeleton(hooks());
+    fillUsage(home, { state: "ok", usage: findUsage(fixture<RawComment[]>("usage-pass.json"))! }, undefined, Date.parse("2026-10-26T03:20:00Z"));
+    const rows = [...home.slots.weekly.querySelectorAll("[data-pool]")].map((r) => [r.getAttribute("data-pool"), text(r.querySelector(".pool-label"))]);
+    assert.deepEqual(rows, [
+      ["claude", "41% used · 31% of week gone · ~132% at reset · not held: 2 points of headroom"],
+      ["openai", "No reading · held (no-reading): no new runs; resume time not published; running runs continue"],
+      ["fable", `52% used · 31% of week gone · ~168% at reset · held (pace): no new runs until ${clock(Date.parse("2026-10-27T05:42:00Z"))} (${time("2026-10-27T05:42:00Z")}); running runs continue`],
+    ]);
   });
 
   it("keeps Mistral and both missing pool rows with the snapshot age", () => {
@@ -270,10 +289,9 @@ describe("operator dashboard", () => {
     fillStatus(home, status, render, undefined, Date.parse("2026-10-15T10:30:00Z"));
     assert.equal(text(home.slots.status.querySelector(".status-age")), "Published 30m ago");
     assert.match(home.slots.status.querySelector<HTMLElement>(".status-age .age")!.title, /2026/);
-    assert.equal(home.slots.status.querySelector(".status-age.hot"), null);
     home.slots.status.querySelector<HTMLButtonElement>("button")!.click();
     fillStatus(home, status, render, undefined, Date.parse("2026-10-15T11:01:00Z"));
-    assert.match(text(home.slots.status.querySelector(".status-age.hot")), /1h ago · stale/);
+    assert.equal(text(home.slots.status.querySelector(".status-age")), "Published 1h ago");
     assert.equal(home.slots.status.querySelector("button")?.getAttribute("aria-expanded"), "true");
     fillStatus(home, { ...status, createdAt: "invalid" }, render);
     assert.match(text(home.slots.status), /Status age unknown/);
@@ -666,10 +684,13 @@ describe("the sections' fills", () => {
     assert.ok(home.slots.priority.querySelector(".filters"));
   });
 
-  it("shows the agents' count against the target and the usage's busiest window", () => {
+  it("shows the agents' count against the pass's WIP limit and the usage's busiest window", () => {
     const home = mounted();
     const active: Active = { board: [], local: null, warnings: [], at: Date.now() };
     fillAgents(home, active, Date.now());
+    assert.equal(text(count(home, "agents")), "0");
+    assert.equal(count(home, "agents").classList.contains("under"), false);
+    fillAgents(home, { ...active, holds: { at: "2026-10-26T00:00:00Z", wip: { limit: 4, inFlight: null }, holds: [] } }, Date.now());
     assert.equal(text(count(home, "agents")), "0/4");
     assert.ok(count(home, "agents").classList.contains("under"));
     fillAgents(home, undefined, Date.now());

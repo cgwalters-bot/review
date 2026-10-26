@@ -413,10 +413,7 @@ details.history summary { cursor: pointer; color: var(--accent); }
 .ctl .name { overflow-wrap: anywhere; }
 .ctl .what, .ctl .when, .ctl .flight .age { color: var(--muted); font-size: 12px; }
 .ctl .when { font-family: var(--mono); white-space: nowrap; text-align: right; }
-.ctl .detail, .ctl .ctl-output { grid-column: 2 / 4; font: 12px var(--mono); color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
-.ctl .detail pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.ctl textarea { width: 100%; box-sizing: border-box; }
-.ctl .detail.mode-acting { color: var(--ink); font-weight: 600; }
+.ctl .detail { grid-column: 2 / 4; font: 12px var(--mono); color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
 .ctl .flight { list-style: none; margin: 0; padding: 0; overflow-wrap: anywhere; }
 .ctl-session { font-size: var(--type-secondary); margin: 4px 0 8px; }
 .ctl-session.none { color: var(--ink); }
@@ -451,7 +448,6 @@ summary.pool-sum::before { content: "▸"; }
 .pool-label { min-width: 0; overflow-wrap: anywhere; font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
 .pool.over .pool-label { color: var(--fill); }
 .pool-sum.none .pool-label { grid-column: 3 / -1; }
-.pool-label .pool-stale { color: var(--muted); }
 .pool-detail { padding: 0 0 6px calc(1em + 10px); }
 .pool-detail p, .pools .fine { font-size: 12px; color: var(--muted); margin: 2px 0; overflow-wrap: anywhere; }
 .pools .fine { margin-top: 4px; }
@@ -496,7 +492,7 @@ summary.pool-sum::before { content: "▸"; }
   .lw { grid-template-columns: 7.5em minmax(0, 1fr) auto; }
   .ctl { grid-template-columns: 7.5em minmax(0, 1fr); }
   .ctl .when { grid-column: 2; text-align: left; white-space: normal; }
-  .ctl .detail, .ctl .ctl-output { grid-column: 2; }
+  .ctl .detail { grid-column: 2; }
   .uw { grid-template-columns: 4.5em minmax(0, 1fr); }
   .uw .reset, .uw .tok { grid-column: 2; }
   .pool-sum { grid-template-columns: 1em max-content minmax(0, 1fr); }

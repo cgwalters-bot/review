@@ -225,7 +225,7 @@ describe("merge queues and approved PRs", () => {
   });
 });
 
-const pool = (hold: boolean): UsagePool => ({ usedPercent: 60, allowedPercent: 50, resetsAt: "2026-10-27T00:00:00Z", observedAt: "2026-10-25T13:30:00Z", hold, windowMinutes: 7 * 24 * 60 });
+const pool = (hold: boolean): UsagePool => ({ hold, reading: { usedPercent: 60, allowedPercent: 50, resetsAt: "2026-10-27T00:00:00Z", observedAt: "2026-10-25T13:30:00Z", windowMinutes: 7 * 24 * 60 } });
 
 describe("dashboard view", () => {
   it("is not a view while switched off", () => {
@@ -237,7 +237,7 @@ describe("dashboard view", () => {
     const { gh } = historyGitHub();
     const history = (await loadRunHistory(gh, new Map(), NOW)).days;
     const dispatch = { state: "ok", at: NOW, live: [{ status: "in_progress" }, { status: "in_progress" }, { status: "queued" }], finished: [], warnings: [] } as unknown as DispatchData;
-    const usage: UsageData = { state: "ok", usage: { updatedAt: "2026-10-25T13:30:00Z", windows: [], workers: [], pools: { claude: pool(false), openai: pool(true) } } };
+    const usage: UsageData = { state: "ok", usage: { updatedAt: "2026-10-25T13:30:00Z", windows: [], workers: [], pools: { claude: pool(false), openai: pool(true), fable: { hold: true, reason: "no-reading" } } } };
     const done = doneByDay([parseItem(boardItem(1, "P0", `${TODAY}T08:00:00Z`))], NOW);
     const el = dashboardView({
       data: { history, queues: { queues: [{ repo: "cgwalters-forge/review", url: "u", count: 2 }], queued: new Set(["a"]) }, approved: { urls: ["a", "b"], total: 2 }, warnings: [] },
@@ -248,9 +248,11 @@ describe("dashboard view", () => {
       ["#agents", "2/60", "1 queued"],
       ["#inbox", "4", "PRs waiting on your review"],
       [APPROVED_URL, "2", "1 approved, not queued"],
-      ["#usage", "1", "OpenAI"],
+      // Every held entry, one without a reading and of a pool not named here too.
+      ["#usage", "2", "OpenAI, fable"],
     ]);
     assert.equal(el.querySelectorAll(".dash-pools .pool").length, 2);
+    assert.equal(el.querySelector(`.dash-pools [data-pool="fable"]`)?.textContent, "fable No reading · held (no-reading): no new runs; resume time not published; running runs continue");
     const charts = [...el.querySelectorAll(".dash-chart")];
     assert.equal(charts.length, 3);
     // Runs: a bar segment per result a day had (two kinds on day 3 and on the days with a run going, else one).

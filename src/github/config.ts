@@ -228,12 +228,6 @@ export const HEARTBEAT_WAKE_GRACE_MS = 5 * 60_000;
 export const OPS_EVENTS = 50;
 /** Rows of bot activity shown. */
 export const OPS_EVENTS_SHOWN = 20;
-/**
- * How many agents the bot aims to keep working at once, split between
- * its harness and upstream (cgwalters-forge/tracker#267); the active
- * agents strip atop the queue shows the count against it.
- */
-export const AGENT_TARGET = 4;
 
 /** localStorage key for the chosen theme (auto, light, dark). */
 export const THEME_KEY = "review.theme";

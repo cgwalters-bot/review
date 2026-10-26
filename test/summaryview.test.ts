@@ -5,11 +5,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ActiveAgent } from "../src/github/agents.ts";
 import type { ControllerData } from "../src/github/controller.ts";
+import type { RawComment } from "../src/github/heartbeat.ts";
+import { findHolds } from "../src/github/holds.ts";
 import { fillSummary, homeSkeleton } from "../src/github/homeview.ts";
 import type { ActionRun, RunsData } from "../src/github/runs.ts";
 import { showView } from "../src/github/shell.ts";
 import { pageState } from "../src/github/state.ts";
-import { parseUsage, USAGE_MARKER } from "../src/github/usage.ts";
+import { parseUsage, USAGE_MARKER, type UsagePool } from "../src/github/usage.ts";
 import { clock, time } from "../src/github/view.ts";
 import { fixture, installDom } from "./helpers.ts";
 
@@ -37,31 +39,33 @@ describe("the summary", () => {
     const lines = [...home.slots.summary.querySelectorAll("li")].map(text);
     assert.match(lines[0]!, /^Agents \d+ running/);
     assert.match(lines[1]!, /^Queued 1 run · Agent: review example\/work#4$/);
-    assert.equal(lines[2], "Scheduler mode and last passes not read: they are read when the ops detail is opened");
+    assert.equal(lines[2], "Scheduler pass not read · broker not read: it is read when the ops detail is opened");
     assert.deepEqual(lines.slice(3), [
-      "Claude 42% used · 52% of week gone · ~81% at reset · not held: 10 points of headroom · stale: read 23m ago",
-      `OpenAI 80% used · 32% of week gone · ~253% at reset · held: no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`,
+      "Claude 42% used · 52% of week gone · ~81% at reset · not held; limit not published",
+      `OpenAI 80% used · 32% of week gone · ~253% at reset · held (pace): no new runs until ${clock(Date.parse("2026-10-13T00:57:18.315Z"))} (${time("2026-10-13T00:57:18.315Z")}); running runs continue`,
       "Mistral spend not published · $300 a month, 28% gone",
     ]);
     assert.ok(home.slots.summary.querySelectorAll("li")[4]!.classList.contains("hot"));
     assert.equal(home.slots.summary.querySelector<HTMLAnchorElement>("li:nth-child(2) a:not(.sum-jump)")?.href, "https://github.com/example/runs/actions/runs/2");
   });
 
-  it("says what unconfirmed agents are, and a hold with no end given", () => {
+  it("says what unconfirmed agents are, and a hold with no end or reason given", () => {
     const home = homeSkeleton(noHooks);
     const openai = { ...usage.pools!.openai! };
     delete openai.nextDispatchAt;
+    delete openai.reason;
     const held = pageState({ active: { warnings: [], at: NOW, usage: { state: "ok", usage: { ...usage, pools: { openai } } } }, runs }, NOW);
     fillSummary(home, { ...held, agents: { ...held.agents, executionKnown: true, unconfirmed: 7 } }, undefined, NOW);
     const lines = [...home.slots.summary.querySelectorAll("li")].map(text);
     assert.match(lines[0]!, /^Agents \d+ running.* · 7 unconfirmed: claimed or last seen, not confirmed running/);
-    assert.equal(lines[3], "OpenAI 80% used · 32% of week gone · ~253% at reset · held: no new runs; resume time not published; running runs continue");
+    // Claude is not in this snapshot: no line, rather than one made up.
+    assert.equal(lines[3], "OpenAI 80% used · 32% of week gone · ~253% at reset · held (reason not published): no new runs; resume time not published; running runs continue");
 
-    // A dispatch time already past promises no end, and the reading's age says why.
+    // A dispatch time already past promises no end.
     const later = Date.parse("2026-10-13T12:00:00Z");
     fillSummary(home, pageState({ active: { warnings: [], at: later, usage: { state: "ok", usage } }, runs }, later), undefined, later);
     const openaiLine = [...home.slots.summary.querySelectorAll("li")].map(text).find((l) => l.startsWith("OpenAI"));
-    assert.equal(openaiLine, `OpenAI 80% used · 32% of week gone · ~253% at reset · held: no new runs (was due to end ${time("2026-10-13T00:57:18.315Z")}; awaiting a new reading); running runs continue · stale: read 3d ago`);
+    assert.equal(openaiLine, `OpenAI 80% used · 32% of week gone · ~253% at reset · held (pace): no new runs (was due to end ${time("2026-10-13T00:57:18.315Z")}; awaiting a new reading); running runs continue`);
   });
 
   it("keeps its lines while what they say is unchanged, and says when usage can't be read", () => {
@@ -92,31 +96,27 @@ describe("the summary", () => {
     assert.equal(win.location.hash, "#x");
   });
 
-  it("reads the scheduler's mode, the poll's pass and the broker probe's run from the controller, once the ops detail has read it", () => {
+  it("says what the pass published with its holds, and the broker probe's run once the ops detail has read it", () => {
     const home = homeSkeleton(noHooks);
-    const piece = (label: string) => ({ label, what: "x", repo: "example/tracker", workflow: "poll.yml" });
-    const controller: ControllerData = { pieces: [
-      { piece: piece("Board scheduler"), state: "ok", scheduler: { mode: "preview" }, last: { url: "https://github.com/x", at: "2026-10-09T13:50:00Z", conclusion: "success" } },
-      { piece: piece("Poll"), state: "ok", last: { url: "https://github.com/x", at: "2026-10-09T13:55:00Z", conclusion: "success" } },
-      { piece: piece("Broker probe"), state: "ok", last: { url: "https://github.com/x", at: "2026-10-09T12:00:00Z", conclusion: "failure" } },
-    ] };
-    fillSummary(home, state, controller, NOW);
-    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run): not starting runs · poll ok 5m ago · broker failure 2h ago");
-    assert.match(home.slots.summary.querySelectorAll("li")[2]!.querySelector<HTMLElement>(".age")!.title, /^finished .*2026/);
-    controller.pieces[2] = { ...controller.pieces[2]!, last: { url: "https://github.com/x", at: "2026-10-09T13:45:00Z", conclusion: "success" } };
-    fillSummary(home, state, controller, NOW);
-    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run): not starting runs · poll ok 5m ago · broker ok 15m ago");
+    const at = Date.parse("2026-10-26T03:20:00Z");
+    // The recorded comments: the older from before wip and pass, the newer with them.
+    const [older, newer] = fixture<RawComment[]>("holds-comments.json");
+    const line = (comment: RawComment, controller?: ControllerData) => {
+      fillSummary(home, pageState({ active: { warnings: [], at, holds: findHolds([comment])! }, runs }, at), controller, at);
+      return home.slots.summary.querySelectorAll("li")[2]!;
+    };
+    assert.equal(text(line(older!)), "Scheduler pass not published · WIP not published · as of 18h ago · broker not read: it is read when the ops detail is opened");
+    assert.equal(text(line(newer!)), "Scheduler actions: started 1 · 7 candidates · 2 live epics · WIP 4/4 · as of 10m ago · broker not read: it is read when the ops detail is opened");
+    const preview = { ...newer!, body: newer!.body!.replace('"mode":"actions","candidates":7', '"mode":"preview","candidates":null').replace('"in_flight":4', '"in_flight":null') };
+    assert.equal(text(line(preview)), "Scheduler previewing (dry run): would start 1 · 2 live epics · WIP ?/4 · as of 10m ago · broker not read: it is read when the ops detail is opened");
+    const probe = (last: { at: string; conclusion: string } | undefined): ControllerData => ({ pieces: [{ piece: { label: "Broker probe", what: "x", repo: "example/tracker", workflow: "broker-probe.yml" }, ...(last ? { state: "ok", last: { url: "https://github.com/x", ...last } } : { state: "absent" }) }] });
+    const el = line(newer!, probe({ at: "2026-10-26T01:20:00Z", conclusion: "failure" }));
+    assert.match(text(el), / · broker failure 2h ago$/);
+    assert.match(el.querySelectorAll<HTMLElement>(".age")[1]!.title, /^finished .*2026/);
     // Its usual state while tracker's BROKER_OUTAGE isn't apply: the job is skipped, not passed.
-    controller.pieces[2] = { ...controller.pieces[2]!, last: { url: "https://github.com/x", at: "2026-10-09T13:45:00Z", conclusion: "skipped" } };
-    fillSummary(home, state, controller, NOW);
-    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run): not starting runs · poll ok 5m ago · broker skipped 15m ago");
+    assert.match(text(line(newer!, probe({ at: "2026-10-26T03:05:00Z", conclusion: "skipped" }))), / · broker skipped 15m ago$/);
     // Not yet read (a workflow with no runs): said, not left out.
-    controller.pieces[2] = { piece: piece("Broker probe"), state: "absent" };
-    fillSummary(home, state, controller, NOW);
-    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board previewing (dry run): not starting runs · poll ok 5m ago · broker no pass");
-    controller.pieces[0]!.scheduler!.mode = "acting";
-    fillSummary(home, state, controller, NOW);
-    assert.equal(text(home.slots.summary.querySelectorAll("li")[2]), "Scheduler board dispatching: starting new runs · poll ok 5m ago · broker no pass");
+    assert.match(text(line(newer!, probe(undefined))), / · broker no pass$/);
   });
 
   const agent = (name: string, more: Partial<ActiveAgent>): ActiveAgent => ({
@@ -154,22 +154,20 @@ describe("the summary", () => {
     assert.ok(![...home.slots.summary.querySelectorAll("a")].some((a) => a.getAttribute("href")?.startsWith("javascript:")));
   });
 
-  describe("says what the pass does with a pool: held, else its headroom over pace and burst, capped at the target", () => {
-    // used, pace (allowed_percent), burst, target, hold; the words after the projection, and whether the line is hot
-    const cases: [string, number, number, number | undefined, number | undefined, boolean, string, boolean][] = [
-      ["the issue's OpenAI reading: under pace plus burst", 18, 3, 50, 95, false, " · not held: 35 points of headroom", false],
-      ["no burst published: pace alone", 18, 30, undefined, undefined, false, " · not held: 12 points of headroom", false],
-      ["burst capped at the target", 90, 60, 50, 95, false, " · not held: 5 points of headroom", false],
-      ["over pace and burst, not held yet", 60, 49, 3, 95, false, " · over pace: 52% allowed by now", true],
-      ["held", 80, 30, 3, 95, true, " · held: no new runs; resume time not published; running runs continue", true],
+  describe("says what the pass decided on a pool: held and why, else its headroom under the published limit", () => {
+    // used, the pass's limit_percent, hold, reason; the words after the projection, and whether the line is hot
+    const cases: [string, number, number | undefined, boolean, string | undefined, string, boolean][] = [
+      ["under its limit", 18, 53, false, undefined, " · not held: 35 points of headroom", false],
+      // The pass's call, not one made here: past the limit and not held says so, without "over pace".
+      ["past its limit, not held", 60, 52, false, undefined, " · not held: -8 points of headroom", false],
+      ["no limit published", 18, undefined, false, undefined, " · not held; limit not published", false],
+      ["held on a window", 80, 33, true, "window", " · held (window): no new runs; resume time not published; running runs continue", true],
     ];
-    for (const [name, used, allowed, burst, target, hold, want, hot] of cases) it(name, () => {
+    for (const [name, used, limit, hold, reason, want, hot] of cases) it(name, () => {
       const home = homeSkeleton(noHooks);
-      const claude = { ...usage.pools!.claude!, usedPercent: used, allowedPercent: allowed, hold, observedAt: "2026-10-09T13:50:00.000Z" };
-      delete claude.burst;
-      delete claude.targetPercent;
-      if (burst !== undefined) claude.burst = burst;
-      if (target !== undefined) claude.targetPercent = target;
+      const claude: UsagePool = { hold, reading: { ...usage.pools!.claude!.reading!, usedPercent: used } };
+      if (limit !== undefined) claude.limitPercent = limit;
+      if (reason !== undefined) claude.reason = reason;
       fillSummary(home, pageState({ active: { warnings: [], at: NOW, usage: { state: "ok", usage: { ...usage, pools: { claude } } } }, runs }, NOW), undefined, NOW);
       const line = [...home.slots.summary.querySelectorAll("li")].find((l) => text(l).startsWith("Claude"))!;
       assert.equal(text(line).replace(/^.* at reset/, ""), want);

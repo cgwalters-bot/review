@@ -4,7 +4,7 @@ import { GitHub } from "../src/github/api.ts";
 import type { RawComment } from "../src/github/heartbeat.ts";
 import { findHolds, HOLDS_MARKER, loadHolds, parseHolds } from "../src/github/holds.ts";
 import { usagePath } from "../src/github/usage.ts";
-import { scriptedFetch } from "./helpers.ts";
+import { fixture, scriptedFetch } from "./helpers.ts";
 
 const AT = "2026-10-26T00:00:00Z";
 /** As agent-board's pass renders it (pass/holds.rs). */
@@ -33,6 +33,35 @@ describe("parseHolds", () => {
   ];
   for (const [name, json] of refused) it(`refuses ${name}`, () => assert.equal(parseHolds(body(json)), undefined));
   it("refuses a body without the marker first", () => assert.equal(parseHolds(`hi\n${body(snapshot())}`), undefined));
+  const wipSummary = { wip: { limit: 4, in_flight: 2 }, pass: { mode: "preview", candidates: 3, started: 1, live_epics: null } };
+  it("reads the pass's WIP and summary, nulls kept", () => assert.deepEqual(parseHolds(body(snapshot(undefined, wipSummary))), { at: AT, wip: { limit: 4, inFlight: 2 }, pass: { mode: "preview", candidates: 3, started: 1, liveEpics: null }, holds: [wip, human] }));
+  // name, the snapshot's wip and pass: each left out, the holds kept.
+  const malformed: [string, Record<string, unknown>][] = [
+    ["a limit not a count", { wip: { limit: "4", in_flight: 2 } }],
+    ["in flight missing", { wip: { limit: 4 } }],
+    ["a negative start", { pass: { ...wipSummary.pass, started: -1 } }],
+    ["a mode that is no word", { pass: { ...wipSummary.pass, mode: "<b>" } }],
+    ["candidates missing", { pass: { mode: "preview", started: 1, live_epics: null } }],
+  ];
+  for (const [name, edit] of malformed) it(`leaves out ${name}, and keeps the holds`, () => {
+    const parsed = parseHolds(body(snapshot(undefined, { ...wipSummary, ...edit })));
+    assert.equal(parsed?.holds.length, 2);
+    for (const key of Object.keys(edit) as ("wip" | "pass")[]) assert.equal(parsed?.[key], undefined);
+  });
+});
+
+describe("the recorded comments", () => {
+  // As agent-board's pass/holds.rs renders them: compact, one entry a line; the older without wip and pass.
+  const [older, newer] = fixture<RawComment[]>("holds-comments.json");
+  it("reads a comment from before wip and pass without them", () => {
+    const holds = findHolds([older!]);
+    assert.deepEqual([holds?.at, holds?.holds.length, holds?.wip, holds?.pass], ["2026-10-25T09:00:00Z", 3, undefined, undefined]);
+  });
+  it("reads the current one with them", () => {
+    const holds = findHolds([older!, newer!]);
+    assert.deepEqual([holds?.wip, holds?.pass], [{ limit: 4, inFlight: 4 }, { mode: "actions", candidates: 7, started: 1, liveEpics: 2 }]);
+    assert.deepEqual(holds?.holds.map((h) => h.kind), ["wip", "epic-unplanned", "needs-human"]);
+  });
 });
 
 describe("findHolds", () => {
