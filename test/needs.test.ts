@@ -43,6 +43,9 @@ function pr(owner: string, repo: string, number: number): ForgePr {
 
 const rows = (needs: readonly Need[]) => needs.map((n) => [n.key, n.action]);
 const entriesOf = (items: Item[], answered: string[] = []) => buildEntries(items, [], new Map(), true, new Set(answered));
+const ref = (n: number) => `cgwalters-forge/tracker#${n}`;
+const hold = (n: number | null, over: Partial<Hold> = {}): Hold => ({ item: n === null ? null : ref(n), url: n === null ? null : `${TRACKER}/${n}`, epic: false, kind: "needs-human", reason: "labelled needs-human", operator: true, priority: null, question: null, ...over });
+const holds = (...list: Hold[]): Holds => ({ at: "2026-10-26T00:00:00Z", holds: list });
 
 describe("representative operator asks", () => {
   const forkBody = "<!-- bot-meta -->\n- Upstream: `upstream/widget`\n- Contribution policy: `human-text`\n<!-- /bot-meta -->";
@@ -77,9 +80,9 @@ describe("representative operator asks", () => {
 
   it("a representative mixed board has only concrete asks, well below fifteen", () => {
     const items = Array.from({ length: 40 }, (_, i) => tracked(`watch${i}`, 200 + i, { status: i % 2 ? "Draft" : "Needs human" }));
-    items.push(tracked("question", 10, { labels: ["question"], createdAt: "2026-10-01T00:00:00Z" }), tracked("escalate", 11, { labels: ["escalate"], priority: "P0" }), tracked("answered", 12, { labels: ["question"] }));
+    items.push(tracked("question", 10, { labels: ["question"], createdAt: "2026-10-01T00:00:00Z" }), tracked("answered", 12, { labels: ["question"] }));
     const needs = buildNeeds({ entries: [...entriesOf(items, ["answered"]), ...cases.map((c, i) => ({ ...c.entry, key: `case:${i}` }))] });
-    assert.equal(needs.length, 9);
+    assert.equal(needs.length, 8);
     assert.ok(needs.length <= 15);
     assert.equal(needs[0]?.key, "item:question");
     assert.ok(needs.every((n) => ["answer", "review", "write", "promote"].includes(n.action)));
@@ -105,25 +108,6 @@ describe("representative operator asks", () => {
     newer.item.createdAt = "2026-10-03T00:00:00Z";
     const board = [high, low, tracked("PVTI_92", 92, { parent: high.ref!, priority: "P3" }), tracked("PVTI_93", 93, { parent: low.ref!, priority: "P3" })];
     assert.deepEqual(buildNeeds({ entries: [], decisions: [newer, old], board }).map((n) => n.key), ["decision:I_92", "decision:I_93"]);
-  });
-
-  it("does not lose an escalation folded into a PR's board context", () => {
-    const item = tracked("context", 95, { labels: ["escalate"], priority: "P0" });
-    assert.deepEqual(buildNeeds({ entries: [{ ...base, item, wait: { reasons: [], onBot: true } }], board: [item] }).map((n) => n.key), ["item:context"]);
-  });
-
-  it("lists an item the scheduler holds for him, assigned or not", () => {
-    const held = tracked("held", 98, { labels: ["needs-human"], priority: "P1", assignees: [] });
-    const design = tracked("design", 99, { labels: ["needs-design"], assignees: [] });
-    assert.deepEqual(buildNeeds({ entries: [], board: [held, design] }).map((n) => n.key), ["item:held"]);
-  });
-
-  it("ages an escalation by its last move on the board, not its issue's creation", () => {
-    const moved = tracked("moved", 96, { labels: ["escalate"], createdAt: "2026-07-01T00:00:00Z", movedAt: "2026-10-20T00:00:00Z" });
-    const unknown = tracked("unknown", 97, { labels: ["escalate"], createdAt: "2026-07-01T00:00:00Z" });
-    const since = new Map(buildNeeds({ entries: [], board: [moved, unknown] }).map((n) => [n.key, n.since]));
-    assert.equal(since.get("item:moved"), "2026-10-20T00:00:00Z");
-    assert.equal(since.get("item:unknown"), undefined);
   });
 });
 
@@ -263,17 +247,12 @@ describe("buildNeeds", () => {
   });
 
   it("steps through questions in place and opens the rest", () => {
-    const items = [ask("PVTI_q", 21, "question", `${TRACKER}/9`), tracked("PVTI_r", 22, { labels: ["escalate"] })];
-    const stops = needStops(buildNeeds({ entries: entriesOf(items) }));
-    assert.deepEqual(stops.map((s) => [s.key, s.href, s.inPlace]), [["item:PVTI_q", "#", true], ["item:PVTI_r", `${TRACKER}/22`, false]]);
+    const stops = needStops(buildNeeds({ entries: entriesOf([ask("PVTI_q", 21, "question", `${TRACKER}/9`)]), holds: holds(hold(22)) }));
+    assert.deepEqual(stops.map((s) => [s.key, s.href, s.inPlace]), [["item:PVTI_q", "#", true], [`hold:${ref(22)}`, `${TRACKER}/22`, false]]);
   });
 });
 
 describe("the pass's holds", () => {
-  const ref = (n: number) => `cgwalters-forge/tracker#${n}`;
-  const hold = (n: number | null, over: Partial<Hold> = {}): Hold => ({ item: n === null ? null : ref(n), url: n === null ? null : `${TRACKER}/${n}`, epic: false, kind: "needs-human", reason: "labelled needs-human", operator: true, priority: null, question: null, ...over });
-  const holds = (...list: Hold[]): Holds => ({ at: "2026-10-26T00:00:00Z", holds: list });
-
   it("lists those only he releases, led by the question, with the reason, Priority and link", () => {
     const board = [tracked("PVTI_446", 446, { title: "Release 1.0", movedAt: "2026-10-20T00:00:00Z" })];
     const needs = buildNeeds({ entries: [], board, holds: holds(hold(null, { kind: "wip", operator: false }), hold(445, { kind: "pr-open", operator: false }), hold(446, { priority: "P0", question: "Ship it?" }), hold(596, { epic: true, kind: "epic-unplanned", reason: "got no plan" })) });
@@ -289,11 +268,11 @@ describe("the pass's holds", () => {
     assert.deepEqual(rows(buildNeeds({ entries: entriesOf([q]), board: [q], holds: holds(hold(21)) })), [["item:PVTI_q", "answer"]]);
   });
 
-  describe("consults the labels only without a snapshot", () => {
+  describe("never consult the labels", () => {
     const labelled = [tracked("held", 98, { labels: ["needs-human"] }), tracked("escalate", 11, { labels: ["escalate"] })];
     // name, the snapshot, the keys listed
     const cases: [string, Holds | undefined, string[]][] = [
-      ["no snapshot: the labels", undefined, ["item:held", "item:escalate"]],
+      ["no snapshot: nothing", undefined, []],
       ["an empty snapshot: nothing", holds(), []],
       ["a snapshot: its holds alone", holds(hold(98)), ["hold:cgwalters-forge/tracker#98"]],
     ];

@@ -620,7 +620,7 @@ function paintInbox(state: State, force = false): void {
   const now = Date.now();
   const cards = inboxCards({ needs: state.needs, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}), ...(inbox.runs ? { runs: inbox.runs } : {}), itemState: (item) => states.get(item), priorityOf: (item) => priorities.get(item), ...(inbox.offers ? { offers: inbox.offers } : {}), now });
   fillInbox(inbox.list, cards, inboxHooks(state), force);
-  inbox.pass.replaceChildren(state.active?.holds ? passLine(state.active.holds, now) : "");
+  inbox.pass.replaceChildren(state.active ? passLine(state.active.holds, now) : "");
   const waiting = cards.filter((c) => !c.answered).length;
   inbox.empty.hidden = cards.length > 0;
   setCount(home, "needs", String(waiting), { title: `${waiting} cards waiting on you`, hot: waiting > 0 });

@@ -202,4 +202,9 @@ describe("passLine", () => {
     const el = passLine({ at: new Date(hooks.now - minutes * 60_000).toISOString(), holds }, hooks.now);
     assert.deepEqual([el.textContent, el.classList.contains("warn")], [text, warn]);
   });
+
+  it("says when none were read", () => {
+    const el = passLine(undefined, hooks.now);
+    assert.deepEqual([el.textContent, el.classList.contains("warn")], ["Pass holds not read", true]);
+  });
 });

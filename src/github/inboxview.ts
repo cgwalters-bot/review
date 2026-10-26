@@ -143,9 +143,11 @@ function action(c: Card, hooks: InboxHooks): Node | null {
 
 /**
  * The pass's holds, said once over the cards: when they are from, stale
- * past the usage panel's threshold, and what holds every new run (wip, pools).
+ * past the usage panel's threshold, and what holds every new run (wip, pools);
+ * or, without them, that they were not read.
  */
-export function passLine(holds: Holds, now: number): HTMLElement {
+export function passLine(holds: Holds | undefined, now: number): HTMLElement {
+  if (!holds) return h("p", { class: "note pass-holds warn" }, "Pass holds not read");
   const stale = now - Date.parse(holds.at) > HEARTBEAT_STALE_MS;
   const pass = holds.holds.filter((x) => x.item === null).map((x) => `${x.kind}: ${x.reason}`);
   return h("p", { class: `note pass-holds${stale ? " warn" : ""}` }, "Pass holds as of ", agoLabel(holds.at, now), stale ? " · stale" : "", pass.length ? ` · new runs wait: ${pass.join("; ")}` : "");
