@@ -62,9 +62,8 @@ export interface ProjectStatus {
 /** Project updates are available through GraphQL, independently of board items. */
 export async function loadProjectStatus(gh: GitHub): Promise<ProjectStatus | null> {
   const query = `query { organization(login: "${BOARD_OWNER}") { projectV2(number: ${BOARD_NUMBER}) { statusUpdates(first: 1, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { body createdAt } } } } }`;
-  const result = await gh.send<{ data?: { organization?: { projectV2?: { statusUpdates: { nodes: ProjectStatus[] } } } }; errors?: { message: string }[] }>("POST", "/graphql", { query });
-  if (result.errors?.length) throw new Error(result.errors.map((e) => e.message).join("; "));
-  const updates = result.data?.organization?.projectV2?.statusUpdates.nodes;
+  const result = await gh.graphql<{ organization?: { projectV2?: { statusUpdates: { nodes: ProjectStatus[] } } } }>(query);
+  const updates = result.organization?.projectV2?.statusUpdates.nodes;
   if (!updates) throw new Error("the project's status updates could not be read");
   return updates[0] ?? null;
 }

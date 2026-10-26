@@ -102,15 +102,9 @@ function trusted(comment: Comment, c: ActionConfig): boolean {
     && (!comment.lastEditedAt || !!comment.editor && writers.includes(comment.editor.login.toLowerCase()));
 }
 
-async function graphql<T>(gh: GitHub, query: string, variables: Record<string, unknown>): Promise<T> {
-  const r = await gh.send<{ data?: T; errors?: unknown[] }>("POST", "/graphql", { query, variables });
-  if (r.errors?.length || !r.data) throw new Error("GitHub could not confirm operator action data");
-  return r.data;
-}
-
 export async function comments(gh: GitHub, c: ActionConfig, issue: number): Promise<Comment[]> {
   const [owner, name] = c.tracker.split("/");
-  const r = await graphql<{ repository: { issue: { state: string; comments: Connection } | null } }>(gh,
+  const r = await gh.graphql<{ repository: { issue: { state: string; comments: Connection } | null } }>(
     `query($owner:String!,$name:String!,$issue:Int!){repository(owner:$owner,name:$name){issue(number:$issue){state comments(first:100){nodes{id databaseId body updatedAt author{login} editor{login} lastEditedAt} pageInfo{hasNextPage}}}}}`, { owner, name, issue });
   if (!r.repository?.issue || r.repository.issue.state !== "OPEN" || r.repository.issue.comments.pageInfo.hasNextPage) throw new Error("Proposal issue is closed, missing, or has more than 100 comments");
   return r.repository.issue.comments.nodes;
@@ -392,7 +386,7 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
       if (!c.project || a.project.toLowerCase() !== c.project.toLowerCase()) throw new Error("Project is not allowed");
       const i = await gh.send<Issue>("GET", path);
       const items = `projectItems(first:100){nodes{id project{id url field(name:$field){... on ProjectV2SingleSelectField{id options{id name}}}} fieldValueByName(name:$field){... on ProjectV2ItemFieldSingleSelectValue{name}}} pageInfo{hasNextPage}}`;
-      const data = await graphql<{ node: { projectItems: { nodes: { id: string; project: { id: string; url: string; field: { id?: string; options?: { id: string; name: string }[] } | null }; fieldValueByName: { name?: string } | null }[]; pageInfo: { hasNextPage: boolean } } } | null }>(gh,
+      const data = await gh.graphql<{ node: { projectItems: { nodes: { id: string; project: { id: string; url: string; field: { id?: string; options?: { id: string; name: string }[] } | null }; fieldValueByName: { name?: string } | null }[]; pageInfo: { hasNextPage: boolean } } } | null }>(
         `query($issue:ID!,$field:String!){node(id:$issue){... on Issue{${items}} ... on PullRequest{${items}}}}`, { issue: i.node_id, field: a.field });
       const list = data.node?.projectItems;
       // Project, field, option and item IDs come from this read, never from the proposal.
@@ -401,7 +395,7 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
       const option = field?.options?.find((v) => v.name === a.value);
       if (!list || list.pageInfo.hasNextPage || !item || !field?.id || !option) throw new Error("Project item, field or option is unavailable");
       return { title: i.title, fact: item.fieldValueByName?.name ?? null, apply: async () => {
-        await graphql(gh, `mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}`, { project: item.project.id, item: item.id, field: field.id, option: option.id });
+        await gh.graphql(`mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}`, { project: item.project.id, item: item.id, field: field.id, option: option.id });
       } };
     }
   }

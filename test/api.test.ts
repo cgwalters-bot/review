@@ -272,4 +272,62 @@ describe("GitHub concurrency", () => {
     assert.equal(peak.all, GITHUB_CONCURRENCY);
     assert.equal(peak.search, 1);
   });
+
+  it("shares one request among GETs of the same URL in flight together", async () => {
+    let n = 0;
+    const gh = new GitHub(token, async () => Response.json({ n: ++n }));
+    const [a, b, c] = await Promise.all([gh.get("/x"), gh.get("/x"), gh.get("/y")]);
+    assert.deepEqual([a.data, b.data, c.data], [{ n: 1 }, { n: 1 }, { n: 2 }]);
+    // Once answered, a later GET asks again.
+    assert.deepEqual((await gh.get("/x")).data, { n: 3 });
+  });
+
+  /** Whether a GET sent after `write` joins one sent before it. */
+  const sharedAcross = async (write: (gh: GitHub) => Promise<unknown>) => {
+    let body = "old";
+    let release!: () => void;
+    let sent!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const onWire = new Promise<void>((r) => (sent = r));
+    const gh = new GitHub(token, async (_url, init) => {
+      if (init?.method === "POST" || init?.method === "PATCH") {
+        if (!String(init.body).includes("query {")) body = "new";
+        return Response.json({ data: {} });
+      }
+      if (body === "new") return Response.json({ body });
+      const answer = Response.json({ body });
+      sent();
+      await held;
+      return answer;
+    });
+    const before = gh.get("/orgs/o/projectsV2/1/items");
+    await onWire;
+    await write(gh);
+    const after = gh.get<{ body: string }>("/orgs/o/projectsV2/1/items");
+    release();
+    await before;
+    return (await after).data.body === "old";
+  };
+
+  it("doesn't share a GET sent before a write with one after it", async () => {
+    assert.equal(await sharedAcross((gh) => gh.send("PATCH", "/repos/o/r/issues/1", {})), false);
+    assert.equal(await sharedAcross((gh) => gh.graphql("mutation { m }")), false);
+    // A GraphQL query writes nothing.
+    assert.equal(await sharedAcross((gh) => gh.graphql("query { q }")), true);
+  });
+});
+
+describe("GitHub.graphql", () => {
+  const cases: [string, unknown, RegExp | object][] = [
+    ["data", { data: { a: 1 } }, { a: 1 }],
+    ["errors beside data", { data: { a: null }, errors: [{ message: "boom" }, {}] }, /: boom; GraphQL error$/],
+    ["no data", { data: null }, /no GraphQL data/],
+  ];
+  for (const [name, body, want] of cases) {
+    it(name, async () => {
+      const gh = new GitHub(token, async () => Response.json(body));
+      if (want instanceof RegExp) await assert.rejects(gh.graphql("query{a}"), want);
+      else assert.deepEqual(await gh.graphql("query{a}"), want);
+    });
+  }
 });
