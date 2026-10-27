@@ -6,16 +6,18 @@
 
 import { h } from "../dom.ts";
 import config from "./dashboard-config.json" with { type: "json" };
+import { MAINTAIN_CONFIG } from "./maintain.ts";
 import type { SectionId } from "./sections.ts";
 
-export const VIEWS = ["inbox", "agents", "dashboard", "board", "activity", "usage"] as const;
+export const VIEWS = ["inbox", "maintain", "agents", "dashboard", "board", "activity", "usage"] as const;
 export type ViewId = (typeof VIEWS)[number];
 
-/** The views linked and routed to: the dashboard only while DASHBOARD_CONFIG has it on. */
-export const SHOWN_VIEWS: readonly ViewId[] = VIEWS.filter((v) => v !== "dashboard" || config.enabled);
+/** The views linked and routed to: the dashboard only while DASHBOARD_CONFIG has it on, Maintain while MAINTAIN_CONFIG names its issue. */
+export const SHOWN_VIEWS: readonly ViewId[] = VIEWS.filter((v) => (v !== "dashboard" || config.enabled) && (v !== "maintain" || MAINTAIN_CONFIG !== undefined));
 
 export const VIEW_TITLE: Record<ViewId, string> = {
   inbox: "Inbox",
+  maintain: "Maintain",
   agents: "Agents",
   dashboard: "Dashboard",
   board: "Board",
