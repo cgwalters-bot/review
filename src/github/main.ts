@@ -1019,7 +1019,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       { name: "decisions", path: "the decisions document and tracker questions", cadence: POLL_INTERVAL_MS, views: VIEWS, read: (force) => refreshDecisions(get(), force && get().view === SECTION_VIEW.needs) },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
       // The inbox's own reads, only while it is on (DECISIONS_CONFIG.inbox).
-      { name: "maintain", path: `the maintain digest issue ${MAINTAIN_CONFIG?.issue ?? ""} and its last week's comments`, cadence: POLL_INTERVAL_MS, views: ["maintain"], read: () => refreshMaintain(get()), when: () => MAINTAIN_CONFIG !== undefined },
+      { name: "maintain", path: `the maintain digest issue ${MAINTAIN_CONFIG?.issue ?? ""}, its last week's comments, /user and up to 100 reviews per approval candidate`, cadence: POLL_INTERVAL_MS, views: ["maintain"], read: () => refreshMaintain(get()), when: () => MAINTAIN_CONFIG !== undefined },
       { name: "drafts", path: "the open review-draft issues", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDrafts(get()), when: () => get().inbox !== undefined && REVIEW_DRAFT_CONFIG !== undefined },
       { name: "proposals", path: `the ${PROPOSAL_LABEL} issues in ${TRACKER_REPO} and, once changed, their comments`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshProposals(get()), when: () => get().inbox !== undefined && ACTION_CONFIG !== undefined },
     ],
