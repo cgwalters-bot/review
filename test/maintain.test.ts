@@ -18,10 +18,11 @@ const issue = (body: string, user = "bot"): RawIssue =>
 const comment = (id: number, body: string, user = "bot"): RawComment => ({ id, html_url: `https://github.com/example/ops/issues/4#issuecomment-${id}`, body, user: { login: user } });
 const block = (o: unknown) => `\`\`\`agent-board-maintain-digest\n${JSON.stringify(o)}\n\`\`\`\n`;
 
-test("the shipped configuration is off, so is the view, and an invalid one is refused", () => {
-  assert.equal(MAINTAIN_CONFIG, undefined);
-  assert.equal(maintainConfig(rawConfig), undefined);
-  assert.equal(isView("maintain"), false);
+test("the shipped configuration reads tracker#965, an empty one is off, and an invalid one is refused", () => {
+  assert.deepEqual(MAINTAIN_CONFIG, { issue: "cgwalters-forge/tracker#965", authors: ["cgwalters-bot"] });
+  assert.deepEqual(maintainConfig(rawConfig), MAINTAIN_CONFIG);
+  assert.equal(isView("maintain"), true);
+  assert.equal(maintainConfig({ issue: "", authors: [] }), undefined);
   assert.deepEqual(maintainConfig(c), c);
   for (const bad of [{ ...c, issue: "" }, { ...c, issue: "x" }, { ...c, authors: [] }, { ...c, authors: ["a b"] }]) {
     assert.throws(() => maintainConfig(bad), /Invalid maintain configuration/);
@@ -109,4 +110,19 @@ test("the view shows the four sections, links each PR into the PR pane, and tota
   assert.match(el.textContent ?? "", /65 of 60 minutes/);
   assert.ok(el.querySelector(".maintain-over"));
   assert.equal(el.querySelector(".maintain-reply")?.textContent, "Thanks! Could you rebase on main and add a test?");
+});
+
+test("the shipped issue without a digest yet shows the empty state, not an error", async () => {
+  installDom();
+  const f = scriptedFetch((_m, url) => {
+    if (url.endsWith("/repos/cgwalters-forge/tracker/issues/965")) return { body: { ...issue("A daily digest of incoming PRs.", "cgwalters-bot"), number: 965 } };
+    if (url.includes("/repos/cgwalters-forge/tracker/issues/965/comments?")) return { body: [] };
+    return undefined;
+  });
+  const gh = new GitHub(async () => "t", f.fetchImpl);
+  const found = await loadDigest(gh, MAINTAIN_CONFIG!);
+  assert.equal(found, undefined);
+  const el = document.createElement("div");
+  el.append(...maintainView(gh, found, undefined));
+  assert.equal(el.textContent, "No digest posted yet.");
 });

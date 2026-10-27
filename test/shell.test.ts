@@ -77,7 +77,7 @@ describe("views", () => {
     const nav = win.document.createElement("nav");
     fillNav(nav, "inbox");
     fillNav(nav, "usage");
-    assert.deepEqual([...nav.querySelectorAll("a")].map((a) => a.getAttribute("href")), ["#inbox", "#agents", "#board", "#activity", "#usage"]);
+    assert.deepEqual([...nav.querySelectorAll("a")].map((a) => a.getAttribute("href")), ["#inbox", "#maintain", "#agents", "#board", "#activity", "#usage"]);
     assert.deepEqual([...nav.querySelectorAll("[aria-current=page]")].map((a) => a.textContent), ["Usage"]);
   });
 });
