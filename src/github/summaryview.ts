@@ -90,9 +90,9 @@ function resourcesLines(state: PageState, now: number, targets: SummaryTargets):
   const lines = poolNames(usage.pools).flatMap((name) => {
     const pool = usage.pools?.[name];
     if (!pool) return [];
-    // What the pass decided on it: held and why, else its headroom.
+    // What the pass decided on it: held and why, else where it stops dispatching.
     const { held, room } = poolStateWords(pool, now);
-    return [h("li", pool.hold ? { class: "hot" } : {}, jump("weekly-usage", poolLabel(name), targets), ` ${pool.reading ? poolWords(pool.reading).short : "no reading"}${room}${held}`)];
+    return [h("li", pool.hold ? { class: "hot" } : {}, jump("weekly-usage", poolLabel(name), targets), ` ${pool.reading ? poolWords(pool.reading, pool.limitPercent).short : "no reading"}${room}${held}`)];
   });
   const m = usage.mistral;
   if (m?.allowance) lines.push(h("li", {}, jump("weekly-usage", "Mistral", targets), ` $${m.allowance.spentUsd.toFixed(2)}${m.allowance.estimated ? " est." : ""} of $${m.allowance.limitUsd} this month`));

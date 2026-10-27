@@ -41,7 +41,7 @@ describe("findUsage", () => {
       assert.equal(u?.updatedAt, "2026-10-18T14:42:00Z");
       assert.deepEqual(u?.windows, []);
       // Older than limit_percent: no limit, not one worked out from burst and target.
-      assert.deepEqual(u?.pools?.claude, { hold: false, reading: { usedPercent: 73, allowedPercent: 73.2, resetsAt: "2026-10-19T23:00:00.000Z", observedAt: "2026-10-18T14:40:00.000Z", windowMinutes: 10080 } });
+      assert.deepEqual(u?.pools?.claude, { hold: false, burst: 3, reading: { usedPercent: 73, allowedPercent: 73.2, resetsAt: "2026-10-19T23:00:00.000Z", observedAt: "2026-10-18T14:40:00.000Z", windowMinutes: 10080 } });
       assert.deepEqual([u?.pools?.openai?.reading?.usedPercent, u?.pools?.openai?.hold], [1, false]);
       assert.deepEqual(u?.mistral?.allowance, { limitUsd: 300, resetsAt: "2026-11-01T00:00:00Z", spentUsd: 41.25, estimated: false, unpriced: [], lowerBound: false });
     }
@@ -57,9 +57,9 @@ describe("findUsage", () => {
     // As agent-board's pass/usage.rs writes it: a paced pool, one held for want of a reading, and a newer pool held on pace.
     const u = findUsage(fixture<RawComment[]>("usage-pass.json"));
     assert.deepEqual(u?.pools, {
-      claude: { hold: false, limitPercent: 43.2, reading: { usedPercent: 41, allowedPercent: 40.2, resetsAt: "2026-10-30T23:00:00Z", observedAt: "2026-10-26T03:05:00Z", windowMinutes: 10080 } },
+      claude: { hold: false, limitPercent: 43.2, burst: 3, reading: { usedPercent: 41, allowedPercent: 40.2, resetsAt: "2026-10-30T23:00:00Z", observedAt: "2026-10-26T03:05:00Z", windowMinutes: 10080 } },
       openai: { hold: true, reason: "no-reading" },
-      fable: { hold: true, reason: "pace", nextDispatchAt: "2026-10-27T05:42:00Z", limitPercent: 43.2, reading: { usedPercent: 52, allowedPercent: 40.2, resetsAt: "2026-10-30T23:00:00Z", observedAt: "2026-10-26T03:05:00Z", windowMinutes: 10080 } },
+      fable: { hold: true, reason: "pace", nextDispatchAt: "2026-10-27T05:42:00Z", limitPercent: 43.2, burst: 3, reading: { usedPercent: 52, allowedPercent: 40.2, resetsAt: "2026-10-30T23:00:00Z", observedAt: "2026-10-26T03:05:00Z", windowMinutes: 10080 } },
     });
   });
 });
@@ -89,7 +89,7 @@ describe("parseUsage", () => {
       assert.equal(openai(edit)?.claude?.reading?.usedPercent, 42);
     }
     for (const edit of [{ used_percent: -1 }, { allowed_percent: "30" }, { resets_at: "soon" }, { observed_at: null }]) {
-      assert.deepEqual(openai(edit)?.openai, { hold: true, reason: "pace", nextDispatchAt: "2026-10-13T00:57:18.315Z" }, JSON.stringify(edit));
+      assert.deepEqual(openai(edit)?.openai, { hold: true, reason: "pace", nextDispatchAt: "2026-10-13T00:57:18.315Z", burst: 3 }, JSON.stringify(edit));
     }
     // A reason only for a held pool, and only a word; a name that is no pool's is dropped.
     assert.equal(openai({ reason: "<b>pace</b>" })?.openai?.reason, undefined);

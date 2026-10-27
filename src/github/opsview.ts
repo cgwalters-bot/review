@@ -386,8 +386,9 @@ export const poolLabel = (name: string): string => POOL_LABELS[name] ?? name;
 /** The pools shown, in order: Claude and OpenAI, then every other the snapshot has. */
 export const poolNames = (pools: Usage["pools"]): string[] => [...new Set([...Object.keys(POOL_LABELS), ...Object.keys(pools ?? {})])];
 
-/** A pool's label and sentence: the percent used, the share of the window gone, and the projection to its end. */
-export function poolWords(pool: PoolReading): { short: string; long: string } {
+/** A pool's label and sentence: the percent used and its pace under a published limit, else the share of the window gone and the projection to its end. */
+export function poolWords(pool: PoolReading, limit?: number): { short: string; long: string } {
+  if (limit !== undefined) return { short: `${Math.round(pool.usedPercent)}% used · pace ${Math.round(pool.allowedPercent)}%`, long: `${pool.usedPercent.toFixed(1)}% used against a pace of ${pool.allowedPercent.toFixed(1)}%` };
   const pace = poolPace(pool);
   const projected = pace.projectedPercent === undefined ? "" : ` · ~${Math.round(pace.projectedPercent)}% at reset`;
   return {
@@ -398,23 +399,23 @@ export function poolWords(pool: PoolReading): { short: string; long: string } {
 
 /**
  * What the pass decided on the pool, as it published it: held, why and
- * until when (running work goes on), else its headroom under the pass's
- * limit. What the snapshot lacks is said to be not published.
+ * until when (running work goes on), else where dispatch stops, why, and the
+ * room left. What the snapshot lacks is said to be not published.
  */
 export function poolStateWords(pool: UsagePool, now: number): { held: string; room: string } {
   // A time already past (a reading from before it, not since updated) is no end to promise.
   const next = pool.nextDispatchAt && (Date.parse(pool.nextDispatchAt) > now ? ` until ${clock(Date.parse(pool.nextDispatchAt))} (${time(pool.nextDispatchAt)})` : ` (was due to end ${time(pool.nextDispatchAt)}; awaiting a new reading)`);
-  const limit = pool.limitPercent;
+  const { limitPercent: limit, burst } = pool;
   return {
     held: !pool.hold ? "" : ` · held (${pool.reason ?? "reason not published"}): no new runs${next || "; resume time not published"}; running runs continue`,
-    room: pool.hold ? "" : limit === undefined ? " · not held; limit not published" : pool.reading ? ` · not held: ${Math.round(limit - pool.reading.usedPercent)} points of headroom` : " · not held",
+    room: pool.hold ? "" : limit === undefined ? " · not held; limit not published" : pool.reading ? ` · dispatch stops at ${Math.round(limit)}%${burst === undefined ? "" : ` (pace + ${burst} burst)`} · ${Math.round(limit - pool.reading.usedPercent)} points of room` : " · not held",
   };
 }
 
 /**
  * One pool as a compact row: its name, a thin bar of the percent used
  * with a tick at the pass's limit, and a short label of the percent used
- * against the share of the window gone. The sentence it replaces (exact
+ * against its pace or the share of the window gone. The sentence (exact
  * percents, reset, observation time) is in its expander.
  */
 function poolRow(name: string, pool: UsagePool | undefined, now: number, snapshotAt: string): HTMLElement {
@@ -422,12 +423,9 @@ function poolRow(name: string, pool: UsagePool | undefined, now: number, snapsho
   if (!pool) return h("div", { class: "pool-sum none" }, h("span", { class: "pool-name" }, label), " ", h("span", { class: "pool-label" }, "No reading · ", snapshotAt ? h("span", {}, "snapshot ", agoLabel(snapshotAt, now)) : "snapshot age unknown", "."));
   const state = poolStateWords(pool, now);
   const flags = `${state.room}${state.held}`;
-  const reading = pool.reading;
+  const { reading, limitPercent: limit } = pool;
   if (!reading) return h("div", { class: `pool-sum none${pool.hold ? " over" : ""}`, [POOL_ATTR]: name }, h("span", { class: "pool-name" }, label), " ", h("span", { class: "pool-label" }, `No reading${flags}`));
-  const used = reading.usedPercent.toFixed(1);
-  const limit = pool.limitPercent;
-  const allowed = limit === undefined ? undefined : `${limit.toFixed(1)}% allowed by now`;
-  const words = poolWords(reading);
+  const words = poolWords(reading, limit);
   const clamp = (n: number, max: number) => String(Math.max(0, Math.min(max, n)));
   const y = String((POOL_BAR.height - POOL_BAR.track) / 2);
   const track = { x: "0", y, height: String(POOL_BAR.track), rx: String(POOL_BAR.track / 2) };
@@ -442,7 +440,7 @@ function poolRow(name: string, pool: UsagePool | undefined, now: number, snapsho
       "aria-valuemin": "0",
       "aria-valuemax": "100",
       "aria-valuenow": clamp(reading.usedPercent, 100),
-      "aria-valuetext": `${used}% used${allowed ? `, ${allowed}` : ""}${flags.replaceAll(" ·", ",")}`,
+      "aria-valuetext": `${words.long}${flags.replaceAll(" ·", ",")}`,
     },
     svg("rect", { class: "track", ...track, width: String(POOL_BAR.width) }),
     svg("rect", { class: "fill", ...track, width: clamp(reading.usedPercent, POOL_BAR.width) }),
@@ -462,7 +460,7 @@ function poolRow(name: string, pool: UsagePool | undefined, now: number, snapsho
     h(
       "div",
       { class: "pool-detail" },
-      h("p", {}, `${words.long}${allowed ? `. The tick is the pass's limit: ${allowed}` : ""}${flags}.`),
+      h("p", {}, `${words.long}${limit === undefined ? "" : ". The tick is where dispatch stops"}${flags}.`),
       h("p", {}, `${resetText(reading.resetsAt, now)} (${time(reading.resetsAt)}).`),
       // A reading the pass found too old is held as no-reading, so its age alone is no warning.
       h("p", {}, "Observed ", agoLabel(reading.observedAt, now), "."),

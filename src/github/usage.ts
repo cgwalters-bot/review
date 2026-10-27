@@ -98,6 +98,8 @@ export interface UsagePool {
   nextDispatchAt?: string;
   /** The percent used past which the pass holds a paced pool, when the snapshot says. */
   limitPercent?: number;
+  /** The points over pace the pass lets the pool run (burst), which the limit adds to its pace, when the snapshot says. */
+  burst?: number;
   /** Absent for a pool held without a reading, or a grant's without a window. */
   reading?: PoolReading;
 }
@@ -254,8 +256,8 @@ function parsePool(raw: unknown): UsagePool | undefined {
   // Only a held pool waits for it; a bad or missing time leaves the hold without an end.
   const next = raw.hold ? time(raw.next_dispatch_at) : undefined;
   if (next) pool.nextDispatchAt = next;
-  const limit = count(raw.limit_percent, MAX_PERCENT);
-  if (limit !== undefined) pool.limitPercent = limit;
+  const [limit, burst] = [raw.limit_percent, raw.burst].map((v) => count(v, MAX_PERCENT));
+  Object.assign(pool, limit === undefined ? {} : { limitPercent: limit }, burst === undefined ? {} : { burst });
   const usedPercent = count(raw.used_percent, MAX_PERCENT);
   const allowedPercent = count(raw.allowed_percent, MAX_PERCENT);
   const resetsAt = time(raw.resets_at);
