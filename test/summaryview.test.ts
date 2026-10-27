@@ -154,23 +154,25 @@ describe("the summary", () => {
     assert.ok(![...home.slots.summary.querySelectorAll("a")].some((a) => a.getAttribute("href")?.startsWith("javascript:")));
   });
 
-  describe("says what the pass decided on a pool: held and why, else its headroom under the published limit", () => {
-    // used, the pass's limit_percent, hold, reason; the words after the projection, and whether the line is hot
-    const cases: [string, number, number | undefined, boolean, string | undefined, string, boolean][] = [
-      ["under its limit", 18, 53, false, undefined, " · not held: 35 points of headroom", false],
+  describe("says what the pass decided on a pool: held and why, else where it stops dispatching and the room left", () => {
+    // used, the pass's limit_percent and burst over a pace of 18.5, hold, reason; the line, and whether it is hot
+    const cases: [string, number, number | undefined, number | undefined, boolean, string | undefined, string, boolean][] = [
+      // As the operator saw OpenAI on 27 Oct: no projection to ~195% beside a pass that stops at 69%.
+      ["under its limit", 36, 68.5, 50, false, undefined, "Claude 36% used · pace 19% · dispatch stops at 69% (pace + 50 burst) · 33 points of room", false],
       // The pass's call, not one made here: past the limit and not held says so, without "over pace".
-      ["past its limit, not held", 60, 52, false, undefined, " · not held: -8 points of headroom", false],
-      ["no limit published", 18, undefined, false, undefined, " · not held; limit not published", false],
-      ["held on a window", 80, 33, true, "window", " · held (window): no new runs; resume time not published; running runs continue", true],
+      ["past its limit, not held", 60, 52, undefined, false, undefined, "Claude 60% used · pace 19% · dispatch stops at 52% · -8 points of room", false],
+      ["no limit published", 18, undefined, 3, false, undefined, "Claude 18% used · 52% of week gone · ~35% at reset · not held; limit not published", false],
+      ["held on a window", 80, 21.5, 3, true, "window", "Claude 80% used · pace 19% · held (window): no new runs; resume time not published; running runs continue", true],
     ];
-    for (const [name, used, limit, hold, reason, want, hot] of cases) it(name, () => {
+    for (const [name, used, limit, burst, hold, reason, want, hot] of cases) it(name, () => {
       const home = homeSkeleton(noHooks);
-      const claude: UsagePool = { hold, reading: { ...usage.pools!.claude!.reading!, usedPercent: used } };
+      const claude: UsagePool = { hold, reading: { ...usage.pools!.claude!.reading!, usedPercent: used, allowedPercent: 18.5 } };
       if (limit !== undefined) claude.limitPercent = limit;
+      if (burst !== undefined) claude.burst = burst;
       if (reason !== undefined) claude.reason = reason;
       fillSummary(home, pageState({ active: { warnings: [], at: NOW, usage: { state: "ok", usage: { ...usage, pools: { claude } } } }, runs }, NOW), undefined, NOW);
       const line = [...home.slots.summary.querySelectorAll("li")].find((l) => text(l).startsWith("Claude"))!;
-      assert.equal(text(line).replace(/^.* at reset/, ""), want);
+      assert.equal(text(line), want);
       assert.equal(line.classList.contains("hot"), hot);
     });
   });

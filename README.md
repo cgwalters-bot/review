@@ -187,13 +187,15 @@ it: nothing on the page reads them yet.
 **Weekly subscription usage** heads the Usage view, always open. It
 reads every entry of `bot-usage/v1`'s `pools` (Claude and OpenAI first), one
 compact row each: a thin bar of the percent used with a tick at the pass's
-`limit_percent`, coloured as a warning when held, and a label
-such as "50% used · 8% of week gone · ~636% at reset": the share of the window
-gone is worked out from the pool's `resets_at` and `window_minutes` (a week by
-default) at the time it was observed, and the projection is the rate so far
-carried to the window's end (none before 5% of it). The label also says what
-the pass decided, as it published it: an unheld pool's headroom under its limit
-("not held: 35 points of headroom"), and when the pass holds new work on the
+`limit_percent`, coloured as a warning when held, and a label of what the pass
+decided, as it published it. Under a published limit an unheld pool reads
+"36% used · pace 19% · dispatch stops at 69% (pace + 50 burst) · 33 points of
+room", from its `allowed_percent`, `limit_percent` and `burst`. Without a limit
+the label is "50% used · 8% of week gone · ~636% at reset · not held; limit not
+published": the share of the window gone is worked out from the pool's
+`resets_at` and `window_minutes` (a week by default) at the time it was
+observed, and the projection is the rate so far carried to the window's end
+(none before 5% of it). When the pass holds new work on the
 pool (`hold`), why (`reason`: `pace`, `no-reading`, `grant`, …) and until when:
 "held (pace): no new runs until HH:MM" with the date from `next_dispatch_at`
 when the snapshot gives it, and "running runs continue". A missing resume
