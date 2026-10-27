@@ -5,6 +5,7 @@ import { type Card, documentCard, needCard } from "../src/github/inbox.ts";
 import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, fillInbox, holdsDraft, INBOX_PAGE, type InboxHooks, passLine } from "../src/github/inboxview.ts";
 import type { Offered } from "../src/github/actions.ts";
 import type { Item } from "../src/github/board.ts";
+import type { Heartbeat } from "../src/github/heartbeat.ts";
 import type { Hold } from "../src/github/holds.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
@@ -20,7 +21,6 @@ const hooks: InboxHooks = {
   mayAct: true,
   sendNeed: async () => "https://github.com/o/r/issues/1#issuecomment-1",
   answerEntry: async (entry, letter, reply) => { sent.push(`${entry.id} ${letter} ${reply}`); },
-  rerun: async (r) => r.url,
 };
 
 /** The open entry `id` of a document, as a card, with `extra` added to its text. */
@@ -182,7 +182,7 @@ describe("fillInbox", () => {
     fillInbox(list, cards, { ...hooks, offerBody });
     assert.deepEqual([keys(list).length, read], [INBOX_PAGE, Array.from({ length: INBOX_PAGE }, (_, i) => i + 1)]);
     const more = box.querySelector<HTMLButtonElement>(".inbox-more")!;
-    assert.equal(more.textContent, "Show 2 more of 2");
+    assert.equal(more.textContent, `Show 2 more · ${INBOX_PAGE} of ${INBOX_PAGE + 2} shown`);
     assert.equal(cardOf(list, "document:D1")!.querySelectorAll(".card-body").length, 1, "the decision carries its proposal");
     more.click();
     assert.deepEqual([keys(list).length, read.length, box.querySelector(".inbox-more")], [INBOX_PAGE + 2, INBOX_PAGE + 2, null]);
@@ -190,21 +190,36 @@ describe("fillInbox", () => {
 });
 
 describe("passLine", () => {
-  const wip: Hold = { item: null, url: null, epic: false, kind: "wip", reason: "2 of 2 runs active", operator: false, priority: null, question: null };
-  const human = { ...wip, item: "o/r#1", url: "https://github.com/o/r/issues/1", kind: "needs-human", reason: "labelled needs-human", operator: true };
-  // name, minutes old, holds, the line, whether it warns
-  const cases: [string, number, Hold[], string, boolean][] = [
-    ["fresh, with what holds every new run", 5, [wip, human], "Pass holds as of 5m ago · new runs wait: wip: 2 of 2 runs active", false],
-    ["not yet stale at the usage panel's threshold", 15, [human], "Pass holds as of 15m ago", false],
-    ["stale past it", 60, [human], "Pass holds as of 1h ago · stale", true],
+  const pool: Hold = { item: null, url: null, epic: false, kind: "pool", reason: "claude over pace", operator: false, priority: null, question: null };
+  const human = { ...pool, item: "o/r#1", url: "https://github.com/o/r/issues/1", kind: "needs-human", reason: "labelled needs-human", operator: true };
+  const ago = (minutes: number) => new Date(hooks.now - minutes * 60_000).toISOString();
+  const beat = (minutes: number): Heartbeat => ({ updatedAt: ago(minutes), session: "s", loopState: "polling", workers: [], skipped: 0 });
+  // name, holds (written 2h ago: the pass rewrites them only on a change), heartbeat, the line or null, whether it warns
+  const cases: [string, Hold[] | undefined, Heartbeat | null | undefined, string | null, boolean][] = [
+    ["old holds with a fresh heartbeat are current", [pool, human], beat(5), "New runs wait: pool: claude over pace", false],
+    ["a stale heartbeat", [pool], beat(60), "New runs wait: pool: claude over pace · the pass's heartbeat is stale", true],
+    ["no heartbeat published", [pool], null, "New runs wait: pool: claude over pace · the pass's heartbeat is stale", true],
+    ["nothing when no pool is held", [human], beat(60), null, false],
+    ["nothing when the holds weren't read", undefined, beat(5), null, false],
   ];
-  for (const [name, minutes, holds, text, warn] of cases) it(name, () => {
-    const el = passLine({ at: new Date(hooks.now - minutes * 60_000).toISOString(), holds }, hooks.now);
-    assert.deepEqual([el.textContent, el.classList.contains("warn")], [text, warn]);
+  for (const [name, holds, hb, text, warn] of cases) it(name, () => {
+    const el = passLine(holds && { at: ago(120), holds }, hb, hooks.now);
+    assert.deepEqual([el?.textContent ?? null, el?.classList.contains("warn") ?? false], [text, warn]);
   });
+});
 
-  it("says when none were read", () => {
-    const el = passLine(undefined, hooks.now);
-    assert.deepEqual([el.textContent, el.classList.contains("warn")], ["Pass holds not read", true]);
+describe("card layout at phone and desktop widths (no layout engine)", () => {
+  for (const width of [390, 1280]) it(`puts a card's actions on one row at ${width}px`, () => {
+    Object.defineProperty(win, "innerWidth", { value: width, configurable: true });
+    const list = document.createElement("div");
+    const link = question();
+    assert.ok(link.kind === "answer");
+    fillInbox(list, [question(), { ...link, key: "item:I_2", need: { ...link.need, inPlace: false } }], hooks);
+    for (const card of list.children) {
+      const chat = card.querySelector(".item-chat")!;
+      assert.equal(card.querySelectorAll(".actions").length, 1, "one row");
+      assert.equal(chat.parentElement, card.querySelector(".actions"), "Chat on the row with the action");
+      assert.ok(chat.parentElement!.querySelector("button[type=submit], a.action"));
+    }
   });
 });

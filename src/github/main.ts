@@ -24,7 +24,6 @@ import {
   type OpenBoard,
   postAnswer,
   postAskComment,
-  rerunDispatchRun,
   rerunFailedJobs,
   rerunPrRun,
   submitAskedReview,
@@ -50,10 +49,11 @@ import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, refreshDocument, sendDocumentEdit } from "./decisiondocument.ts";
-import { DISPATCH_WORKFLOW, type DispatchRun, inboxCards, loadDispatchRuns, mayAct, needCard, offeredReruns } from "./inbox.ts";
+import { inboxCards, mayAct, needCard } from "./inbox.ts";
 import { fillInbox, type InboxHooks, passLine } from "./inboxview.ts";
 import {
   CLASSIC_SCOPES,
+  DISPATCH_WORKFLOW,
   DONE_NOTICE_MS,
   FETCH_CONCURRENCY,
   FORGE_MIN_INTERVAL_MS,
@@ -341,20 +341,20 @@ function cachedSince(state: State): number | undefined {
 }
 
 /**
- * The header's meta line. Who is signed in and the rate budget are
- * also put in the controls menu, where a narrow screen shows them
- * instead (see style.css), keeping only how fresh the data is in view.
+ * The header's meta line, how fresh the data is, and the controls menu's:
+ * who is signed in, the people and bot counts, and the rate budget.
  */
 function renderMeta(state: State): void {
   const parts: Node[] = [];
   const part = (cls: string, ...children: (string | Node)[]) => parts.push(h("span", { class: `mp ${cls}` }, ...children));
-  const who = state.login ? `signed in as ${state.login}` : undefined;
-  const api = state.gh.rate ? `API ${state.gh.rate.remaining}/${state.gh.rate.limit}` : undefined;
-  if (who) part("mp-who", who);
   // From what waits now, not state.needs (the rows drawn), which stays behind while a redraw is deferred under a half-written answer.
   const botCount = botWaitingCount(currentNeeds(state));
   const people = peopleMeta(state.people, !!state.home?.el.isConnected && !!state.home.el.querySelector<HTMLDetailsElement>("#sec-people")?.open);
-  part("mp-queues", h("span", { title: people.title }, people.text), ` · bot ${botCount}`);
+  byId("menu-meta").replaceChildren(...[
+    state.login ? `signed in as ${state.login}` : undefined,
+    h("span", { title: people.title }, people.text, ` · bot ${botCount}`),
+    state.gh.rate ? `API ${state.gh.rate.remaining}/${state.gh.rate.limit}` : undefined,
+  ].flatMap((p) => (p ? [h("span", { class: "mp" }, p)] : [])));
   const since = cachedSince(state);
   if (since !== undefined) part("mp-age", h("span", { class: "cached", title: "Shown from this browser's cache; checking GitHub for changes" }, "cached · ", agoLabel(new Date(since).toISOString(), Date.now())));
   else if (state.home?.el.isConnected) part("mp-age", viewChecked(state.layer, state.view, Date.now()));
@@ -365,9 +365,7 @@ function renderMeta(state: State): void {
   const r = route().route;
   const note = pollNote(state.poller.status(), Date.now(), POLL_SLOW_MS, since !== undefined && r !== "pr");
   if (note) part("mp-note", h("span", { class: "cached", title: "Not refreshing from GitHub as usual" }, note));
-  if (api) part("mp-api", api);
   byId("meta").replaceChildren(...parts);
-  byId("menu-meta").textContent = [who, api].filter(Boolean).join(" · ");
 }
 
 /** The view's "checked N s ago", with each of its sources' in the tooltip. */
@@ -493,7 +491,7 @@ function mountHome(state: State): Home {
 
 interface Inbox {
   list: HTMLElement;
-  /** The pass's holds: when from, and what holds every new run (passLine). */
+  /** What holds every new run, if anything (passLine). */
   pass: HTMLElement;
   /** Why something it reads can't be shown, over the cards. */
   status: HTMLElement;
@@ -502,7 +500,6 @@ interface Inbox {
   empty: HTMLElement;
   document?: { body: string; marks: Map<string, Mark> };
   drafts?: DraftIssue[];
-  runs?: DispatchRun[];
   /** The open proposals, from the labelled tracker issues (loadProposals). */
   offers?: Offered[];
   /** Each labelled issue's proposals, re-read only once the issue moves. */
@@ -562,8 +559,6 @@ function inboxHooks(state: State): InboxHooks {
     mayAct: mayAct(state.login),
     sendNeed: (n, a) => sendNeed(state, n, a),
     answerEntry: (entry, letter, reply) => answerEntry(state, entry, letter, reply),
-    // Only while it is still offered, as read now: no newer run, the item open.
-    rerun: async (run) => rerunDispatchRun(state.gh, run.url, await offeredReruns(state.gh, run)),
     ...(REVIEW_DRAFT_CONFIG ? { draftBody: (c) => draftCard(state.gh, REVIEW_DRAFT_CONFIG!, render, c.draft) } : {}),
     ...(ACTION_CONFIG ? {
       offerBody: (offer) => proposalCard(state.gh, ACTION_CONFIG!, offer, () => state.inbox?.busy === true, (v) => {
@@ -615,17 +610,16 @@ function paintInbox(state: State, force = false): void {
   } catch (e) {
     inboxNote(inbox, "document", `The decisions document can't be read: ${message(e)}`);
   }
-  // What the board knows of an item's state, for the Rerun cards, and its Priority, for the order.
+  // An item's board Priority, for the order.
   const board = [...(state.active?.board ?? []), ...state.items];
-  const states = new Map(board.flatMap((i) => (i.ref && i.state ? [[refKey(i.ref).toLowerCase(), i.state] as const] : [])));
   const priorities = new Map(board.flatMap((i) => (i.ref && i.priority ? [[refKey(i.ref).toLowerCase(), i.priority] as const] : [])));
-  const now = Date.now();
-  const cards = inboxCards({ needs: state.needs, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}), ...(inbox.runs ? { runs: inbox.runs } : {}), itemState: (item) => states.get(item), priorityOf: (item) => priorities.get(item), ...(inbox.offers ? { offers: inbox.offers } : {}), now });
+  const cards = inboxCards({ needs: state.needs, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}), priorityOf: (item) => priorities.get(item), ...(inbox.offers ? { offers: inbox.offers } : {}) });
   fillInbox(inbox.list, cards, inboxHooks(state), force);
-  inbox.pass.replaceChildren(state.active ? passLine(state.active.holds, now) : "");
+  inbox.pass.replaceChildren(passLine(state.active?.holds, state.active?.local, Date.now()) ?? "");
+  // The count is the list's, as "Show more" counts it; those he answered are dimmed in it.
   const waiting = cards.filter((c) => !c.answered).length;
   inbox.empty.hidden = cards.length > 0;
-  setCount(home, "needs", String(waiting), { title: `${waiting} cards waiting on you`, hot: waiting > 0 });
+  setCount(home, "needs", String(cards.length), { title: `${waiting} of ${cards.length} cards waiting on you`, hot: waiting > 0 });
   markSelected(state, false);
 }
 
@@ -669,21 +663,6 @@ async function refreshMaintain(state: State): Promise<boolean> {
     slot.replaceChildren(h("h2", {}, "Maintain"), ...maintainView(state.gh, found, error));
   }
   return !error;
-}
-
-/** Re-read the dispatch runs for the Rerun cards; false if nothing was read. */
-async function refreshDispatch(state: State): Promise<boolean> {
-  const inbox = state.inbox;
-  if (!inbox) return false;
-  try {
-    inbox.runs = await loadDispatchRuns(state.gh);
-    inboxNote(inbox, "runs", "");
-    paintInbox(state);
-    return true;
-  } catch (e) {
-    inboxNote(inbox, "runs", `Couldn't read the dispatch runs: ${message(e)}`);
-    return false;
-  }
 }
 
 function renderHome(state: State): void {
@@ -1040,7 +1019,6 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       { name: "decisions", path: "the decisions document and tracker questions", cadence: POLL_INTERVAL_MS, views: VIEWS, read: (force) => refreshDecisions(get(), force && get().view === SECTION_VIEW.needs) },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
       // The inbox's own reads, only while it is on (DECISIONS_CONFIG.inbox).
-      { name: "dispatch", path: `the last day's ${DISPATCH_WORKFLOW} runs in ${TRACKER_REPO}`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDispatch(get()), when: () => get().inbox !== undefined },
       { name: "maintain", path: `the maintain digest issue ${MAINTAIN_CONFIG?.issue ?? ""} and its last week's comments`, cadence: POLL_INTERVAL_MS, views: ["maintain"], read: () => refreshMaintain(get()), when: () => MAINTAIN_CONFIG !== undefined },
       { name: "drafts", path: "the open review-draft issues", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDrafts(get()), when: () => get().inbox !== undefined && REVIEW_DRAFT_CONFIG !== undefined },
       { name: "proposals", path: `the ${PROPOSAL_LABEL} issues in ${TRACKER_REPO} and, once changed, their comments`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshProposals(get()), when: () => get().inbox !== undefined && ACTION_CONFIG !== undefined },
@@ -2532,7 +2510,7 @@ function trackHeaderHeight(): void {
   set();
 }
 
-/** The controls menu a narrow screen folds the header's buttons into. */
+/** The ⋯ menu holding the header's controls. */
 function installMenu(): void {
   const toggle = byId("menu-toggle");
   const menu = byId("menu");

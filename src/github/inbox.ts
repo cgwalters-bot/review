@@ -7,8 +7,6 @@
 //   closing, the pass releasing it or the head being reviewed removes it.
 // - Send: an open review-draft issue; ticking its send box dims it until the
 //   tracker's workflow closes the issue.
-// - Rerun: the newest dispatch run of an item, failed or cancelled in the
-//   last day, while the item is open; a newer run overtakes it.
 // - Do: an open operator-action proposal no decision or ask carries.
 // - Document entry: an open decisions document entry; ticking an option dims
 //   it, its About item closing or merging resolves it, and comments on the
@@ -20,27 +18,25 @@
 // decisions are exactly an operator action. Cards are listed by board
 // Priority, then age; the view draws the first screen of them, and a
 // proposal's live preconditions are read only once its card is drawn.
+// Failed dispatch runs are not cards: rerunning them is the pass's job.
 
-import type { GitHub } from "./api.ts";
 import type { Offered } from "./actions.ts";
-import { FAILED_CONCLUSIONS } from "./asks.ts";
 import { OPERATOR, TRACKER_REPO } from "./config.ts";
 import type { DocumentEntry, Mark } from "./decisiondocument.ts";
 import type { Need } from "./needs.ts";
 import { priorityRank } from "./queue.ts";
 import type { DraftIssue } from "./reviewdrafts.ts";
 
-export type CardKind = "document" | "answer" | "approve" | "send" | "rerun" | "do";
+export type CardKind = "document" | "answer" | "approve" | "send" | "do";
 
 /** The kinds in the order the inbox lists them. */
-export const CARD_KINDS: readonly CardKind[] = ["document", "answer", "approve", "send", "rerun", "do"];
+export const CARD_KINDS: readonly CardKind[] = ["document", "answer", "approve", "send", "do"];
 
 export const CARD_LABEL: Record<CardKind, string> = {
   document: "Decide",
   answer: "Answer",
   approve: "Approve",
   send: "Send",
-  rerun: "Rerun",
   do: "Do",
 };
 
@@ -66,7 +62,6 @@ interface CardBase {
 export type Card = CardBase & (
   | { kind: "answer" | "approve"; need: Need }
   | { kind: "send"; draft: DraftIssue }
-  | { kind: "rerun"; run: DispatchRun }
   | { kind: "do"; offer: Offered }
   | { kind: "document"; entry: DocumentEntry; mark?: Mark }
 );
@@ -108,56 +103,6 @@ export function sendCard(d: DraftIssue & { issue: { state?: string } }): Card | 
     url: d.issue.html_url,
     ...(d.box === "ticked" ? { answered: true, note: "Send is ticked: waiting on the tracker's workflow." } : {}),
   };
-}
-
-/** A dispatch run, as its title names it: `KIND OWNER/REPO#N (POOL)`. */
-export interface DispatchRun {
-  id: number;
-  url: string;
-  title: string;
-  status: string;
-  conclusion: string | null;
-  createdAt: string;
-  kind?: string;
-  /** `owner/repo#n`, lowercased so runs of one item group. */
-  item?: string;
-  pool?: string;
-}
-
-// A repository name that is only dots is refused: the item is spliced into
-// an API path (offeredReruns), and `..` would point that read elsewhere.
-const RUN_TITLE = /^(\S+) ([A-Za-z0-9-]+\/(?!\.+#)[A-Za-z0-9_.-]+#[1-9]\d{0,9})(?: \(([^()]+)\))?$/;
-
-/** The kind, item and pool a dispatch run's title names, if it names them. */
-export function parseRunTitle(title: string): Pick<DispatchRun, "kind" | "item" | "pool"> {
-  const m = RUN_TITLE.exec(title.trim());
-  return m ? { kind: m[1]!, item: m[2]!.toLowerCase(), ...(m[3] ? { pool: m[3] } : {}) } : {};
-}
-
-/** How long a failed run stays offered for a rerun. */
-export const RERUN_WINDOW_MS = 24 * 3_600_000;
-
-
-/**
- * Rerun cards: per item, its newest run, when that failed or was cancelled
- * within RERUN_WINDOW_MS and the item is not known to be closed. A failed
- * run with a newer one for its item (a rerun is the same run, so it is
- * live again) is overtaken. `itemState` says what the board knows of an
- * item; one it doesn't know stays offered.
- */
-export function rerunCards(runs: readonly DispatchRun[], now: number, itemState: (item: string) => string | undefined): Card[] {
-  const newest = new Map<string, DispatchRun>();
-  for (const r of runs) {
-    if (!r.item) continue;
-    const seen = newest.get(r.item);
-    if (!seen || r.createdAt > seen.createdAt || (r.createdAt === seen.createdAt && r.id > seen.id)) newest.set(r.item, r);
-  }
-  return [...newest.values()].flatMap((r): Card[] => {
-    if (r.status !== "completed" || !FAILED_CONCLUSIONS.includes(r.conclusion ?? "")) return [];
-    if (now - Date.parse(r.createdAt) > RERUN_WINDOW_MS) return [];
-    if (!open(itemState(r.item!))) return [];
-    return [{ kind: "rerun", run: r, key: `rerun:${r.item}`, title: `${r.kind ?? "run"} ${r.conclusion}${r.pool ? ` (${r.pool})` : ""}`, where: r.item!, url: r.url, since: r.createdAt }];
-  });
 }
 
 /** A Do card for a proposal no decision carries; its live preconditions are read when it is drawn. */
@@ -229,13 +174,10 @@ export interface InboxInput {
   needs?: readonly Need[];
   document?: { entries: readonly DocumentEntry[]; marks: ReadonlyMap<string, Mark> };
   drafts?: readonly DraftIssue[];
-  runs?: readonly DispatchRun[];
-  itemState?: (item: string) => string | undefined;
   /** The board Priority of an item, by its lowercased `owner/repo#n`. */
   priorityOf?: (item: string) => string | undefined;
   /** The open proposals, as loaded. */
   offers?: readonly Offered[];
-  now: number;
 }
 
 /**
@@ -249,7 +191,6 @@ export function inboxCards(input: InboxInput): Card[] {
     ...(input.document?.entries ?? []).map((e) => documentCard(e, input.document?.marks.get(e.id))),
     ...(input.needs ?? []).map(needCard),
     ...(input.drafts ?? []).map(sendCard),
-    ...rerunCards(input.runs ?? [], input.now, input.itemState ?? (() => undefined)),
   ].filter((c): c is Card => c !== undefined);
   const loose = attachOffers(sortCards(cards, priorityOf), input.offers ?? []);
   return sortCards(loose, priorityOf);
@@ -270,33 +211,6 @@ export function sortCards(cards: readonly Card[], priorityOf: (item: string) => 
     || since(a.c) - since(b.c)
     || CARD_KINDS.indexOf(a.c.kind) - CARD_KINDS.indexOf(b.c.kind)
     || a.i - b.i).map(({ c }) => c);
-}
-
-/** The dispatch workflow whose failed runs are offered for a rerun. */
-export const DISPATCH_WORKFLOW = "dispatch.yml";
-
-interface RawDispatchRun { id: number; html_url: string; display_title?: string; name?: string | null; status: string | null; conclusion: string | null; created_at: string }
-
-/** The newest dispatch runs (one conditional read), with what their titles name. */
-export async function loadDispatchRuns(gh: GitHub, now = Date.now()): Promise<DispatchRun[]> {
-  const since = new Date(now - RERUN_WINDOW_MS).toISOString().slice(0, 10);
-  const { data } = await gh.get<{ workflow_runs: RawDispatchRun[] }>(`/repos/${TRACKER_REPO}/actions/workflows/${DISPATCH_WORKFLOW}/runs?per_page=100&created=%3E%3D${since}`);
-  return data.workflow_runs.map((r) => {
-    const title = r.display_title ?? r.name ?? "";
-    return { id: r.id, url: r.html_url, title, status: r.status ?? "", conclusion: r.conclusion, createdAt: r.created_at, ...parseRunTitle(title) };
-  });
-}
-
-/**
- * The runs a Rerun card for `run`'s item may rerun, read now rather than at
- * the last poll: the dispatch runs (a newer one overtakes it) and the item
- * itself (closed takes it away), so a click can't start a second run.
- */
-export async function offeredReruns(gh: GitHub, run: DispatchRun, now = Date.now()): Promise<string[]> {
-  const m = run.item ? /^([^/]+)\/([^#]+)#(\d+)$/.exec(run.item) : null;
-  if (!m) return [];
-  const [runs, { data: item }] = await Promise.all([loadDispatchRuns(gh, now), gh.get<{ state: string }>(`/repos/${m[1]}/${m[2]}/issues/${m[3]}`)]);
-  return rerunCards(runs, now, (i) => (i === run.item ? item.state : undefined)).flatMap((c) => (c.kind === "rerun" && c.run.item === run.item ? [c.run.url] : []));
 }
 
 /** Whether `login` may act on the inbox's cards: the operator, or a token GitHub hasn't named yet. */

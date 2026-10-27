@@ -23,6 +23,21 @@ describe("source freshness", () => {
     const fetched = { state: "ok" as const, checkedAt: NOW, fetchedAt: NOW };
     assert.deepEqual(pageState({ sources: { people: fetched } }, NOW).sources.people, fetched);
   });
+
+  it("shows the footer's per-source line only while a source is not ok", () => {
+    installDom();
+    const home = homeSkeleton({ open: () => false, toggled: () => {}, opsToggled: () => {}, themesToggled: () => {} });
+    const ok = { state: "ok" as const, checkedAt: NOW, fetchedAt: NOW };
+    const cases: [string, Parameters<typeof pageState>[0]["sources"], boolean][] = [
+      ["every source ok or not read yet", { board: ok, heartbeat: ok }, true],
+      ["one unavailable", { board: ok, heartbeat: { state: "unavailable", error: "offline" } }, false],
+      ["one from the cache", { board: { ...ok, state: "cached" } }, false],
+    ];
+    for (const [name, sources, hidden] of cases) {
+      fillState(home, pageState({ ...(sources ? { sources } : {}) }, NOW));
+      assert.equal(home.slots.freshness.hidden, hidden, name);
+    }
+  });
 });
 
 describe("confirmed shared agent execution", () => {

@@ -13,13 +13,11 @@
 <script type="module" src="app.js"></script>
 </head>
 <body>
-<!-- A link per view (shell.ts): a sidebar on a wide screen, tabs at the bottom on a phone. -->
-<nav class="views" id="views" aria-label="Views" hidden></nav>
 <div class="wrap">
   <header class="top">
     <h1><a href="#inbox">Needs you</a></h1>
     <span class="meta" id="meta">Starting…</span>
-    <!-- On a narrow screen the controls fold into a menu; on a wide one, the toggle is hidden and they sit in the header. -->
+    <!-- Every control, with who is signed in and the counts, behind one ⋯ menu. -->
     <button type="button" id="menu-toggle" class="small menu-toggle" aria-label="More" aria-expanded="false" aria-controls="menu">⋯</button>
     <div class="menu" id="menu">
       <span class="meta menu-meta" id="menu-meta"></span>
@@ -29,6 +27,8 @@
       <button type="button" id="copy-state" class="small" hidden>Copy state</button>
       <button type="button" id="signout" class="small" hidden>Sign out</button>
     </div>
+    <!-- A tab per view (shell.ts), under the title in the sticky header. -->
+    <nav class="views" id="views" aria-label="Views" hidden></nav>
   </header>
   <!-- The item chat drawer (chat.ts); opened only by an item's Chat button. -->
   <div id="chat" hidden></div>

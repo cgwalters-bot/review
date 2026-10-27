@@ -109,6 +109,12 @@ describe("representative operator asks", () => {
     const board = [high, low, tracked("PVTI_92", 92, { parent: high.ref!, priority: "P3" }), tracked("PVTI_93", 93, { parent: low.ref!, priority: "P3" })];
     assert.deepEqual(buildNeeds({ entries: [], decisions: [newer, old], board }).map((n) => n.key), ["decision:I_92", "decision:I_93"]);
   });
+
+  it("gives a question off the board the Priority of the item it blocks, for the inbox's order", () => {
+    const epic = tracked("epic", 90, { labels: ["epic"], priority: "P0", status: "In Progress" });
+    const q = parseDecision(tracked("I_92", 92, { title: "Which?", labels: ["question"], body: QUESTION, parent: epic.ref! }));
+    assert.equal(buildNeeds({ entries: [], decisions: [q], board: [epic] })[0]?.priority, "P0");
+  });
 });
 
 describe("buildNeeds", () => {
@@ -283,7 +289,7 @@ describe("the pass's holds", () => {
     const moved = (n: number, day: number) => tracked(`PVTI_${n}`, n, { movedAt: `2026-10-${String(day).padStart(2, "0")}T00:00:00Z` });
     const board = [moved(1, 20), moved(2, 10), moved(3, 15), moved(4, 1), moved(5, 5), moved(6, 2)];
     const snapshot = holds(hold(1, { priority: "P1" }), hold(2, { priority: "P1" }), hold(3), hold(4, { priority: "P2" }), hold(5, { priority: "P0" }), hold(6));
-    const cards = inboxCards({ needs: buildNeeds({ entries: [], board, holds: snapshot }), now: Date.parse("2026-10-26T00:00:00Z") });
+    const cards = inboxCards({ needs: buildNeeds({ entries: [], board, holds: snapshot }) });
     assert.deepEqual(cards.map((c) => [c.where, c.priority, c.url]), ([[5, "P0"], [2, "P1"], [1, "P1"], [4, "P2"], [6, undefined], [3, undefined]] as const).map(([n, p]) => [ref(n), p, `${TRACKER}/${n}`]));
   });
 });

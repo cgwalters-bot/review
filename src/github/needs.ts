@@ -172,7 +172,8 @@ export function buildNeeds(input: NeedsInput): Need[] {
     const t = n.since ? Date.parse(n.since) : Number.NaN;
     return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
   };
-  const focusRank = (n: Need): number => {
+  /** The board Priority of what a row blocks: its item's, else its parent's, up the chain. */
+  const focusPriority = (n: Need): string | undefined => {
     const ask = n.entry?.item ?? n.decision?.item;
     const item = board.find((i) => issueKey(i) !== undefined && issueKey(i) === issueKey(ask)) ?? ask;
     const parent = item ? blockedBy(item) ?? item.parent : undefined;
@@ -185,8 +186,14 @@ export function buildNeeds(input: NeedsInput): Need[] {
       context = board.find((i) => i.ref && refKey(i.ref).toLowerCase() === refKey(ref).toLowerCase());
       if (context?.priority) priority = context.priority;
     }
-    return priorityRank(priority);
+    return priority;
   };
+  const focusRank = (n: Need): number => priorityRank(focusPriority(n));
+  // A question on an item that isn't on the board itself takes the Priority of the item it blocks.
+  for (const n of [...out, ...done]) {
+    const priority = n.priority ?? focusPriority(n);
+    if (priority) n.priority = priority;
+  }
   out.sort((a, b) => Number(b.action === "answer") - Number(a.action === "answer") || (a.action === "answer" && b.action === "answer" ? priorityRank(a.priority) - priorityRank(b.priority) : Number(b.priority === "P0") - Number(a.priority === "P0")) || focusRank(a) - focusRank(b) || time(b) - time(a) || a.key.localeCompare(b.key));
   return [...out, ...done];
 }
