@@ -90,6 +90,8 @@ export interface Slots {
   weekly: HTMLElement;
   /** The Dashboard view's tiles, pools and charts. */
   dashboard: HTMLElement;
+  /** The Maintain view's digest. */
+  maintain: HTMLElement;
 }
 
 export interface Home {
@@ -170,6 +172,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const themes = fold("themes-fold", "Themes and verdicts (every open board item)", hooks.themesToggled);
   const usage = h("div", { class: "usage-slot" });
   const dashboard = h("section", { class: "dashboard", "aria-label": "Dashboard" }, h("h2", {}, "Dashboard"));
+  const maintain = h("section", { class: "maintain", "aria-label": "Maintain" }, h("h2", {}, "Maintain"), h("p", { class: "note" }, "Reading the digest…"));
   const ctx = { expected };
   const sections: Record<SectionId, SectionEls> = {
     needs: section("needs", ctx, hooks, decisionDocument, needs),
@@ -197,10 +200,11 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     inView("agents", dispatch),
     inView("agents", runs),
     inView("dashboard", dashboard),
+    inView("maintain", maintain),
     ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details),
     freshness,
   );
-  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, statusComputed, statusNote, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly, dashboard }, expected };
+  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, statusComputed, statusNote, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly, dashboard, maintain }, expected };
 }
 
 export function fillState(home: Home, state: PageState): void {

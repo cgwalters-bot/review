@@ -82,6 +82,8 @@ import { ACTION_CONFIG, loadProposals, type Offered, PROPOSAL_LABEL, type Propos
 import { proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
 import { draftCard, draftReviewForm, reviewDraftsPanel } from "./reviewdraftsview.ts";
+import { type Found as MaintainFound, loadDigest, MAINTAIN_CONFIG } from "./maintain.ts";
+import { maintainView } from "./maintainview.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { botWaitingCount, filterNeeds, type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
@@ -642,6 +644,33 @@ async function refreshDrafts(state: State): Promise<boolean> {
   }
 }
 
+/**
+ * Re-read the maintain digest; false if nothing was read (see SourceDef.read).
+ * The view is redrawn only when the digest changed, so his unticked boxes
+ * stay; a failed re-read leaves a digest shown as it is, and the view's
+ * "checked N min ago" says how old it is.
+ */
+async function refreshMaintain(state: State): Promise<boolean> {
+  const slot = state.home?.slots.maintain;
+  if (!slot || !MAINTAIN_CONFIG) return false;
+  let found: MaintainFound | undefined;
+  let error: string | undefined;
+  try {
+    found = await loadDigest(state.gh, MAINTAIN_CONFIG);
+  } catch (e) {
+    error = message(e);
+  }
+  if (state.closed || (error && slot.dataset.shown)) return false;
+  const signature = JSON.stringify([found, error]);
+  if (slot.dataset.signature !== signature) {
+    slot.dataset.signature = signature;
+    if (found?.digest) slot.dataset.shown = "1";
+    else delete slot.dataset.shown;
+    slot.replaceChildren(h("h2", {}, "Maintain"), ...maintainView(state.gh, found, error));
+  }
+  return !error;
+}
+
 /** Re-read the dispatch runs for the Rerun cards; false if nothing was read. */
 async function refreshDispatch(state: State): Promise<boolean> {
   const inbox = state.inbox;
@@ -1012,6 +1041,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
       // The inbox's own reads, only while it is on (DECISIONS_CONFIG.inbox).
       { name: "dispatch", path: `the last day's ${DISPATCH_WORKFLOW} runs in ${TRACKER_REPO}`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDispatch(get()), when: () => get().inbox !== undefined },
+      { name: "maintain", path: `the maintain digest issue ${MAINTAIN_CONFIG?.issue ?? ""} and its last week's comments`, cadence: POLL_INTERVAL_MS, views: ["maintain"], read: () => refreshMaintain(get()), when: () => MAINTAIN_CONFIG !== undefined },
       { name: "drafts", path: "the open review-draft issues", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDrafts(get()), when: () => get().inbox !== undefined && REVIEW_DRAFT_CONFIG !== undefined },
       { name: "proposals", path: `the ${PROPOSAL_LABEL} issues in ${TRACKER_REPO} and, once changed, their comments`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshProposals(get()), when: () => get().inbox !== undefined && ACTION_CONFIG !== undefined },
     ],

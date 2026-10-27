@@ -344,6 +344,10 @@ button.linkish { border: 0; background: none; padding: 0; color: var(--accent); 
 /* The Dashboard view (dashboardview.ts): tiles that link to their views, the pool bars, 14-day bar charts. */
 .dashboard { display: grid; gap: 12px; }
 .dashboard-body { display: grid; gap: 16px; }
+/* The Maintain view (maintainview.ts). */
+.maintain { padding: 1rem; min-width: 0; overflow-wrap: anywhere; }
+.maintain-over, .maintain-results .skipped, .maintain-results .failed { color: var(--danger); }
+.maintain-reply { white-space: pre-wrap; }
 a.dash-tile { color: var(--ink); text-decoration: none; }
 a.dash-tile:hover, a.dash-tile:focus-visible { border-color: var(--accent); }
 .dash-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }

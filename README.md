@@ -481,6 +481,17 @@ are one GraphQL query, and the approved PRs one search
 (`is:pr is:open review:approved org:cgwalters-forge`), each read once a
 minute while the view shows.
 
+A **Maintain** view (`#maintain`) shows agent-board's daily maintain
+digest, and is off until `src/github/maintain-config.json` names the
+digest issue (`OWNER/REPO#N`) and the logins trusted to post it. The
+newest digest there is shown in four sections, each PR opening in the PR
+pane: Approve as a group, whose ticked PRs **Approve selected** approves
+as you at the head the digest assessed, skipping and flagging any whose
+head moved since or that closed; Needs a closer look, with each concern's
+file links and minutes, totalled against a 60-minute day; Waiting on the
+author, with the drafted reply to copy (the app never posts it); and
+Stale. `src/github/maintain.ts` describes the digest's format.
+
 **Filters** in By priority narrow the queue by the organization an
 entry targets and by priority, with each chip's count. The target is the
 board's Org field, else a tracker issue's `target:<org>` label, else the
