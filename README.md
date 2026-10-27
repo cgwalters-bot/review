@@ -481,9 +481,10 @@ are one GraphQL query, and the approved PRs one search
 minute while the view shows.
 
 A **Maintain** view (`#maintain`) shows agent-board's daily maintain
-digest, and is off until `src/github/maintain-config.json` names the
-digest issue (`OWNER/REPO#N`) and the logins trusted to post it. The
-newest digest there is shown in four sections, each PR opening in the PR
+digest from cgwalters-forge/tracker#965, posted by cgwalters-bot, as
+`src/github/maintain-config.json` configures; with its `issue` empty and
+no authors the view is off. Every run posting as cgwalters-bot is trusted
+to write the digest. The newest digest there is shown in four sections, each PR opening in the PR
 pane: Approve as a group, whose ticked PRs **Approve selected** approves
 as you at the head the digest assessed, skipping and flagging any whose
 head moved since or that closed; Needs a closer look, with each concern's
