@@ -153,10 +153,10 @@ head (any author; drafts only in the forge, where the bot asks on its
 drafts), and the holds the scheduler's pass publishes as only the
 operator's to release (`agent-board/holds/v1`, the bot's comment on the
 private usage issue, read with the viewer's token): its question leads,
-the pass's reason under it. Over the inbox's cards a line gives the
-snapshot's age, stale past the usage panel's threshold, and what holds
-every new run (WIP, pools), or says that no snapshot could be read;
-labels are never read in its place. PRs approved by the operator at the
+the pass's reason under it. Over the inbox's cards a line says what holds
+every new run (WIP, pools), marked stale when the coordinator's heartbeat
+is (the pass rewrites its holds only when they change), and nothing shows
+when no such hold is published; labels are never read in its place. PRs approved by the operator at the
 current head are excluded, including human-text forks. Bot review guides are advisory; the dashboard
 does not infer approval or human-text promotion readiness from them.
 Rows show **Answer**, **Review**, or **Write text**, the reason,
@@ -281,12 +281,8 @@ dimmed once answered and gone once the issue closes, and a review request
 at an unreviewed head, gone once that head is reviewed or the PR closes or
 merges. **Send** is an open review-draft issue (when the review drafts are
 configured; Draft review follows the list), dimmed once ticked and gone once
-the tracker's workflow closes it. **Rerun** is an item's newest run of
-tracker's `dispatch.yml`, its title `KIND OWNER/REPO#N (POOL)`, when it
-failed or was cancelled in the last day and the board doesn't show the
-item closed; a newer run overtakes it. Its button first reads the runs and
-the item again, and reruns the failed jobs only if the card still holds.
-An operator-action proposal rides on the Decide or Answer card of the
+the tracker's workflow closes it. Failed dispatch runs are not cards:
+rerunning them is the pass's job. An operator-action proposal rides on the Decide or Answer card of the
 tracker issue it was posted on, or else of the first card whose text links
 to that issue (`owner/repo#N` or its URL), with its exact mutations and Run
 (see [operator actions](docs/operator-actions.md)); **Do** is a proposal no
@@ -294,8 +290,9 @@ decision carries. Proposals are found through the `operator-action` label,
 which agent-board sets on a tracker issue when it posts one there and clears
 on the receipt: one conditional read of at most 20 labelled issues a
 minute, and the comments of one only once it moved.
-Cards are listed by board Priority (a card's item's), then oldest first,
-those you did last. The first five are drawn and the rest on Show more, so a
+Cards are listed by board Priority (a card's item's, or for a question off
+the board the item it blocks), then oldest first, those you did last; the
+section's count is every card listed. The first five are drawn and the rest on Show more, so a
 card's reads (a proposal's targets, a Send card's PR) happen only once it is.
 The inbox adds one conditional read a
 minute (the last day's dispatch runs, at most 100), plus with review drafts
@@ -455,8 +452,8 @@ script because `package.json` is protected for this change.
 The existing **Changes**, **By priority** (including themes), **Usage**, and
 ops detail start collapsed. Section choices are remembered.
 
-The page is split into views, one route each, linked from a sidebar on a
-wide screen and from tabs at the bottom on a phone or tablet: **Inbox** (`#inbox`:
+The page is split into views, one route each, linked from a tab bar in the
+sticky header: **Inbox** (`#inbox`:
 Decisions and From people), **Agents** (`#agents`: live runs, Agents and the
 ops detail), **Board** (`#board`: Status, Focus and By priority, also what a
 filter in the URL opens), **Activity** (`#activity`: Changes) and **Usage**
@@ -692,8 +689,10 @@ to the review text), `a` approves (after a confirmation); `?` lists
 them. Your text never goes out with a line the bot would read as a
 command (`/promote`, `/draft`, `/ready`).
 
-On a narrow screen (a phone) the header's buttons fold into a ⋯ menu
-(with who is signed in and the API budget), the capture bar into a
+The header's controls sit in one ⋯ menu, with who is signed in, the
+people and bot counts and the API budget; the header itself shows only
+how fresh the data is. The footer's per-source health line shows only
+while a source is cached or unavailable. On a narrow screen (a phone) the capture bar folds into a
 "+ File" button and the filter chips into one "Filters (active: …)"
 button, and the summary line is hidden, so the first entry shows near
 the top; the key hints are hidden on touch screens.

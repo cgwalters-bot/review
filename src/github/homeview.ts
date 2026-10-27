@@ -216,6 +216,8 @@ export function fillState(home: Home, state: PageState): void {
     home.slots.runs.dataset.signature = signature;
     for (const el of home.slots.runs.querySelectorAll<HTMLDetailsElement>("details")) el.open = open.has(el.dataset.runId);
   }
+  // Only while a source is cached or unavailable; one not read yet is not a problem.
+  home.slots.freshness.hidden = Object.values(state.sources).every((s) => s.state === "ok" || s.state === "pending");
   home.slots.freshness.replaceChildren(...Object.entries(state.sources).flatMap(([name, source], i) => [
     i ? " · " : "", `${name}: ${source.state}`,
     source.checkedAt ? h("span", {}, " (checked ", agoLabel(new Date(source.checkedAt).toISOString(), now), ")")

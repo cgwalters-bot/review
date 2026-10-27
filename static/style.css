@@ -55,7 +55,7 @@ body { margin: 0; background: var(--ground); color: var(--ink); font: var(--type
 h1, h2 { font-size: var(--type-view); font-weight: 600; }
 h1, h2, h3, .title, .feed-title, .as-title, .subject { overflow-wrap: anywhere; }
 .age { font: var(--type-meta) var(--mono); font-variant-numeric: tabular-nums; }
-.wrap { max-width: 900px; margin: 0 auto; }
+.wrap { max-width: 1280px; margin: 0 auto; }
 a { color: var(--accent); }
 header.top { position: sticky; top: 0; z-index: 5; background: var(--ground); padding: 12px 0 8px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
 header.top h1 { font-size: var(--type-view); margin: 0; }
@@ -95,7 +95,7 @@ label.opt input { margin-top: 4px; }
 .rec { font: var(--type-meta) var(--mono); color: var(--ok); margin-left: 6px; white-space: nowrap; }
 textarea, input[type=password], .decision-document input[type=text] { width: 100%; font: 15px/1.45 var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
 .target { font-size: 13px; color: var(--muted); margin: 0; }
-.actions { display: flex; gap: 8px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 button, .button { font: var(--type-secondary) var(--sans); font-weight: 500; border-radius: 6px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); text-decoration: none; }
 .primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
 button:disabled { opacity: .5; cursor: default; }
@@ -598,14 +598,13 @@ details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font
 .card-head .age { font: 12px var(--mono); color: var(--muted); }
 .card-where { margin: 2px 0 0; font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
 .card-note, .card-stale-note { margin: 4px 0 0; font-size: var(--type-secondary); overflow-wrap: anywhere; }
-.row.card form.answer, .row.card > .actions, .row.card > .action { margin-top: 8px; }
-.row.card > .action { display: inline-block; min-height: 32px; line-height: 26px; }
+.row.card form.answer, .row.card > .actions { margin-top: 8px; }
+.row.card .action { display: inline-block; min-height: 32px; line-height: 26px; }
 .row.card label.opt { display: flex; gap: 8px; font-size: 15px; line-height: 1.4; padding: 8px 0; }
 /* 16px: a smaller text box makes a phone browser zoom in on focus. */
 .row.card textarea, .row.card input[type=text] { font-size: 16px; }
 .kind.c-document, .kind.c-answer { color: var(--p1); background: var(--p1-soft); border-color: transparent; }
 .kind.c-approve, .kind.c-send { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
-.kind.c-rerun { color: var(--p0); background: var(--p0-soft); border-color: transparent; }
 .kind.c-do { color: var(--p2); background: var(--p2-soft); border-color: transparent; }
 .action { font: 600 12px var(--mono); padding: 2px 9px; border-radius: 999px; color: var(--accent); background: var(--accent-soft); border: 1px solid transparent; text-decoration: none; white-space: nowrap; }
 .action:hover { border-color: var(--accent); }
@@ -639,23 +638,18 @@ details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font
 .chip.ch-news { color: var(--sev-note); background: var(--sev-note-soft); border-color: transparent; }
 .chip.ch-lead { color: var(--sev-look); background: var(--sev-look-soft); border-color: transparent; }
 
-/* Narrow screens: fold what isn't the lists themselves (the header's
-   controls, the filter chips) so the first entry shows near the top. The
-   folds are no-ops on wide screens: their toggles are hidden and what
-   they hold shows as before. */
+/* The header: title, how fresh the data is, and every control behind one
+   ⋯ menu. On a narrow screen the filter chips fold too, so the first entry
+   shows near the top. */
 .meta .mp + .mp::before { content: " · "; }
-.menu { display: contents; }
-.menu-toggle, .menu-meta, .filters-toggle { display: none; }
+.filters-toggle { display: none; }
+header.top .menu-toggle { font-size: 16px; line-height: 1; padding: 4px 10px; }
+.menu { display: none; position: absolute; top: 100%; right: 0; z-index: 6; flex-direction: column; align-items: stretch; gap: 8px; min-width: 14em; padding: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 18px rgb(0 0 0 / .25); }
+.menu.open { display: flex; }
+header.top .menu .menu-meta { display: grid; flex: none; overflow-wrap: anywhere; }
+.menu-meta .mp + .mp::before { content: none; }
 @media (max-width: 600px) {
   header.top { align-items: center; gap: 4px 10px; }
-  header.top h1 { font-size: var(--type-view); }
-  header.top .menu-toggle { display: inline-block; font-size: 16px; line-height: 1; padding: 4px 10px; }
-  /* Who and the rate budget move into the menu; how fresh the data is stays. */
-  .meta .mp-who, .meta .mp-api { display: none; }
-  .meta .mp-who + .mp::before { content: none; }
-  .menu { display: none; position: absolute; top: 100%; right: 0; z-index: 6; flex-direction: column; align-items: stretch; gap: 8px; min-width: 14em; padding: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 18px rgb(0 0 0 / .25); }
-  .menu.open { display: flex; }
-  header.top .menu .menu-meta { display: block; order: 0; flex: none; overflow-wrap: anywhere; }
   .filters-toggle { display: inline-block; justify-self: start; }
   .filters.folded > .chips { display: none; }
   .group-h { margin-top: 12px; }
@@ -799,25 +793,13 @@ body:has(.chat-full) { overflow: hidden; }
 .dashboard-summary li { padding: 1px 0; overflow-wrap: anywhere; }
 .dashboard-summary .sum-jump { font-weight: 600; }
 .dashboard-summary li.hot { color: var(--p1); }
-/* The views (shell.ts): a sidebar on a wide screen, tabs at the bottom on a
-   phone or tablet, each 44px tall to tap. The body makes room for whichever
-   shows. Below the sticky header (z-index 5, later in the page), so its
-   menu opens over the tabs. */
-nav.views { position: fixed; top: 0; bottom: 0; left: 0; z-index: 5; width: 148px; display: flex; flex-direction: column; gap: 2px; padding: 12px 8px; background: var(--ground); border-right: 1px solid var(--line); }
-nav.views a { color: var(--ink); text-decoration: none; padding: 8px 10px; border-radius: 6px; }
-nav.views a:hover { background: var(--surface); }
-nav.views a[aria-current="page"] { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
-body:has(nav.views:not([hidden])) { padding-left: 164px; }
-@media (max-width: 900px) {
-  nav.views { top: auto; right: 0; width: auto; flex-direction: row; gap: 0; padding: 0 0 env(safe-area-inset-bottom); background: var(--surface); border-right: 0; border-top: 1px solid var(--line); }
-  nav.views a { flex: 1 1 0; min-width: 0; min-height: 44px; display: flex; align-items: center; justify-content: center; padding: 0 2px; border-radius: 0; font-size: 13px; }
-  body:has(nav.views:not([hidden])) { padding-left: 16px; padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
-  /* The PR's sticky review form sits above the tabs, not under them. */
-  body:has(nav.views:not([hidden])) form.review { bottom: calc(44px + env(safe-area-inset-bottom)); }
-}
-@media (max-width: 600px) {
-  body:has(nav.views:not([hidden])) { padding-left: 10px; }
-}
+/* The views (shell.ts): a row of tabs along the sticky header's bottom
+   edge, 44px tall to tap, scrolling sideways on a screen too narrow for
+   them all. The menu (later in the header) opens over them. */
+nav.views { order: 10; flex: 1 0 100%; display: flex; overflow-x: auto; margin-bottom: -9px; }
+nav.views a { flex: none; display: flex; align-items: center; min-height: 44px; padding: 0 14px; color: var(--muted); font-weight: 500; text-decoration: none; white-space: nowrap; border-bottom: 2px solid transparent; }
+nav.views a:hover { color: var(--ink); }
+nav.views a[aria-current="page"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 /* iOS Safari zooms the page in when a text field under 16px takes focus and
    leaves it zoomed, so wherever there is a touch screen (iPads too, hence
    not max-width) every typed-into field gets a 16px floor. !important

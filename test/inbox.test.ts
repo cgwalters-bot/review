@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { GitHub } from "../src/github/api.ts";
 import type { Offered, Plan } from "../src/github/actions.ts";
-import { rerunDispatchRun } from "../src/github/backend.ts";
 import type { Item } from "../src/github/board.ts";
 import { type DocumentEntry, type Mark, parseDocument } from "../src/github/decisiondocument.ts";
-import { attachOffers, type Card, type DispatchRun, documentCard, doCard, inboxCards, linksTo, loadDispatchRuns, needCard, offeredReruns, parseRunTitle, rerunCards, sendCard } from "../src/github/inbox.ts";
+import { attachOffers, type Card, documentCard, doCard, inboxCards, linksTo, needCard, sendCard } from "../src/github/inbox.ts";
 import type { Need } from "../src/github/needs.ts";
 import type { DraftIssue } from "../src/github/reviewdrafts.ts";
-import { scriptedFetch } from "./helpers.ts";
 
 const NOW = Date.parse("2026-10-25T12:00:00Z");
 const HOUR = 3_600_000;
@@ -68,97 +65,6 @@ describe("Send cards", () => {
     ["a draft issue with no draft yet", draft({ refused: "100 or more comments" }), "present"],
   ];
   for (const [name, d, want] of cases) it(name, () => assert.equal(outcome(sendCard(d)), want));
-});
-
-function run(id: number, item: string, hoursAgo: number, status: string, conclusion: string | null): DispatchRun {
-  return { id, url: `https://github.com/cgwalters-forge/tracker/actions/runs/${id}`, title: `implement ${item} (claude)`, status, conclusion, createdAt: at(hoursAgo), ...parseRunTitle(`implement ${item} (claude)`) };
-}
-
-describe("Rerun cards", () => {
-  const open = () => "open";
-  const cases: [string, DispatchRun[], (item: string) => string | undefined, number[]][] = [
-    ["a run that failed an hour ago", [run(1, "o/r#5", 1, "completed", "failure")], open, [1]],
-    ["a cancelled run", [run(1, "o/r#5", 1, "completed", "cancelled")], open, [1]],
-    ["a timed-out run", [run(1, "o/r#5", 1, "completed", "timed_out")], open, [1]],
-    ["an item the board doesn't know", [run(1, "o/r#5", 1, "completed", "failure")], () => undefined, [1]],
-    ["a run that succeeded", [run(1, "o/r#5", 1, "completed", "success")], open, []],
-    ["a run rerun and live again", [run(1, "o/r#5", 1, "in_progress", null)], open, []],
-    ["a failed run overtaken by a newer run", [run(1, "o/r#5", 3, "completed", "failure"), run(2, "o/r#5", 1, "in_progress", null)], open, []],
-    ["a failed run overtaken by a newer success", [run(2, "o/r#5", 1, "completed", "success"), run(1, "o/r#5", 3, "completed", "failure")], open, []],
-    ["a newer failure behind an older success", [run(1, "o/r#5", 3, "completed", "success"), run(2, "o/r#5", 1, "completed", "failure")], open, [2]],
-    ["a failed run whose item closed", [run(1, "o/r#5", 1, "completed", "failure")], () => "closed", []],
-    ["a failed run older than a day", [run(1, "o/r#5", 25, "completed", "failure")], open, []],
-    ["one card per item", [run(1, "o/r#5", 1, "completed", "failure"), run(2, "o/r#6", 2, "completed", "failure")], open, [1, 2]],
-    ["a run whose title names no item", [{ ...run(1, "o/r#5", 1, "completed", "failure"), title: "Dispatch", item: undefined } as unknown as DispatchRun], open, []],
-  ];
-  for (const [name, runs, state, want] of cases) {
-    it(name, () => assert.deepEqual(rerunCards(runs, NOW, state).map((c) => c.kind === "rerun" && c.run.id), want));
-  }
-
-  it("parses the dispatch title, and nothing from another one", () => {
-    assert.deepEqual(parseRunTitle("implement cgwalters-forge/Agentic-Job#1623 (claude)"), { kind: "implement", item: "cgwalters-forge/agentic-job#1623", pool: "claude" });
-    assert.deepEqual(parseRunTitle("triage cgwalters-forge/tracker#677"), { kind: "triage", item: "cgwalters-forge/tracker#677" });
-    for (const title of ["Dispatch", "implement o/r#0 (claude)", "implement o/r#5 and more", "implement ../..#5", "implement o/..#5", "implement o/.#5"]) assert.deepEqual(parseRunTitle(title), {}, title);
-  });
-
-  it("reads the last day's dispatch runs in one request", async () => {
-    const { fetchImpl, calls } = scriptedFetch(() => ({ body: { workflow_runs: [{ id: 9, html_url: "https://github.com/cgwalters-forge/tracker/actions/runs/9", display_title: "fix o/r#5 (openai)", status: "completed", conclusion: "failure", created_at: at(1) }] } }));
-    const runs = await loadDispatchRuns(new GitHub(async () => "t", fetchImpl), NOW);
-    assert.equal(calls.length, 1);
-    assert.match(calls[0]!.url, /\/repos\/cgwalters-forge\/tracker\/actions\/workflows\/dispatch\.yml\/runs\?per_page=100&created=%3E%3D2026-10-24$/);
-    assert.deepEqual(runs, [{ id: 9, url: "https://github.com/cgwalters-forge/tracker/actions/runs/9", title: "fix o/r#5 (openai)", status: "completed", conclusion: "failure", createdAt: at(1), kind: "fix", item: "o/r#5", pool: "openai" }]);
-  });
-});
-
-describe("offeredReruns", () => {
-  const failed = run(1, "o/r#5", 1, "completed", "failure");
-  const raw = (r: DispatchRun) => ({ id: r.id, html_url: r.url, display_title: r.title, status: r.status, conclusion: r.conclusion, created_at: r.createdAt });
-  const github = (runs: DispatchRun[], state: string) => scriptedFetch((method, url) => {
-    if (url.includes("/actions/workflows/dispatch.yml/runs")) return { body: { workflow_runs: runs.map(raw) } };
-    if (url === "https://api.github.com/repos/o/r/issues/5") return { body: { state } };
-    return undefined;
-  });
-  const cases: [string, DispatchRun[], string, string[]][] = [
-    ["a run still offered, read now", [failed], "open", [failed.url]],
-    ["a run a newer one overtook since the poll", [failed, run(2, "o/r#5", 0.1, "queued", null)], "open", []],
-    ["a run whose item closed since the poll", [failed], "closed", []],
-  ];
-  for (const [name, runs, state, want] of cases) {
-    it(name, async () => {
-      const { fetchImpl } = github(runs, state);
-      assert.deepEqual(await offeredReruns(new GitHub(async () => "t", fetchImpl), failed, NOW), want);
-    });
-  }
-});
-
-describe("rerunDispatchRun", () => {
-  const RUN = "https://github.com/cgwalters-forge/tracker/actions/runs/9";
-  const API = "https://api.github.com/repos/cgwalters-forge/tracker/actions/runs/9";
-  const github = (raw: Record<string, unknown> = {}) => scriptedFetch((method, url) => {
-    if (method === "GET" && url === API) return { body: { id: 9, html_url: RUN, status: "completed", conclusion: "failure", repository: { full_name: "cgwalters-forge/tracker" }, ...raw } };
-    if (method === "GET" && url.startsWith(`${API}/jobs`)) return { body: { jobs: [{ name: "run", status: "completed", conclusion: "failure" }] } };
-    if (method === "POST" && url === `${API}/rerun-failed-jobs`) return { status: 201 };
-    return undefined;
-  });
-
-  it("reruns a failed run the inbox offers", async () => {
-    const { fetchImpl, calls } = github();
-    assert.equal(await rerunDispatchRun(new GitHub(async () => "t", fetchImpl), RUN, [RUN]), RUN);
-    assert.deepEqual(calls.map((c) => c.method), ["GET", "GET", "POST"]);
-  });
-
-  const refusals: [string, string, string[], Record<string, unknown>, RegExp][] = [
-    ["a run the inbox doesn't offer", RUN, [], {}, /isn't a failed run the inbox offers/],
-    ["a run outside the tracker", "https://github.com/evil/tracker/actions/runs/9", ["https://github.com/evil/tracker/actions/runs/9"], {}, /not in cgwalters-forge\/tracker/],
-    ["a run live again", RUN, [RUN], { status: "in_progress", conclusion: null }, /not completed/],
-  ];
-  for (const [name, url, allowed, raw, want] of refusals) {
-    it(`refuses ${name}, rerunning nothing`, async () => {
-      const { fetchImpl, calls } = github(raw);
-      await assert.rejects(rerunDispatchRun(new GitHub(async () => "t", fetchImpl), url, allowed), want);
-      assert.equal(calls.filter((c) => c.method === "POST").length, 0);
-    });
-  }
 });
 
 const proposal = (issue: number, id = issue): Offered => ({ issue, comment: { id: `IC_${id}`, databaseId: id, body: "", updatedAt: at(2), author: { login: "planner" }, editor: null, lastEditedAt: null }, proposal: { schema: "agent-board/operator-action/v1", title: `Proposal ${id}`, why: "D15", actions: [] } });
@@ -243,26 +149,25 @@ describe("inboxCards", () => {
       needs: [approveNeed(), answerNeed({ done: true }), answerNeed({ key: "item:I_2" })],
       document: { entries, marks: new Map() },
       drafts: [draft()],
-      runs: [run(1, "o/r#5", 1, "completed", "failure")],
-      now: NOW,
     });
-    assert.deepEqual(cards.map((c) => `${c.kind}${c.answered ? " (answered)" : ""}`), ["rerun", "document", "answer", "approve", "send", "document (answered)", "answer (answered)"]);
+    assert.deepEqual(cards.map((c) => `${c.kind}${c.answered ? " (answered)" : ""}`), ["document", "answer", "approve", "send", "document (answered)", "answer (answered)"]);
   });
 
   describe("orders by board Priority, then age", () => {
     const doc = (id: string, about: string, asked?: string) => `### ${id} Ask\nAbout: ${about}${asked ? `, asked ${asked}` : ""}\n- [ ] A) Yes\nReply:`;
-    const priorities: Record<string, string> = { "example/work#1": "P2", "example/work#2": "P0", "cgwalters-forge/tracker#30": "P1", "o/r#5": "P0" };
+    const priorities: Record<string, string> = { "example/work#1": "P2", "example/work#2": "P0", "cgwalters-forge/tracker#30": "P1" };
     // name, the inputs, the card keys in order
-    const cases: [string, Omit<Parameters<typeof inboxCards>[0], "now" | "priorityOf">, string[]][] = [
+    const cases: [string, Omit<Parameters<typeof inboxCards>[0], "priorityOf">, string[]][] = [
       ["P0 before P2, whatever the kind", { document: { entries: parseDocument([doc("D1", "example/work#1"), doc("D2", "example/work#2")].join("\n\n")), marks: new Map() } }, ["document:D2", "document:D1"]],
       ["a need's own Priority", { needs: [answerNeed({ key: "a", priority: "P2" }), answerNeed({ key: "b", priority: "P0" }, { nodeId: "I_2" })] }, ["b", "a"]],
       ["the older first at one Priority", { document: { entries: parseDocument([doc("D3", "example/work#3", "2026-10-20"), doc("D4", "example/work#4", "2026-10-10")].join("\n\n")), marks: new Map() } }, ["document:D4", "document:D3"]],
       ["one without a Priority after those with one", { document: { entries: parseDocument([doc("D5", "example/work#9"), doc("D6", "example/work#1")].join("\n\n")), marks: new Map() } }, ["document:D6", "document:D5"]],
-      ["a proposal's own card by its issue's Priority", { offers: [proposal(31), proposal(30)], runs: [run(1, "o/r#5", 1, "completed", "failure")] }, ["rerun:o/r#5", "do:30", "do:31"]],
+      ["a proposal's own card by its issue's Priority", { offers: [proposal(31), proposal(30)] }, ["do:30", "do:31"]],
+      ["a P0 question three days old before a P1 review three weeks old", { needs: [{ ...approveNeed(), priority: "P1", since: at(21 * 24) }, answerNeed({ priority: "P0", since: at(3 * 24) })] }, ["item:I_1", "pr:upstream/widget#3"]],
       ["a decision carrying a proposal keeps its own place", { offers: [proposal(12)], document: { entries: parseDocument([doc("D7", "cgwalters-forge/tracker#12"), doc("D8", "example/work#2")].join("\n\n")), marks: new Map() } }, ["document:D8", "document:D7"]],
     ];
     for (const [name, input, want] of cases) it(name, () => {
-      const cards = inboxCards({ ...input, priorityOf: (item) => priorities[item], now: NOW });
+      const cards = inboxCards({ ...input, priorityOf: (item) => priorities[item] });
       assert.deepEqual(cards.map((c) => c.key), want);
     });
   });

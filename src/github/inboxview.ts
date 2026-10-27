@@ -8,15 +8,16 @@ import type { Answer } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import { chatButton, chatItem } from "./chatitem.ts";
-import { HEARTBEAT_STALE_MS, TRACKER_REPO } from "./config.ts";
+import { TRACKER_REPO } from "./config.ts";
 import { DECISIONS_CONFIG } from "./decisiondocument.ts";
 import { questionOf } from "./board.ts";
 import type { DocumentEntry } from "./decisiondocument.ts";
 import type { Offered } from "./actions.ts";
+import { type Heartbeat, isStale } from "./heartbeat.ts";
 import type { Holds } from "./holds.ts";
-import { type Card, CARD_LABEL, type DispatchRun } from "./inbox.ts";
+import { type Card, CARD_LABEL } from "./inbox.ts";
 import { ACTION_LABEL, ACTION_TITLE, type Need } from "./needs.ts";
-import { age, agoLabel, answerForm, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
+import { age, answerForm, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
 
 export const CARD_CLASS = "card";
 export const CARD_DONE_CLASS = "card-done";
@@ -38,8 +39,6 @@ export interface InboxHooks {
   sendNeed(n: Need, a: Answer): Promise<string>;
   /** Tick option `letter` of document entry `entry` (as the card shows it) and fill its reply. */
   answerEntry(entry: DocumentEntry, letter: string, reply: string): Promise<void>;
-  /** Rerun a Rerun card's failed jobs; resolves to the run's URL. */
-  rerun(run: DispatchRun): Promise<string>;
   /** The body of a Send card: the draft as its review will look, with Send. */
   draftBody?(card: Card & { kind: "send" }): Promise<HTMLElement>;
   /** A proposal's body, on a Do card or the decision carrying it: its live facts and exact mutations, with Run. */
@@ -58,7 +57,6 @@ export function cardSignature(c: Card): string {
     case "answer":
     case "approve": return JSON.stringify([...base, c.need.action, c.need.href, c.need.inPlace, c.need.priority, c.need.decision?.item.body, c.need.entry?.item?.body]);
     case "send": return JSON.stringify([...base, c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused]);
-    case "rerun": return JSON.stringify([...base, c.run.id, c.run.status, c.run.conclusion]);
     case "do": return JSON.stringify([...base, c.offer.comment.databaseId, c.offer.comment.updatedAt]);
     case "document": return JSON.stringify([...base, c.entry.text, c.mark]);
   }
@@ -107,25 +105,8 @@ function entryForm(c: Card & { kind: "document" }, hooks: InboxHooks): HTMLEleme
   return form;
 }
 
-function rerunButton(c: Card & { kind: "rerun" }, hooks: InboxHooks): HTMLElement {
-  const button = h("button", { type: "button", class: "primary" }, "Rerun failed jobs");
-  const status = h("p", { class: "status", role: "status" });
-  button.addEventListener("click", () => {
-    if (button.disabled || !window.confirm(`Rerun the failed jobs of ${c.run.title}? It runs again as it did, with your token.`)) return;
-    button.disabled = true;
-    status.textContent = "Asking GitHub to rerun…";
-    hooks.rerun(c.run).then(() => {
-      status.textContent = "Rerun requested: the card leaves once the run is live again.";
-    }, (e: unknown) => {
-      status.textContent = `Not rerun: ${e instanceof Error ? e.message : String(e)}`;
-      button.disabled = false;
-    });
-  });
-  return h("div", { class: "actions" }, button, status);
-}
-
 /** The card's one action: in place where the page can do it, else a link to where it is done. */
-function action(c: Card, hooks: InboxHooks): Node | null {
+function action(c: Card, hooks: InboxHooks): HTMLElement | null {
   if (c.answered) return null;
   switch (c.kind) {
     case "answer": {
@@ -135,22 +116,22 @@ function action(c: Card, hooks: InboxHooks): Node | null {
     }
     case "approve": return h("a", { class: `action a-${c.need.action}`, href: c.need.href, title: ACTION_TITLE[c.need.action] }, ACTION_LABEL[c.need.action]);
     case "document": return hooks.mayAct && c.entry.options.length ? entryForm(c, hooks) : null;
-    case "rerun": return hooks.mayAct ? rerunButton(c, hooks) : null;
     case "send":
     case "do": return null;
   }
 }
 
 /**
- * The pass's holds, said once over the cards: when they are from, stale
- * past the usage panel's threshold, and what holds every new run (wip, pools);
- * or, without them, that they were not read.
+ * What holds every new run (wip, pools), said once over the cards; nothing
+ * when no such hold is published. The pass rewrites its holds only when
+ * they change, so whether they still stand is judged by the coordinator's
+ * heartbeat, not by when they were written.
  */
-export function passLine(holds: Holds | undefined, now: number): HTMLElement {
-  if (!holds) return h("p", { class: "note pass-holds warn" }, "Pass holds not read");
-  const stale = now - Date.parse(holds.at) > HEARTBEAT_STALE_MS;
-  const pass = holds.holds.filter((x) => x.item === null).map((x) => `${x.kind}: ${x.reason}`);
-  return h("p", { class: `note pass-holds${stale ? " warn" : ""}` }, "Pass holds as of ", agoLabel(holds.at, now), stale ? " · stale" : "", pass.length ? ` · new runs wait: ${pass.join("; ")}` : "");
+export function passLine(holds: Holds | undefined, heartbeat: Heartbeat | null | undefined, now: number): HTMLElement | null {
+  const pass = holds?.holds.filter((x) => x.item === null).map((x) => `${x.kind}: ${x.reason}`) ?? [];
+  if (!pass.length) return null;
+  const stale = !heartbeat || isStale(heartbeat, now);
+  return h("p", { class: `note pass-holds${stale ? " warn" : ""}` }, `New runs wait: ${pass.join("; ")}`, stale ? " · the pass's heartbeat is stale" : "");
 }
 
 /** A slot filled with `body` when it arrives (it reads its targets on drawing). */
@@ -178,16 +159,19 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   // Read on drawing (the draft's PR, the proposal's targets): filled in when it arrives.
   const body = c.kind === "send" ? hooks.draftBody?.(c) : c.kind === "do" ? hooks.offerBody?.(c.offer) : undefined;
   if (body) el.append(bodySlot(body));
+  const target = c.kind === "document" ? c.entry.about ? `https://github.com/${c.entry.about.repo}/issues/${c.entry.about.number}` : DECISIONS_CONFIG.document ? `https://github.com/${DECISIONS_CONFIG.document.repo}/issues/${DECISIONS_CONFIG.document.number}` : undefined
+    : c.kind === "do" ? `https://github.com/${TRACKER_REPO}/issues/${c.offer.issue}` : c.url;
+  const pool = c.kind === "answer" || c.kind === "approve" ? (c.need.decision?.item ?? c.need.entry?.item)?.engine : undefined;
+  const chat = chatButton(chatItem(target, c.title, pool));
+  // The card's buttons on one row: Chat beside a form's Send, else beside the link.
   const act = action(c, hooks);
-  if (act) el.append(act);
+  const formRow = act?.querySelector<HTMLElement>(":scope > .actions");
+  const row = formRow ?? h("div", { class: "actions" }, act);
+  if (chat) row.append(chat);
+  if (formRow) el.append(act!);
+  else if (row.firstChild) el.append(row);
   // The operator action a decision comes down to, under its answer.
   if (hooks.offerBody) for (const o of c.offers ?? []) el.append(bodySlot(hooks.offerBody(o)));
-  const target = c.kind === "document" ? c.entry.about ? `https://github.com/${c.entry.about.repo}/issues/${c.entry.about.number}` : DECISIONS_CONFIG.document ? `https://github.com/${DECISIONS_CONFIG.document.repo}/issues/${DECISIONS_CONFIG.document.number}` : undefined
-    : c.kind === "do" ? `https://github.com/${TRACKER_REPO}/issues/${c.offer.issue}`
-    : c.kind === "rerun" && c.run.item ? `https://github.com/${c.run.item.replace("#", "/issues/")}` : c.url;
-  const pool = c.kind === "rerun" ? c.run.pool : c.kind === "answer" || c.kind === "approve" ? (c.need.decision?.item ?? c.need.entry?.item)?.engine : undefined;
-  const chat = chatButton(chatItem(target, c.title, pool));
-  if (chat) el.append(chat);
   return el;
 }
 
@@ -197,15 +181,16 @@ function staleNote(el: Element, text: string): void {
   note.textContent = text;
 }
 
-/** The "Show more" button after `list`, for `hidden` cards not drawn yet; none when there are none. */
-function moreButton(list: HTMLElement, hidden: number, more: () => void): void {
+/** The "Show more" button after `list`, for the cards of `total` not drawn yet; none when there are none. */
+function moreButton(list: HTMLElement, drawn: number, total: number, more: () => void): void {
   const next = list.nextElementSibling;
   const old = next?.classList.contains(MORE_CLASS) ? next : null;
-  if (hidden <= 0) {
+  if (drawn >= total) {
     old?.remove();
     return;
   }
-  const button = h("button", { type: "button", class: `small ${MORE_CLASS}` }, `Show ${Math.min(hidden, INBOX_PAGE)} more of ${hidden}`);
+  // Counted as the section's heading counts: every card in the list.
+  const button = h("button", { type: "button", class: `small ${MORE_CLASS}` }, `Show ${Math.min(total - drawn, INBOX_PAGE)} more · ${drawn} of ${total} shown`);
   button.addEventListener("click", more);
   if (old) old.replaceWith(button);
   else list.after(button);
@@ -228,7 +213,7 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     const el = shown.get(c.key);
     return el !== undefined && keep(el);
   });
-  moreButton(list, cards.length - drawn.length, () => {
+  moreButton(list, drawn.length, cards.length, () => {
     list.setAttribute(LIMIT_ATTR, String(limit + INBOX_PAGE));
     fillInbox(list, cards, hooks);
   });

@@ -1,6 +1,6 @@
 // The views the page is split into, one route each (#inbox, #agents, ...),
-// and the navigation between them: a sidebar on a wide screen, tabs at
-// the bottom on a phone (style.css). The page is built once (homeview.ts)
+// and the navigation between them: a tab bar in the sticky header
+// (style.css). The page is built once (homeview.ts)
 // and a view only shows its parts and hides the rest, so a half-written
 // answer in one view is still there on coming back to it.
 
