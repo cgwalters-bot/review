@@ -11,6 +11,9 @@ const caller = read(".github/workflows/review.yml");
 // The bounds, comments aside: comment-only outputs for this repository's
 // main, automatic events for any role (the shared workflow's `if:` narrows
 // them to owner, members and collaborators), `/review` only from writers.
+// Both may add up to ten inline findings beside the verdict (agentic-job's
+// docs/review.md, "Inline findings"): the called workflow requests those
+// outputs on every event, and policy refuses a run whose bounds are narrower.
 const bounds = (name: string) =>
   read(`workflow/${name}.toml`)
     .split("\n")
@@ -19,12 +22,13 @@ const bounds = (name: string) =>
 const common = (repos: string) => `hosts = ["github.com"]
 repos = ${repos}
 bases = ["main"]
-max_outputs = 1
+max_outputs = 11
 max_patch_bytes = 1024
 max_patch_files = 1
 [outputs]
 add_comment = { max = 1 }
 noop = { max = 1 }
+create_pull_request_review_comment = { max = 10 }
 [trigger]`;
 
 describe("review gate", () => {
@@ -75,7 +79,7 @@ jobs:
     assert.match(refs[0]?.[2] ?? "", /^v\d+\.\d+\.\d+$/);
   });
 
-  it("the bounds admit one comment on one repository only", () => {
+  it("the bounds admit one comment, and inline findings, on one repository only", () => {
     const review = bounds("review");
     const command = bounds("review-command");
     const repos = /^repos = (\["[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+"\])$/m.exec(review)?.[1];
