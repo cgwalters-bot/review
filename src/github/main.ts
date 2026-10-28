@@ -13,6 +13,7 @@ import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
 import { itemAction, reviewAskFor, reviewComment, type RunRef } from "./asks.ts";
 import type { Item } from "./board.ts";
+import { findRouteItem, loadRouteItem } from "./itemroute.ts";
 import {
   type Context,
   loadAnswered,
@@ -125,6 +126,7 @@ import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 const render = createRenderer(window);
 
 interface State {
+  routed?: { id: string; item?: Item; error?: string; loading?: boolean };
   people?: People;
   peopleRunning?: boolean;
   peopleRevision?: number;
@@ -319,9 +321,9 @@ function setNotice(text: string | undefined): void {
 
 const route = (): RouteInfo => parseRoute(window.location.hash);
 
-function routeItemId(): string | undefined {
+function routeItemId(state: State): string | undefined {
   const r = route();
-  return r.route === "item" ? r.id : undefined;
+  return r.route === "item" ? routedItem(state, r.id)?.nodeId : undefined;
 }
 
 /** What the open item view shows; a change means the view is stale. */
@@ -1062,7 +1064,8 @@ async function refreshActive(state: State): Promise<boolean> {
 
 /** The item `#item/<id>` opens: a board item, or a decision's issue that is not on the board. */
 function routedItem(state: State, id: string): Item | undefined {
-  return [...state.items, ...(state.active?.board ?? []), ...(state.decisions?.map((d) => d.item) ?? [])].find((i) => i.nodeId === id);
+  return findRouteItem([...state.items, ...state.linked, ...(state.active?.board ?? []), ...(state.decisions?.map((d) => d.item) ?? [])], id)
+    ?? (state.routed?.id === id ? state.routed.item : undefined);
 }
 
 /** Rebuild the whole view for the current route. */
@@ -1095,8 +1098,19 @@ function renderRoute(state: State): void {
   }
   const item = r.route === "item" ? routedItem(state, r.id) : undefined;
   if (!item) {
-    if (r.route === "item") setNotice("That item no longer needs you (or isn't on the board).");
-    renderHome(state);
+    const pending = state.routed?.id === r.id ? state.routed : (state.routed = { id: r.id });
+    showMain(h("main", {}, h("a", { href: "#", class: "back" }, "← Back"),
+      h("p", { class: pending.error ? "error" : "empty", role: pending.error ? "alert" : "status" }, pending.error ?? "Loading item…")));
+    if (!pending.error && !pending.loading) {
+      // Mark the read before starting it, so queue refreshes don't duplicate it.
+      pending.loading = true;
+      void loadRouteItem(state.gh, r).then((loaded) => { pending.item = loaded; }, (e: unknown) => {
+        pending.error = `Couldn't read this item: ${message(e)} Press r to retry.`;
+      }).then(() => {
+        const current = route();
+        if (!state.closed && state.routed === pending && current.route === "item" && current.id === r.id) renderRoute(state);
+      });
+    }
     return;
   }
   const ctx = state.context.get(item.nodeId);
@@ -1471,7 +1485,7 @@ async function loadPr(state: State, ref: { owner: string; repo: string; number: 
 async function refreshContext(state: State, item: Item): Promise<void> {
   const ctx = await loadContext(state.gh, item);
   state.context.set(item.nodeId, ctx);
-  if (routeItemId() !== item.nodeId) return;
+  if (routeItemId(state) !== item.nodeId) return;
   const container = byId("view").querySelector(`.${CONTEXT_CLASS}`);
   container?.replaceChildren(contextView(item, ctx, render, contextHooks(state, item)));
 }
@@ -2056,6 +2070,10 @@ function run(state: State, cmd: Command, where: Route): void {
         // The view's sources are re-read too, now rather than when due; a reload on request in the inbox drops the needs rows' unsent picks, as the note warned (the decisions document keeps its own), but not from another view, where they are out of sight.
         state.layer.tick(true);
         if (state.view === SECTION_VIEW.needs) paintNeeds(state, true);
+      }
+      if (r.route === "item") {
+        delete state.routed;
+        renderRoute(state);
       }
       refreshSoon(state);
       return;

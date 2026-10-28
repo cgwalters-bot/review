@@ -687,7 +687,7 @@ export function itemView(item: Item, data: ItemViewData, render: Renderer, handl
       h(
         "span",
         { class: "tag" },
-        [item.org, kind ?? item.kind, item.state, item.subIssues ? progressText(item.subIssues) : undefined].filter(Boolean).join(" · "),
+        [item.org, kind ?? item.kind, item.state, item.status, item.subIssues ? progressText(item.subIssues) : undefined].filter(Boolean).join(" · "),
       ),
     ),
     h("h2", {}, item.title),

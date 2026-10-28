@@ -465,6 +465,22 @@ half-written answers included. `q`, `d`, `n`, `t`, `s` switch to Decisions,
 Agents, Changes, By priority, Usage and open that section; `j`/`k`/`o`
 walk the rows of the view shown.
 
+**Deep links** open the existing item or PR pane, independently of whether
+the item is waiting on you. The controller and agent-board can build:
+
+- `#item/PVTI_NODE_ID` for a board item, for example
+  `https://cgwalters-forge.github.io/review/#item/PVTI_lADOE9oHIs4BlJLczhENIh0`.
+- `#issue/OWNER/REPO/N` for an issue by repository and positive issue number,
+  for example `https://cgwalters-forge.github.io/review/#issue/cgwalters-forge/tracker/786`.
+  It shows the board item's fields when the issue is on Workstream, otherwise
+  just the issue, like `#item/I_NODE_ID`.
+- `#pr/OWNER/REPO/N` for the existing PR review pane.
+
+Missing items are read on demand with the signed-in viewer's token (one
+bounded GraphQL query, not a new poll). An unreadable item stays on its link
+with a visible error; `r` retries. Issue membership checks at most 100 projects;
+if that cannot establish membership, the pane says so rather than guessing.
+
 A **Dashboard** view (`#dashboard`) is built but off by default
 (`enabled` in `src/github/dashboard-config.json`), since it adds reads of
 its own. Four tiles link to where the detail is: dispatch runs in flight

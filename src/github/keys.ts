@@ -99,7 +99,7 @@ export const HELP: Record<Route, string> = {
 
 export type RouteInfo =
   | { route: "home"; view?: ViewId; filter?: QueueFilter }
-  | { route: "item"; id: string }
+  | { route: "item"; id: string; ref?: { owner: string; repo: string; number: number } }
   | { route: "pr"; ref: { owner: string; repo: string; number: number } };
 
 /**
@@ -113,9 +113,12 @@ export function parseRoute(hash: string): RouteInfo {
   // off the issues API that is not on the board; main.ts's routedItem finds both.
   const item = /^#item\/((?:PVTI|I)_[A-Za-z0-9_-]+)$/.exec(hash);
   if (item?.[1]) return { route: "item", id: item[1] };
-  const pr = /^#pr\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/([1-9][0-9]{0,9})$/.exec(hash);
+  const pr = /^#(pr|issue)\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/([1-9][0-9]{0,9})$/.exec(hash);
   // "." and ".." are no repository's name, and would climb the API path.
-  if (pr?.[1] && pr[2] && pr[3] && !/^\.+$/.test(pr[2])) return { route: "pr", ref: { owner: pr[1], repo: pr[2], number: Number(pr[3]) } };
+  if (pr?.[2] && pr[3] && pr[4] && !/^\.+$/.test(pr[3])) {
+    const ref = { owner: pr[2], repo: pr[3], number: Number(pr[4]) };
+    return pr[1] === "pr" ? { route: "pr", ref } : { route: "item", id: `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase(), ref };
+  }
   const token = hash.slice(1);
   if (isView(token)) return { route: "home", view: token };
   const filter = parseFilterToken(token);
