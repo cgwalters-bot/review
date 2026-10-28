@@ -5,7 +5,7 @@ import { it } from "node:test";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { fields } from "./helpers.ts";
 
-it("opens out-of-queue links and keeps read errors visible across chrome refreshes", async () => {
+for (const queue of ["loads", "fails", "delayed", "delayed failure", "delayed item"]) it(`opens out-of-queue links and keeps read errors visible across chrome refreshes (queue ${queue})`, async () => {
   const id = "PVTI_lADOE9oHIs4BlJLczhENIh0";
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error: Error) => {
@@ -17,16 +17,38 @@ it("opens out-of-queue links and keeps read errors visible across chrome refresh
   });
   const { window } = dom;
   window.scrollTo = () => {};
-  const content = { __typename: "Issue", id: "I_example786", title: "An in-progress epic", body: "Epic context", url: "https://github.com/cgwalters-forge/tracker/issues/786", state: "OPEN" };
-  const board = { id, project: { number: 1, owner: { login: "cgwalters-forge" } }, fieldValues: { nodes: [{ name: "In Progress", field: { name: "Status" } }] } };
+  const content = {
+    __typename: "Issue", id: "I_example786", title: "An in-progress epic", body: "Epic context", url: "https://github.com/cgwalters-forge/tracker/issues/786", state: "OPEN",
+    ...(queue.startsWith("delayed") ? {
+      body: "Blocks: https://github.com/cgwalters-forge/tracker/issues/1\n\nQ: Epic context?",
+      labels: { nodes: [{ name: "question" }] }, assignees: { nodes: [{ login: "cgwalters" }] },
+      author: { login: "cgwalters-bot" },
+    } : {}),
+  };
+  const status = queue === "delayed item" ? "Needs human" : "In Progress";
+  const board = { id, project: { number: 1, owner: { login: "cgwalters-forge" } }, fieldValues: { nodes: [{ name: status, field: { name: "Status" } }] } };
   let reads = 0;
+  let queueFailures = 0;
+  let releaseQueue = () => {};
+  const queueReady = new Promise<void>((resolve) => { releaseQueue = resolve; });
   let missing = false;
   Object.assign(globalThis, {
     window, document: window.document, Node: window.Node, HTMLElement: window.HTMLElement,
     ResizeObserver: class { observe() {} disconnect() {} },
     fetch: async (input: string, init?: RequestInit) => {
       const url = new URL(input);
+      if (queue === "delayed failure" && url.pathname.endsWith("/items")) await queueReady;
+      if ((queue === "fails" || queue === "delayed failure") && url.pathname.endsWith("/items")) {
+        queueFailures++;
+        return new Response(JSON.stringify({ message: "Queue unavailable" }), { status: 503 });
+      }
+      if (queue === "delayed" && url.pathname.endsWith("/items")) await queueReady;
       let body: unknown = [];
+      if (queue === "delayed item" && url.pathname.endsWith("/items")) body = [{
+        id: 1, node_id: id, content_type: "Issue",
+        content: { node_id: content.id, title: content.title, body: content.body, html_url: content.url, state: "open", user: { login: "cgwalters-bot" }, labels: [{ name: "question" }], assignees: [{ login: "cgwalters" }] },
+        fields: [{ name: "Status", value: status }],
+      }];
       if (url.pathname === "/user") body = { login: "viewer" };
       else if (url.pathname.endsWith("/fields")) body = fields();
       else if (url.pathname === "/search/issues") body = { items: [], total_count: 0 };
@@ -34,6 +56,7 @@ it("opens out-of-queue links and keeps read errors visible across chrome refresh
         const request = JSON.parse(String(init?.body)) as { query: string };
         if (request.query.includes("node(id:$id)")) {
           reads++;
+          if (queue === "delayed item" && reads === 1) await queueReady;
           body = { data: { node: missing ? null : { ...board, content } } };
         } else if (request.query.includes("issue(number:$number)")) {
           reads++;
@@ -53,16 +76,34 @@ it("opens out-of-queue links and keeps read errors visible across chrome refresh
   const text = () => window.document.querySelector("#view")?.textContent ?? "";
   const key = (key: string) => window.document.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true }));
   try {
-    await import("../src/github/main.ts");
+    await import(`../src/github/main.ts?queue=${queue}`);
     await until(() => !!window.document.querySelector(".signin"));
     window.document.querySelector<HTMLInputElement>(".signin input[type=password]")!.value = ["ghp", "x".repeat(24)].join("_");
     window.document.querySelector(".signin")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
     await until(() => text().includes(content.title));
-    assert.match(text(), /In Progress/);
+    assert.ok(text().includes(status));
     assert.match(text(), /Epic context/);
     assert.doesNotMatch(text(), /left this without an ask/);
     assert.equal(reads, 1);
     assert.equal(window.document.querySelector("#sec-needs"), null, "not the Inbox");
+    if (queue === "fails") {
+      await until(() => queueFailures > 0 && !!window.document.querySelector("#notice")?.textContent?.includes("Couldn't read the board"));
+      assert.match(text(), /Epic context/, "queue failure doesn't replace the readable item");
+    }
+    if (queue.startsWith("delayed")) {
+      const answer = window.document.querySelector<HTMLTextAreaElement>("form.answer textarea");
+      assert.ok(answer, "the item offers an answer before the queue finishes");
+      answer.value = "Keep this unsent answer";
+      releaseQueue();
+      if (queue === "delayed failure") await until(() => !!window.document.querySelector("#notice")?.textContent?.includes("Couldn't read the board"));
+      else await until(() => !!window.document.querySelector("#meta")?.textContent?.includes("checked"));
+      // Allow the released read and its render callbacks to finish.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(window.document.querySelector("form.answer textarea"), answer, "late reads preserve the form");
+      assert.equal(answer.value, "Keep this unsent answer");
+    }
+
+    if (queue === "delayed item") return; // The queue keeps this item available on subsequent routes.
 
     window.location.hash = "#issue/cgwalters-forge/tracker/786";
     await until(() => reads === 2 && text().includes("In Progress"));
@@ -79,6 +120,7 @@ it("opens out-of-queue links and keeps read errors visible across chrome refresh
     await until(() => reads === 5 && text().includes(content.title));
     assert.doesNotMatch(text(), /In Progress/, "off-board issue renders alone");
   } finally {
+    releaseQueue();
     window.document.querySelector<HTMLButtonElement>("#signout")?.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     dom.window.close();

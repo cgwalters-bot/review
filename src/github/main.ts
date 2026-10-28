@@ -1079,7 +1079,9 @@ function renderRoute(state: State): void {
   clearInterval(state.ticker);
   delete state.ticker;
   renderChrome(state);
-  if (!state.loaded) {
+  const r = route();
+  // Explicit item links have their own read; a failed queue must not block it.
+  if (!state.loaded && r.route !== "item") {
     showMain(h("p", { class: "empty" }, "Loading…"));
     return;
   }
@@ -1087,7 +1089,6 @@ function renderRoute(state: State): void {
     showMain(h("main", { class: "state-export" }, h("a", { href: "#", class: "back" }, "← Back"), h("h2", {}, "state.json"), h("pre", { id: "state-json" }, JSON.stringify(snapshot(state), null, 2))));
     return;
   }
-  const r = route();
   if (r.route === "pr") {
     renderPr(state, r.ref);
     return;
@@ -1108,7 +1109,11 @@ function renderRoute(state: State): void {
         pending.error = `Couldn't read this item: ${message(e)} Press r to retry.`;
       }).then(() => {
         const current = route();
-        if (!state.closed && state.routed === pending && current.route === "item" && current.id === r.id) renderRoute(state);
+        if (!state.closed && state.routed === pending && current.route === "item" && current.id === r.id) {
+          // The queue may have opened the item while this read was in flight.
+          if (state.shown) update(state, false, false);
+          else renderRoute(state);
+        }
       });
     }
     return;
@@ -1897,7 +1902,8 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
   if (state.closed) return;
   rebuildEntries(state);
   const r = route();
-  if (first) {
+  // An explicit item can already be open before the first queue read returns.
+  if (first && !(r.route === "item" && state.shown)) {
     renderRoute(state);
   } else if (r.route === "home") {
     // The page stays as it is; only the lists that follow the queue are redrawn.
@@ -1992,7 +1998,7 @@ async function poll(state: State, current: () => boolean): Promise<void> {
     if (!current()) return;
     state.error = `Couldn't read the board: ${message(e)}`;
     state.sources.queue = { ...state.sources.queue, state: "unavailable", checkedAt: Date.now(), error: message(e) };
-    if (state.loaded) renderChrome(state);
+    if (state.loaded || state.shown) renderChrome(state);
     else renderRoute(state);
   }
   if ((await forge) && current() && state.loaded) update(state, false, false);
