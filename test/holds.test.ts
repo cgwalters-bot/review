@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import type { RawComment } from "../src/github/heartbeat.ts";
-import { findHolds, HOLDS_MARKER, loadHolds, parseHolds } from "../src/github/holds.ts";
+import { decisionLines, findHolds, HOLDS_MARKER, loadHolds, parseHolds } from "../src/github/holds.ts";
+import { buildNeeds } from "../src/github/needs.ts";
+import { inboxCards } from "../src/github/inbox.ts";
 import { usagePath } from "../src/github/usage.ts";
 import { fixture, scriptedFetch } from "./helpers.ts";
 
@@ -77,6 +79,46 @@ describe("findHolds", () => {
 });
 
 describe("loadHolds", () => {
+  for (const label of ["Decision needed:", "**Decision needed:**", "**Decision needed**:"]) it(`reads ${label} as a single line, first occurrence only`, () => {
+    assert.deepEqual(decisionLines(`${label} Ship it?\nContinuation\nDecision needed: Other?\n**Recommendation:** Merge it.\nMore`), { question: "Ship it?", recommendation: "Merge it." });
+    assert.deepEqual(decisionLines(`${label}\nUnrelated text`), {});
+    assert.deepEqual(decisionLines(`${label.replace("Decision needed", "Recommendation")}\nUnrelated text`), {});
+  });
+
+  const bot = (body: string) => ({ body, author: { login: "cgwalters-bot" } });
+  const cases: [string, ReturnType<typeof bot>[], string, string][] = [
+    ["newest bot comment, ignoring a later human copy", [bot("Decision needed: Old?"), bot("**Decision needed:** Ship it?\n**Recommendation:** Merge it."), { body: "Decision needed: Spoof?", author: { login: "someone" } }], "Ship it?", "Recommendation: Merge it."],
+    ["no matching lines in newest bot comment, not stale advice", [bot("Decision needed: Old?\nRecommendation: Old."), bot("Run completed.")], "labelled needs-human", "labelled needs-human"],
+    ["recommendation only", [bot("Recommendation: Wait.")], "labelled needs-human", "Recommendation: Wait."],
+    ["no bot comments", [], "labelled needs-human", "labelled needs-human"],
+  ];
+  for (const [name, nodes, title, note] of cases) it(name, async () => {
+    const { fetchImpl, calls } = scriptedFetch((_m, url) => {
+      if (url.endsWith(usagePath)) return { body: [comment(snapshot([{ ...human, question: null }]))] };
+      if (url.endsWith("/graphql")) {
+        return { body: { data: { repository: { issueOrPullRequest: { comments: { nodes } } } } } };
+      }
+      return undefined;
+    });
+    const holds = await loadHolds(new GitHub(async () => "t", fetchImpl));
+    const cards = inboxCards({ needs: buildNeeds({ entries: [], holds }) });
+    assert.equal(calls.length, 2);
+    const request = calls[1]!.body as { query: string; variables: unknown };
+    assert.match(request.query, /comments\(last:100\)/);
+    assert.deepEqual(request.variables, { owner: "cgwalters-forge", repo: "tracker", number: 446 });
+    assert.deepEqual(cards.map((c) => [c.title, c.note, c.url]), [[title, note, human.url]]);
+  });
+
+  it("bounds summary reads and preserves holds when comments are inaccessible", async () => {
+    const { fetchImpl, calls } = scriptedFetch((_m, url) => url.endsWith(usagePath)
+      ? { body: [comment(snapshot(Array.from({ length: 25 }, (_, i) => ({ ...human, item: `cgwalters-forge/tracker#${i + 1}`, url: `https://github.com/cgwalters-forge/tracker/issues/${i + 1}` }))))] }
+      : { status: 404, body: { message: "Not Found" } });
+    const holds = await loadHolds(new GitHub(async () => "t", fetchImpl));
+    assert.equal(holds?.holds.length, 25);
+    assert.equal(calls.length, 21);
+    assert.ok(holds?.holds.every((h) => h.question === "Ship it?" && !h.recommendation));
+  });
+
   const load = (status: number) => {
     const { fetchImpl } = scriptedFetch((_m, url) => (url.endsWith(usagePath) ? { status, body: status === 200 ? [comment(snapshot())] : { message: "Not Found" } } : undefined));
     return loadHolds(new GitHub(async () => "t", fetchImpl));

@@ -265,13 +265,20 @@ describe("the pass's holds", () => {
     assert.deepEqual(needs.map((n) => [n.key, n.title, n.where, n.why, n.priority, n.href, n.since, n.entry?.key]), [
       ["hold:cgwalters-forge/tracker#446", "Ship it?", `${ref(446)} · Release 1.0`, "labelled needs-human", "P0", `${TRACKER}/446`, "2026-10-20T00:00:00Z", "item:PVTI_446"],
       // Not on the board: its reference is all there is to call it.
-      ["hold:cgwalters-forge/tracker#596", ref(596), ref(596), "got no plan", undefined, `${TRACKER}/596`, undefined, undefined],
+      ["hold:cgwalters-forge/tracker#596", "got no plan", ref(596), "got no plan", undefined, `${TRACKER}/596`, undefined, undefined],
     ]);
   });
 
   it("leaves an item that is already a question its question's row", () => {
     const q = ask("PVTI_q", 21, "question", `${TRACKER}/9`);
     assert.deepEqual(rows(buildNeeds({ entries: entriesOf([q]), board: [q], holds: holds(hold(21)) })), [["item:PVTI_q", "answer"]]);
+  });
+
+  it("notes a hold's recommendation on the question or decision row its item already is", () => {
+    const q = ask("PVTI_q", 21, "question", `${TRACKER}/9`);
+    const d = parseDecision(tracked("I_40", 40, { title: "D2: Another?", body: `Unblocks:\n- ${TRACKER}/9\n\n${QUESTION}`, labels: ["question", "decision"] }));
+    const needs = buildNeeds({ entries: entriesOf([q]), board: [q], decisions: [d], holds: holds(hold(21, { recommendation: "Merge it." }), hold(40, { recommendation: "Wait." })) });
+    assert.deepEqual(needs.map((n) => [n.key, n.why]), [["decision:I_40", "Recommendation: Wait."], ["item:PVTI_q", "Recommendation: Merge it."]]);
   });
 
   describe("never consult the labels", () => {

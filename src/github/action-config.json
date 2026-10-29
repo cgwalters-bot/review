@@ -3,6 +3,7 @@
   "planner": "cgwalters-bot",
   "tracker": "cgwalters-forge/tracker",
   "repositories": [
+    "cgwalters-bot/praxis-credential-broker",
     "cgwalters-forge/actions",
     "cgwalters-forge/agent-board",
     "cgwalters-forge/agentic-job",

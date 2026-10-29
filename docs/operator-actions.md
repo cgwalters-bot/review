@@ -12,6 +12,11 @@ empty to refuse those kinds. No dispatcher or proposal can widen this
 configuration. The allowlist should start with the forge-native repositories;
 upstreams require an operator-reviewed configuration change.
 
+The shipped allowlist explicitly includes `cgwalters-bot/praxis-credential-broker`
+alongside the forge repositories. The app does not read tracker's pass config;
+its existing bot-PR search is already repository-independent, so broker PRs
+requesting the operator's review need no extra search or repository list.
+
 This prevents a proposal from borrowing the viewer's token to write outside
 the approved repositories or project. Only the configured operator can execute, using
 the existing browser GitHub client and their own token. Only comments by the
@@ -109,7 +114,9 @@ since the last read. An issue with more comments is refused rather than
 executed with unread receipts, with a warning that does not hide valid
 proposals from other issues. A proposal on an unlabelled issue is not shown.
 A proposal rides on the Inbox card of the decision or ask about its issue, or
-linking to it; one with none is a card of its own. A card's targets are read
+linking to it; one with none is a card of its own. When one issue has multiple
+proposals, each gets a separate card with its own title, why and Run button.
+A card's targets are read
 only once it is drawn (the first five cards, then on Show more), and no
 proposal is re-read while one runs. Targets and exact mutation payloads are
 shown as plain text, wrapping at phone width.

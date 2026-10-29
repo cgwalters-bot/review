@@ -32,6 +32,8 @@ export interface Hold {
   priority: string | null;
   /** What the item's board Why asks, after its `Q:`. */
   question: string | null;
+  /** One-line advice from the newest bot comment, when present. */
+  recommendation?: string;
 }
 
 /** The WIP limit, and the runs holding a slot (null where the pass did not count them). */
@@ -111,11 +113,37 @@ export function findHolds(comments: readonly RawComment[]): Holds | undefined {
   return parseHolds(c?.body);
 }
 
+/** Plain or bold labels, with the colon inside or outside the bold span. */
+export function decisionLines(body: string): { question?: string; recommendation?: string } {
+  const line = (label: string) => new RegExp(`^[ \\t]*(?:${label}:|\\*\\*${label}:\\*\\*|\\*\\*${label}\\*\\*:)[ \\t]*(.+)$`, "im").exec(body)?.[1]?.trim();
+  const question = line("Decision needed");
+  const recommendation = line("Recommendation");
+  return { ...(question ? { question } : {}), ...(recommendation ? { recommendation } : {}) };
+}
+
+const DECISION_COMMENTS = `query($owner:String!,$repo:String!,$number:Int!) {
+  repository(owner:$owner,name:$repo) { issueOrPullRequest(number:$number) {
+    ... on Issue { comments(last:100) { nodes { body author { login } } } }
+    ... on PullRequest { comments(last:100) { nodes { body author { login } } } }
+  } }
+}`;
+
 /** The published holds, read with the viewer's token; undefined on any failure or when none is published, which the inbox says as not read. */
 export async function loadHolds(gh: GitHub): Promise<Holds | undefined> {
   try {
     const { data } = await gh.get<RawComment[]>(usagePath);
-    return findHolds(Array.isArray(data) ? data : []);
+    const holds = findHolds(Array.isArray(data) ? data : []);
+    // At most 20 item reads per refresh, sequentially; never walk comment
+    // history. Missing/inaccessible summaries leave the published hold intact.
+    for (const hold of holds?.holds.filter((h) => h.operator && h.item).slice(0, 20) ?? []) {
+      const [owner, repo, number] = hold.item!.split(/[/#]/);
+      try {
+        const result = await gh.graphql<{ repository: { issueOrPullRequest: { comments: { nodes: { body: string; author: { login: string } | null }[] } } | null } | null }>(DECISION_COMMENTS, { owner, repo, number: Number(number) });
+        const newest = result.repository?.issueOrPullRequest?.comments.nodes.findLast((c) => isBot(c.author?.login));
+        if (newest) Object.assign(hold, decisionLines(newest.body));
+      } catch { /* The hold reason remains the fallback. */ }
+    }
+    return holds;
   } catch {
     return undefined;
   }

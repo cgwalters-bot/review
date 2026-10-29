@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parseDocument } from "../src/github/decisiondocument.ts";
-import { type Card, documentCard, needCard } from "../src/github/inbox.ts";
+import { type Card, documentCard, inboxCards, needCard } from "../src/github/inbox.ts";
 import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, fillInbox, holdsDraft, INBOX_PAGE, type InboxHooks, passLine } from "../src/github/inboxview.ts";
-import type { Offered } from "../src/github/actions.ts";
+import { ACTION_CONFIG, loadProposals, type Offered } from "../src/github/actions.ts";
+import { GitHub } from "../src/github/api.ts";
+import { proposalCard } from "../src/github/actionsview.ts";
 import type { Item } from "../src/github/board.ts";
 import type { Heartbeat } from "../src/github/heartbeat.ts";
 import type { Hold } from "../src/github/holds.ts";
@@ -43,6 +45,36 @@ const drafts: [string, (card: HTMLElement) => void][] = [
 ];
 
 describe("fillInbox", () => {
+  it("draws three proposals on an operator-action issue as separate cards with title, why and Run", async () => {
+    const config = ACTION_CONFIG;
+    assert.ok(config);
+    const comments = [1, 2, 3].map((n) => ({ id: `IC_${n}`, databaseId: n, updatedAt: "2026-10-29T12:00:00Z", author: { login: "cgwalters-bot" }, editor: null, lastEditedAt: null,
+      body: `\`\`\`agent-board-action\n${JSON.stringify({ schema: "agent-board/operator-action/v1", title: `Decision ${n}`, why: `Reason ${n}`, actions: [{ type: "add_label", repo: "cgwalters-forge/tracker", number: 1013, label: `choice-${n}` }] })}\n\`\`\`` }));
+    const gh = new GitHub(async () => "t", async (url) => {
+      if (url.includes("labels=operator-action")) return Response.json([{ number: 1013, updated_at: "2026-10-29T12:00:00Z" }]);
+      if (url.endsWith("/graphql")) return Response.json({ data: { repository: { issue: { state: "OPEN", comments: { nodes: comments, pageInfo: { hasNextPage: false } } } } } });
+      if (url.endsWith("/issues/1013")) return Response.json({ title: "Epic decisions", state: "open", labels: [] });
+      throw new Error(`Unexpected read: ${url}`);
+    });
+    const found = await loadProposals(gh, config);
+    assert.deepEqual(found.warnings, []);
+    assert.equal(found.offers.length, 3);
+    // Even when a document links to this issue, each proposal is its own card.
+    const cards = inboxCards({ offers: found.offers, document: { entries: parseDocument("### D1 Epic decisions\nAbout: cgwalters-forge/tracker#1013\n- [ ] A) Yes\nReply:"), marks: new Map() } });
+    const bodies = new Map(await Promise.all(found.offers.map(async (o) => [o, await proposalCard(gh, config, o, () => false, () => {})] as const)));
+    const list = document.createElement("div");
+    fillInbox(list, cards, { ...hooks, offerBody: async (o) => bodies.get(o)! });
+    await new Promise((resolve) => setImmediate(resolve));
+    for (const n of [1, 2, 3]) {
+      const card = cardOf(list, `do:${n}`)!;
+      assert.equal(card.querySelector(".card-title")?.textContent ?? card.querySelector("h3")?.textContent, `Decision ${n}`);
+      assert.match(card.textContent!, new RegExp(`Reason ${n}`));
+      const run = [...card.querySelectorAll("button")].filter((b) => b.textContent === "Run as yourself");
+      assert.equal(run.length, 1);
+      assert.equal(run[0]!.disabled, false);
+    }
+  });
+
   it("adds Chat to cards without consuming their unsent forms", () => {
     const list = document.createElement("div");
     fillInbox(list, [question(), documentCard(parseDocument("### D1 Pick one\nAbout: o/r#2\n- [ ] A) This\nReply:\n")[0]!, undefined)!], hooks);

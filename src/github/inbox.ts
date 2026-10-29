@@ -139,7 +139,8 @@ export function attachOffers(cards: readonly Card[], offers: readonly Offered[])
   for (const o of offers) {
     const ref = refOf(TRACKER_REPO, o.issue);
     const about = out.find((c) => decisionOf(c)?.ref === ref) ?? out.find((c) => linksTo(decisionOf(c)?.text ?? "", TRACKER_REPO, o.issue));
-    if (about) about.offers = [...about.offers ?? [], o];
+    // Separate decisions on one issue need separate titles, reasons and Run buttons.
+    if (about && offers.filter((other) => other.issue === o.issue).length === 1) about.offers = [...about.offers ?? [], o];
     else loose.push(doCard(o));
   }
   return [...out, ...loose];

@@ -95,7 +95,7 @@ const issueKey = (item: Item | undefined): string | undefined => (item?.ref ? re
 function holdNeed(hold: Hold & { item: string }, board: readonly Item[]): Need {
   const item = board.find((i) => issueKey(i) === hold.item.toLowerCase());
   const title = item?.title ?? hold.item;
-  const n: Need = { key: `hold:${hold.item.toLowerCase()}`, action: "write", title: hold.question ?? title, where: hold.question && item ? `${hold.item} · ${title}` : hold.item, href: hold.url ?? "#", inPlace: false, hold, why: hold.reason };
+  const n: Need = { key: `hold:${hold.item.toLowerCase()}`, action: "write", title: hold.question ?? hold.reason, where: hold.question && item ? `${hold.item} · ${title}` : hold.item, href: hold.url ?? "#", inPlace: false, hold, why: hold.recommendation ? `Recommendation: ${hold.recommendation}` : hold.reason };
   if (item) n.entry = { key: `item:${item.nodeId}`, kind: "item", title, where: hold.item, href: `#item/${item.nodeId}`, item };
   const priority = hold.priority ?? item?.priority;
   if (priority) n.priority = priority;
@@ -161,12 +161,23 @@ export function buildNeeds(input: NeedsInput): Need[] {
     if (priority) n.priority = priority;
     (answered ? done : out).push(answered ? { ...n, done: true } : n);
   }
-  // An item that is already a row (a question, a decision) stays that row.
-  const rowed = new Set(out.concat(done).flatMap((n) => issueKey(n.entry?.item ?? n.decision?.item) ?? []));
+  // An item that is already a row (a question, a decision) stays that row,
+  // with the hold's recommendation as its note when the bot gave one.
+  const rowed = new Map<string, Need>();
+  for (const n of out.concat(done)) {
+    const key = issueKey(n.entry?.item ?? n.decision?.item);
+    if (key && !rowed.has(key)) rowed.set(key, n);
+  }
   for (const hold of input.holds?.holds ?? []) {
-    if (!hold.operator || !hold.item || rowed.has(hold.item.toLowerCase())) continue;
-    rowed.add(hold.item.toLowerCase());
-    out.push(holdNeed({ ...hold, item: hold.item }, board));
+    if (!hold.operator || !hold.item) continue;
+    const row = rowed.get(hold.item.toLowerCase());
+    if (row) {
+      if (hold.recommendation) row.why = `Recommendation: ${hold.recommendation}`;
+      continue;
+    }
+    const n = holdNeed({ ...hold, item: hold.item }, board);
+    rowed.set(hold.item.toLowerCase(), n);
+    out.push(n);
   }
   const time = (n: Need) => {
     const t = n.since ? Date.parse(n.since) : Number.NaN;
