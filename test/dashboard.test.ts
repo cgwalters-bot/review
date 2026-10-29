@@ -260,7 +260,8 @@ describe("dashboard view", () => {
     assert.match(charts[0]!.querySelector("svg rect title")!.textContent!, new RegExp(`^${DAYS[0]}: 2 succeeded, 0 failed`));
     assert.equal(charts[0]!.querySelectorAll("tbody tr").length, 14);
     assert.match(charts[1]!.querySelector("h3")!.textContent!, /^Success rate: 96% over 14 days$/);
-    assert.equal(charts[2]!.querySelectorAll("svg rect:not(.missing)").length, 1);
+    assert.equal(charts[2]!.querySelectorAll("svg rect:not(.missing, .empty)").length, 1);
+    assert.match(charts[2]!.querySelector("svg rect.empty title")!.textContent!, /: 0 P0, 0 P1/, "a day with none done says so on hover");
     assert.match(charts[2]!.querySelector("svg rect.s-p0 title")!.textContent!, new RegExp(`^${TODAY}: 1 P0`));
   });
 

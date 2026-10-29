@@ -27,10 +27,11 @@ describe("From people UI", () => {
     fillPeople(home, people, Date.now(), { done: async () => {}, changed: () => {} });
     assert.equal(home.el.firstElementChild, home.slots.summary);
     assert.equal(home.el.children[1], home.slots.weekly);
-    assert.equal(home.el.children[2]?.id, "sec-needs");
-    assert.equal(home.el.children[3], home.slots.status);
-    assert.equal(home.el.children[4]?.id, "sec-people");
-    assert.equal((home.el.children[4] as HTMLDetailsElement).open, false);
+    assert.equal(home.el.children[2], home.slots.cost);
+    assert.equal(home.el.children[3]?.id, "sec-needs");
+    assert.equal(home.el.children[4], home.slots.status);
+    assert.equal(home.el.children[5]?.id, "sec-people");
+    assert.equal((home.el.children[5] as HTMLDetailsElement).open, false);
     assert.equal(home.slots.peopleCount.textContent, "7");
     assert.equal(home.slots.people.querySelectorAll(".people-row:not([hidden])").length, 5);
     assert.equal(home.slots.people.querySelector("script"), null);

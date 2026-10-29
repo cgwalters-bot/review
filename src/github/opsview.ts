@@ -473,7 +473,7 @@ export function poolRows(usage: Usage, now: number): HTMLElement[] {
   return poolNames(usage.pools).map((name) => poolRow(name, usage.pools?.[name], now, usage.updatedAt || usage.observedAt || ""));
 }
 
-const usd = (v: number) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export const usd = (v: number) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /** The time to a monthly reset: days while more than one is left, or that it passed. */
 function monthLeft(iso: string, now: number): string {

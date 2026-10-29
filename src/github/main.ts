@@ -77,6 +77,9 @@ import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
 import { DASHBOARD_CONFIG, type DashboardData, doneByDay, HISTORY_DAYS, type HistoryCache, loadDashboard, loadHistoryCache } from "./dashboard.ts";
+import { type CostData, loadCost } from "./cost.ts";
+import { USAGE_CONFIG } from "./usage.ts";
+import { type CostPick, costSection } from "./costview.ts";
 import { dashboardView } from "./dashboardview.ts";
 import { fillAgents, fillBoardStatus, fillChanges, fillDashboard, fillDispatch, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadProposals, type Offered, PROPOSAL_LABEL, type ProposalCache } from "./actions.ts";
@@ -143,6 +146,10 @@ interface State {
   dashboard?: DashboardData;
   dashboardHistory: HistoryCache;
   dashboardRunning?: boolean;
+  /** The Usage view's daily cost as last read, and how he chose to see it. */
+  cost?: CostData;
+  costPick: CostPick;
+  costRunning?: boolean;
   /** What the views show and when each is read (see newLayer). */
   layer: SourceLayer<ViewId>;
   /** The view of the page last shown, which a bare # (e.g. "Back") returns to. */
@@ -945,6 +952,39 @@ async function refreshDashboard(state: State): Promise<boolean> {
   }
 }
 
+/** Redraw the daily cost: only when read or when he picks, so a poll doesn't take the focus off its selects. */
+function paintCost(state: State): void {
+  if (!state.home || state.closed) return;
+  state.home.slots.cost.replaceChildren(
+    costSection(state.cost, state.costPick, {
+      pick: (p) => {
+        state.costPick = p;
+        paintCost(state);
+      },
+    }),
+  );
+}
+
+async function refreshCost(state: State): Promise<boolean> {
+  if (state.closed || state.costRunning) return false;
+  state.costRunning = true;
+  if (!state.cost) paintCost(state);
+  try {
+    const cost = await loadCost(state.gh);
+    if (state.closed || !cost) return false;
+    const changed = JSON.stringify(cost) !== JSON.stringify(state.cost);
+    state.cost = cost;
+    if (changed) paintCost(state);
+    return true;
+  } catch (e) {
+    state.error = `Couldn't read the daily cost: ${message(e)}`;
+    renderChrome(state);
+    return false;
+  } finally {
+    state.costRunning = false;
+  }
+}
+
 function paintChanges(state: State): void {
   if (!state.home) return;
   const a = state.active;
@@ -1015,6 +1055,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       { name: "agent-dispatch", path: "the tracker's dispatch runs, their jobs and finished runs' status comments", cadence: DISPATCH_POLL_MS, views: [SECTION_VIEW.agents, SECTION_VIEW.changes, SECTION_VIEW.usage, "dashboard"], read: () => refreshAgentDispatch(get()), when: () => get().view !== SECTION_VIEW.changes || open((home) => home.sections.changes.details)() },
       { name: "activity-events", path: "the bot's public events (GitHub's X-Poll-Interval)", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.changes], read: () => refreshActivityEvents(get()), when: open((home) => home.sections.changes.details) },
       { name: "dashboard", path: `${HISTORY_DAYS} days of ${DISPATCH_WORKFLOW} runs (finished days read once), the harness repositories' merge queues, search of approved PRs`, cadence: POLL_INTERVAL_MS, views: ["dashboard"], read: () => refreshDashboard(get()), when: () => DASHBOARD_CONFIG.enabled },
+      { name: "cost", path: `cost/ on ${USAGE_CONFIG.cost?.repo}'s ${USAGE_CONFIG.cost?.ref} branch, and each charted day's file once`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.usage], read: () => refreshCost(get()), when: () => !!USAGE_CONFIG.cost },
       { name: "ops", path: "devspaces, agent runs and the bot's public events", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.agents], read: () => refreshOps(get()), when: open((home) => home.slots.opsBox) },
       { name: "news", path: "merged PRs of the harness repositories", cadence: NEWS_POLL_MS, views: [SECTION_VIEW.changes], read: () => refreshNews(get()), when: open((home) => home.sections.changes.details) },
       { name: "themes", path: "every open board item", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.priority], read: () => refreshTriage(get()), when: open((home) => home.slots.themesBox) },
@@ -2242,6 +2283,7 @@ async function start(source: TokenSource): Promise<void> {
     runsRunning: false,
     dispatchResults: new Map(),
     dashboardHistory: loadHistoryCache(),
+    costPick: { by: "kind" },
     layer: newLayer(() => state),
     view: (opened.route === "home" && opened.view) || DEFAULT_VIEW,
     poller: newPoller(() => state),

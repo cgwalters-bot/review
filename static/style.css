@@ -355,7 +355,7 @@ a.dash-tile:hover, a.dash-tile:focus-visible { border-color: var(--accent); }
 .dash-chart h3, .dash-pools h3 { margin: 0 0 8px; font-size: var(--type-card); }
 .chart { display: block; width: 100%; height: 72px; }
 .chart rect { fill: var(--c); stroke: var(--surface); stroke-width: 0.5; }
-.chart rect.missing { fill: var(--line); }
+.chart rect.missing, .chart rect.empty { fill: var(--line); }
 .chart-axis { display: flex; justify-content: space-between; margin: 2px 0 0; font: var(--type-meta) var(--mono); color: var(--muted); }
 .chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 0; font-size: var(--type-meta); color: var(--muted); }
 .chart-legend .swatch { display: inline-block; width: 10px; height: 10px; margin-right: 4px; border-radius: 2px; background: var(--c); vertical-align: -1px; }
@@ -365,6 +365,8 @@ a.dash-tile:hover, a.dash-tile:focus-visible { border-color: var(--accent); }
 .s-success { --c: var(--ok); } .s-failure { --c: var(--p0); } .s-cancelled { --c: var(--p3); } .s-other { --c: var(--p2); } .s-running { --c: var(--accent); }
 .s-rate { --c: var(--accent); }
 .s-p0 { --c: var(--p0); } .s-p1 { --c: var(--p1); } .s-p2 { --c: var(--p2); } .s-p3 { --c: var(--p3); } .s-none { --c: var(--line); }
+.s-k0 { --c: var(--accent); } .s-k1 { --c: var(--ok); } .s-k2 { --c: var(--p2); } .s-k3 { --c: var(--p1); } .s-k4 { --c: var(--p3); } .s-k5 { --c: var(--p0); } .s-k6 { --c: var(--muted); }
+.cost-pick label { margin-right: 12px; font-size: var(--type-secondary); color: var(--muted); }
 .spark { display: block; margin-top: 6px; max-width: 100%; }
 .spark rect.on { fill: var(--accent); }
 .spark rect.off { fill: var(--line); }

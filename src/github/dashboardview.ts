@@ -70,9 +70,11 @@ interface Series {
 /**
  * Stacked bars, a day each, oldest first; `value` undefined for a day
  * not known. Each bar's title, and a table under the chart, give the
- * numbers, so nothing is told by color alone.
+ * numbers (as `text` words them, if given), so nothing is told by color
+ * alone. The last day is labelled `last`.
  */
-function chart(title: string, cls: string, days: readonly string[], series: readonly Series[], value: (day: number, s: number) => number | undefined, max?: number, unit = ""): HTMLElement {
+export function chart(title: string, cls: string, days: readonly string[], series: readonly Series[], value: (day: number, s: number) => number | undefined, max?: number, text?: (day: number, s: number) => string, last = "today"): HTMLElement {
+  const cell = text ?? ((d: number, s: number) => String(value(d, s) ?? "—"));
   const totals = days.map((_, d) => series.reduce((n, _s, s) => n + (value(d, s) ?? 0), 0));
   const top = max ?? Math.max(1, ...totals);
   const width = days.length * (CHART.bar + CHART.gap) - CHART.gap;
@@ -85,7 +87,7 @@ function chart(title: string, cls: string, days: readonly string[], series: read
       return;
     }
     let y = CHART.height;
-    const words = series.map((s, i) => `${known[i] ?? 0}${unit} ${s.label}`).join(", ");
+    const words = series.map((s, i) => (text ? `${s.label} ${text(d, i)}` : `${known[i] ?? 0} ${s.label}`)).join(", ");
     series.forEach((s, i) => {
       const v = known[i] ?? 0;
       if (v <= 0) return;
@@ -93,6 +95,8 @@ function chart(title: string, cls: string, days: readonly string[], series: read
       y -= hgt;
       plot.append(svg("rect", { class: `s-${s.key}`, x, y: String(y), width: String(CHART.bar), height: String(hgt) }, svg("title", {}, `${day}: ${words}`)));
     });
+    // A known day of nothing still says what it was on hover.
+    if (y === CHART.height) plot.append(svg("rect", { class: "empty", x, y: String(CHART.height - 1), width: String(CHART.bar), height: "1" }, svg("title", {}, `${day}: ${words}`)));
   });
   const legend = series.length > 1 ? h("p", { class: "chart-legend" }, ...series.map((s) => h("span", { class: `key s-${s.key}` }, h("span", { class: "swatch", "aria-hidden": "true" }), s.label))) : null;
   const table = h(
@@ -103,10 +107,10 @@ function chart(title: string, cls: string, days: readonly string[], series: read
       "table",
       {},
       h("thead", {}, h("tr", {}, h("th", {}, "Day (UTC)"), ...series.map((s) => h("th", {}, s.label)))),
-      h("tbody", {}, ...days.map((day, d) => h("tr", {}, h("td", {}, day), ...series.map((_, s) => h("td", {}, String(value(d, s) ?? "—")))))),
+      h("tbody", {}, ...days.map((day, d) => h("tr", {}, h("td", {}, day), ...series.map((_, s) => h("td", {}, cell(d, s)))))),
     ),
   );
-  return h("section", { class: "dash-chart", "aria-label": title }, h("h3", {}, title), plot, h("p", { class: "chart-axis" }, h("span", {}, days[0] ?? ""), h("span", {}, "today")), legend, table);
+  return h("section", { class: "dash-chart", "aria-label": title }, h("h3", {}, title), plot, h("p", { class: "chart-axis" }, h("span", {}, days[0] ?? ""), h("span", {}, last)), legend, table);
 }
 
 function runsChart(history: readonly HistoryDay[]): HTMLElement {

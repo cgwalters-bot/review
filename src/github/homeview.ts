@@ -88,6 +88,8 @@ export interface Slots {
   themesBox: HTMLDetailsElement;
   usage: HTMLElement;
   weekly: HTMLElement;
+  /** The daily agent spend under the weekly usage, when configured (costview.ts). */
+  cost: HTMLElement;
   /** The Dashboard view's tiles, pools and charts. */
   dashboard: HTMLElement;
   /** The Maintain view's digest. */
@@ -155,6 +157,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   peopleSection.addEventListener("toggle", () => hooks.peopleToggled?.(peopleSection.open));
   const summary = h("div", { class: "summary-slot" });
   const weekly = h("section", { class: "usage-body weekly-usage", id: "weekly-usage", "aria-label": "Weekly subscription usage" }, h("h2", {}, "Weekly subscription usage"), h("p", { class: "note" }, "Reading usage…"));
+  const cost = h("div", { class: "cost-slot" });
   const needs = h("div", { class: "needs-slot" });
   const decisionDocument = h("div", { class: "decision-document-slot" });
   const statusComputed = h("div", { class: "status-computed" }, h("p", { class: "note" }, "Reading the board…"));
@@ -193,6 +196,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     { class: HOME_CLASS },
     inView("usage", summary),
     inView("usage", weekly),
+    inView("usage", cost),
     sections.needs.details,
     inView("board", status),
     inView("inbox", peopleSection),
@@ -204,7 +208,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details),
     freshness,
   );
-  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, statusComputed, statusNote, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly, dashboard, maintain }, expected };
+  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, statusComputed, statusNote, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly, cost, dashboard, maintain }, expected };
 }
 
 export function fillState(home: Home, state: PageState): void {
