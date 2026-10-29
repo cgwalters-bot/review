@@ -151,7 +151,8 @@ describe("operator dashboard", () => {
     fillUsage(home, { state: "ok", usage }, undefined, Date.parse("2026-10-09T14:00:00Z"));
     assert.doesNotMatch(text(home.slots.usage), /Invalid Date|not reported yet/);
     assert.equal(home.sections.needs.details.open, true);
-    assert.equal(home.slots.weekly.nextElementSibling, home.sections.needs.details);
+    assert.equal(home.slots.weekly.nextElementSibling, home.slots.cost);
+    assert.equal(home.slots.cost.nextElementSibling, home.sections.needs.details);
     assert.equal(home.sections.needs.details.nextElementSibling, home.slots.status);
   });
 

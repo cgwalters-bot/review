@@ -236,6 +236,19 @@ in the run's status comment, or a job output), and tracker's `usage.cjs` has
 to carry the day's into `runs`. Until then the block says so in one line; a
 snapshot with an empty list says no run finished in the day.
 
+**Agent spend by day** follows, when `cost` in `usage-config.json` names a
+`repo` and `ref` (`null` turns it off). It reads agent-board's daily reports
+(`agent-board/cost-day/v1`, agent-board's `docs/cost.md`) from `cost/` on that
+branch: one conditional listing a minute while Usage shows, and each of the 14
+days before today's file once by its blob sha (at most 2 MiB). A line gives
+the reviews' share of the last 7 days' priced dollars ("Reviews: 41% of
+spend, 7 days"), with unpriced review runs counted apart in tokens. Under it,
+the 14 days as stacked bars of dollars by kind, or by model (six, the rest
+together), with the numbers in a table; then a chosen day's ten costliest
+runs, each linked to its run. Dollars are the report's, summed as published:
+the app prices nothing, and a group with no priced run shows its tokens, never
+$0. A day not published shows as not known, as does one that isn't a report.
+
 **Decisions** comes right after usage, before Status, open on entry,
 The optional single checklist document is configured in
 `src/github/decisions-config.json`: set `document` to an object with `repo`

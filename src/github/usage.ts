@@ -12,14 +12,19 @@ import { GitHubError, type GitHub, RateLimited } from "./api.ts";
 import { isBot } from "./authors.ts";
 import { USAGE_ISSUE, USAGE_REPO } from "./config.ts";
 import { fencedJson, isObject, type RawComment, str, time } from "./heartbeat.ts";
+import type { CostSource } from "./cost.ts";
 import config from "./usage-config.json" with { type: "json" };
 
 /**
  * Where Mistral's monthly allowance is configured, when the snapshot
  * carries none: a pools file whose "mistral" pool has an "allowance".
- * null turns the read off.
+ * `cost` is the repository and branch whose cost/ holds agent-board's
+ * daily cost reports (cost.ts). null turns either read off.
  */
-export const USAGE_CONFIG = config as { mistralAllowance: { repo: string; path: string } | null };
+export const USAGE_CONFIG = config as { mistralAllowance: { repo: string; path: string } | null; cost: CostSource | null };
+
+/** A contents or blob API's base64 content, as UTF-8 text. */
+export const decodeBase64 = (content: string): string => new TextDecoder().decode(Uint8Array.from(atob(content.replace(/\s/g, "")), (c) => c.charCodeAt(0)));
 
 /** The comment's first line. */
 export const USAGE_MARKER = "<!-- bot-usage v1 -->";
@@ -505,7 +510,7 @@ async function loadBudget(gh: GitHub, now: number, target = USAGE_CONFIG.mistral
   try {
     const { data } = await gh.get<{ content?: string; encoding?: string; size?: number; html_url?: string }>(path);
     if (data.encoding !== "base64" || typeof data.content !== "string" || (data.size ?? 0) > MAX_POOLS_BYTES) return undefined;
-    const budget = parseBudget(new TextDecoder().decode(Uint8Array.from(atob(data.content.replace(/\s/g, "")), (c) => c.charCodeAt(0))), now);
+    const budget = parseBudget(decodeBase64(data.content), now);
     if (budget && typeof data.html_url === "string" && data.html_url.startsWith("https://github.com/")) budget.url = data.html_url;
     return budget;
   } catch (e) {
