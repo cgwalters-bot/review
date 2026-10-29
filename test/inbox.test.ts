@@ -94,7 +94,7 @@ describe("attachOffers", () => {
     ["the issue a card is about wins over an earlier card's link to it", [16], ["item:I_8"]],
     ["#14 is not #140, and another repository's #14 is not the tracker's", [14], ["do"]],
     ["a proposal with no decision is a card of its own", [99], ["do"]],
-    ["a decision carries every proposal on its issue", [12, 12], ["document:D15", "document:D15"]],
+    ["multiple proposals on one issue each get their own card", [12, 12], ["do", "do"]],
   ];
   for (const [name, issues, want] of cases) it(name, () => {
     const out = attachOffers(cards(), issues.map((n, i) => proposal(n, 100 + i)));

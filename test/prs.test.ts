@@ -87,6 +87,21 @@ describe("the bot's PRs other than the forge's drafts", () => {
       return body === undefined ? undefined : { body };
     });
 
+  it("includes broker PRs requesting the operator on needs-you without an org filter", async () => {
+    const broker = JSON.parse(JSON.stringify(fix).replaceAll("cgwalters-bot/homegit", "cgwalters-bot/praxis-credential-broker")) as typeof fix;
+    const { fetchImpl } = scriptedFetch((_m, url) => {
+      const u = new URL(url);
+      if (u.pathname === "/search/issues") return { body: u.searchParams.get("q") === OTHER_QUERY ? broker.searches.other : broker.searches.requested };
+      const body = broker.routes[url.replace(API, "")];
+      return body === undefined ? undefined : { body };
+    });
+    const gh = new GitHub(token, fetchImpl);
+    const read = await loadWaiting(gh, await loadOtherPrs(gh));
+    assert.deepEqual(read.errors, []);
+    const needs = buildNeeds({ entries: buildEntries([], [], new Map(), true, new Set(), { others: read.prs }) });
+    assert.ok(needs.some((n) => n.where === "cgwalters-bot/praxis-credential-broker#45" && n.action === "review"));
+  });
+
   it("searches them and those requesting his review, with GitHub's own qualifiers", async () => {
     assert.equal(OTHER_QUERY, "is:pr is:open author:cgwalters-bot");
     // Drafts too: the bot requests his review on forge drafts.

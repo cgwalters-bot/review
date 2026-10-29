@@ -18,6 +18,14 @@ const stamp = "2026-10-14T12:00:00Z";
 const base = { repo: "example/tasks", number: 1 };
 const head = "a".repeat(40);
 const envelope = { schema: "agent-board/operator-action/v1", title: "Tidy up", why: "Superseded." };
+
+it("allows broker merge proposals in the shipped config, not arbitrary bot repositories", () => {
+  const config = ACTION_CONFIG;
+  assert.ok(config);
+  const merge = { ...envelope, actions: [{ type: "merge_pull_request", repo: "cgwalters-bot/praxis-credential-broker", number: 44, head_sha: head, method: "squash" }] };
+  assert.ok(validateProposal(merge, config));
+  assert.throws(() => validateProposal({ ...merge, actions: [{ ...merge.actions[0], repo: "cgwalters-bot/unlisted" }] }, config), /not allowed/);
+});
 const close: Action = { ...base, type: "close_issue", reason: "Superseded" };
 const variable = (expected: string | null, selected = true, value = "new\nvalue"): Action => ({ type: "set_org_variable", org: "example", name: "REVIEW_WORKFLOW", value, expected_current: expected,
   ...(selected ? { visibility: "selected" as const, repositories: ["example/tasks", "Example/Tracker"] } : { visibility: "all" as const }) });
@@ -154,9 +162,9 @@ it("gives agent-board's verdict on every shared fixture case", async () => {
   for (const a of shared.scope_rejections) { assert.ok(matchesActionSchema(one(a))); assert.throws(() => validateProposal(one(a), cfg), /not allowed/); }
 });
 
-it("is enabled only for the operator, within the forge, and requires repository-owned writer, target and project configuration", () => {
+it("is enabled only for the operator, within the forge and broker, and requires repository-owned writer, target and project configuration", () => {
   assert.equal(ACTION_CONFIG?.operator, "cgwalters");
-  assert.ok(ACTION_CONFIG?.repositories.length && ACTION_CONFIG.repositories.every(r => r.startsWith("cgwalters-forge/")));
+  assert.ok(ACTION_CONFIG?.repositories.length && ACTION_CONFIG.repositories.every(r => r.startsWith("cgwalters-forge/") || r === "cgwalters-bot/praxis-credential-broker"));
   assert.deepEqual(actionConfig(c), c);
   assert.equal(ACTION_CONFIG?.org, "cgwalters-forge");
   assert.deepEqual(actionConfig({ ...c, project: "" }), { ...c, project: "" });

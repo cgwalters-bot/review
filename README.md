@@ -153,7 +153,14 @@ head (any author; drafts only in the forge, where the bot asks on its
 drafts), and the holds the scheduler's pass publishes as only the
 operator's to release (`agent-board/holds/v1`, the bot's comment on the
 private usage issue, read with the viewer's token): its question leads,
-the pass's reason under it. Over the inbox's cards a line says what holds
+the pass's reason under it. For up to twenty operator holds per refresh,
+the newest bot comment among the item's last 100 comments supplies the first
+`Decision needed:` and `Recommendation:` lines (plain or bold), when present.
+Missing lines or unreadable comments fall back to the published question and
+hold reason. A held item that is already a question or decision row keeps
+that row, with the recommendation as its note. These are display text, never
+instructions to execute.
+Over the inbox's cards a line says what holds
 every new run (WIP, pools), marked stale when the coordinator's heartbeat
 is (the pass rewrites its holds only when they change), and nothing shows
 when no such hold is published; labels are never read in its place. PRs approved by the operator at the
@@ -301,7 +308,8 @@ rerunning them is the pass's job. An operator-action proposal rides on the Decid
 tracker issue it was posted on, or else of the first card whose text links
 to that issue (`owner/repo#N` or its URL), with its exact mutations and Run
 (see [operator actions](docs/operator-actions.md)); **Do** is a proposal no
-decision carries. Proposals are found through the `operator-action` label,
+decision carries. Multiple proposals on one issue each get their own **Do**
+card, with their own title, why and Run button. Proposals are found through the `operator-action` label,
 which agent-board sets on a tracker issue when it posts one there and clears
 on the receipt: one conditional read of at most 20 labelled issues a
 minute, and the comments of one only once it moved.
