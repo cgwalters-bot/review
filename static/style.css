@@ -393,6 +393,7 @@ details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font
 .row.card:focus { outline: none; border-color: var(--accent); }
 .row.card-done { opacity: .7; }
 .row.card-stale { border-color: var(--p2); }
+.row.card-unavailable { border-style: dashed; opacity: .8; }
 .card-head { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: baseline; }
 .card-head .title { flex: 1 1 12em; font-size: 16px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
 .card-head .title a { color: inherit; }

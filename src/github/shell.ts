@@ -10,7 +10,7 @@ import type { SectionId } from "./sections.ts";
 export const VIEWS = ["inbox", "status"] as const;
 export type ViewId = (typeof VIEWS)[number];
 
-/** The views linked and routed to: the dashboard only while DASHBOARD_CONFIG has it on, Maintain while MAINTAIN_CONFIG names its issue. */
+/** The views linked and routed to. */
 export const SHOWN_VIEWS: readonly ViewId[] = VIEWS;
 
 export const VIEW_TITLE: Record<ViewId, string> = {

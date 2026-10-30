@@ -177,12 +177,6 @@ describe("needRow", () => {
     assert.equal(other.querySelector("a.action")?.textContent, "Answer");
     // A token GitHub hasn't named may be his: the form is there.
     assert.ok(needRow(q, { ...hooks(), login: undefined }).querySelector("form.answer"));
-    const hold = { item: "cgwalters-forge/tracker#22", url: `${TRACKER}/22`, epic: false, kind: "needs-human", reason: "labelled needs-human", operator: true, priority: null, question: null };
-    const row = needRow(buildNeeds({ entries: [], holds: { at: "2026-10-26T00:00:00Z", holds: [hold] } })[0]!, hooks());
-    assert.equal(row.querySelector("form"), null);
-    const action = row.querySelector<HTMLAnchorElement>("a.action");
-    assert.equal(action?.getAttribute("href"), `${TRACKER}/22`);
-    assert.equal(action?.textContent, "Write text");
   });
 
   it("labels a decision with its D-number, unblocks and whole question, and dims one answered here", () => {

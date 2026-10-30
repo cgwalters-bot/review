@@ -68,3 +68,28 @@ export function rawBoardItem(n: number, fields: Record<string, string>, title = 
     ),
   };
 }
+
+/** A published ask as agent-board's pass writes it (its docs/pass.md), on cgwalters-forge/tracker#n unless `over` says otherwise. */
+export function rawAsk(n: number, over: Record<string, unknown> = {}): Record<string, unknown> {
+  const repository = "cgwalters-forge/tracker";
+  return {
+    key: `${repository}#${n}`, item: `${repository}#${n}`, source: "items", kind: "needs-human", priority: null, waiting_since: "2026-10-29T18:24:18Z",
+    ask: `Ask ${n}?`, recommendation: null, target: `https://github.com/${repository}/issues/${n}`, head: null,
+    action: { type: "issue", repository, number: n }, source_ref: { type: "hold", repository, number: n }, ...over,
+  };
+}
+
+/** A needs-you list of `items`, complete and confirmed at `at`. */
+export function rawNeedsYou(items: unknown[], at: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schema: "agent-board/needs-you/v2", complete: true, validated_at: at, changed_at: at,
+    sources: { epics: "complete", items: "complete", reviews: "complete", proposals: "complete", digest: "off" },
+    summaries: "complete", omitted: 0, count: items.length, items, ...over,
+  };
+}
+
+/** The bot's hold comment holding `needsYou` (left out where undefined), as the pass renders it. */
+export function holdsComment(at: string, needsYou?: unknown): { user: { login: string }; body: string } {
+  const snapshot = { schema: "agent-board/holds/v1", at, truncated: 0, holds: [], ...(needsYou === undefined ? {} : { needs_you: needsYou }) };
+  return { user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\nHolds as of ${at}.\n\n\`\`\`json\n${JSON.stringify(snapshot)}\n\`\`\`\n` };
+}

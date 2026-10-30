@@ -2,11 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import type { RawComment } from "../src/github/heartbeat.ts";
-import { decisionLines, findHolds, HOLDS_MARKER, loadHolds, parseHolds } from "../src/github/holds.ts";
-import { buildNeeds } from "../src/github/needs.ts";
-import { inboxCards } from "../src/github/inbox.ts";
+import { findHolds, holdAsks, HOLDS_MARKER, loadHolds, parseHolds, parseNeedsYou } from "../src/github/holds.ts";
 import { usagePath } from "../src/github/usage.ts";
-import { fixture, scriptedFetch } from "./helpers.ts";
+import { fixture, holdsComment, rawAsk, rawNeedsYou, scriptedFetch } from "./helpers.ts";
 
 const AT = "2026-10-26T00:00:00Z";
 /** As agent-board's pass renders it (pass/holds.rs). */
@@ -78,51 +76,82 @@ describe("findHolds", () => {
   for (const [name, comments, want] of cases) it(name, () => assert.deepEqual(findHolds(comments)?.holds.map((h) => h.reason), want));
 });
 
-describe("loadHolds", () => {
-  for (const label of ["Decision needed:", "**Decision needed:**", "**Decision needed**:"]) it(`reads ${label} as a single line, first occurrence only`, () => {
-    assert.deepEqual(decisionLines(`${label} Ship it?\nContinuation\nDecision needed: Other?\n**Recommendation:** Merge it.\nMore`), { question: "Ship it?", recommendation: "Merge it." });
-    assert.deepEqual(decisionLines(`${label}\nUnrelated text`), {});
-    assert.deepEqual(decisionLines(`${label.replace("Decision needed", "Recommendation")}\nUnrelated text`), {});
+/** The example in agent-board's docs/pass.md, verbatim. */
+const DOC_EXAMPLE = `{"schema":"agent-board/needs-you/v2","complete":true,"validated_at":"2026-10-30T09:30:00Z","changed_at":"2026-10-30T09:00:00Z","sources":{"epics":"complete","items":"complete","reviews":"complete","proposals":"complete","digest":"off"},"summaries":"complete","omitted":0,"count":2,"items":[
+{"key":"cgwalters-forge/tracker#446","item":"cgwalters-forge/tracker#446","source":"items","kind":"needs-human","priority":"P0","waiting_since":"2026-10-29T18:24:18Z","ask":"Ship 1.0 today?","recommendation":"Yes, CI is green.","target":"https://github.com/cgwalters-forge/tracker/issues/446","head":null,"action":{"type":"issue","repository":"cgwalters-forge/tracker","number":446},"source_ref":{"type":"hold","repository":"cgwalters-forge/tracker","number":446}},
+{"key":"cgwalters-forge/bot-ops#5/comment-21","item":"cgwalters-forge/bot-ops#5","source":"proposals","kind":"operator-action","priority":null,"waiting_since":"2026-10-20T00:00:00Z","ask":"Label tracker#3","recommendation":"Because.","target":"https://github.com/cgwalters-forge/bot-ops/issues/5#issuecomment-21","head":null,"action":{"type":"operator_action","repository":"cgwalters-forge/bot-ops","number":5,"comment":21},"source_ref":{"type":"comment","repository":"cgwalters-forge/bot-ops","number":5,"comment":21}}]}`;
+
+describe("parseNeedsYou", () => {
+  it("reads the list agent-board documents", () => {
+    const l = parseNeedsYou(JSON.parse(DOC_EXAMPLE));
+    assert.ok(typeof l === "object");
+    assert.deepEqual([l.complete, l.validatedAt, l.changedAt, l.summaries, l.omitted, l.refused], [true, "2026-10-30T09:30:00Z", "2026-10-30T09:00:00Z", "complete", 0, 0]);
+    assert.deepEqual(l.items[0], { key: "cgwalters-forge/tracker#446", item: "cgwalters-forge/tracker#446", source: "items", kind: "needs-human", priority: "P0", waitingSince: "2026-10-29T18:24:18Z", ask: "Ship 1.0 today?", recommendation: "Yes, CI is green.", action: { type: "issue", repository: "cgwalters-forge/tracker", number: 446 }, carried: false });
+    assert.deepEqual(l.items[1]!.action, { type: "operator_action", repository: "cgwalters-forge/bot-ops", number: 5, comment: 21 });
   });
 
-  const bot = (body: string) => ({ body, author: { login: "cgwalters-bot" } });
-  const cases: [string, ReturnType<typeof bot>[], string, string][] = [
-    ["newest bot comment, ignoring a later human copy", [bot("Decision needed: Old?"), bot("**Decision needed:** Ship it?\n**Recommendation:** Merge it."), { body: "Decision needed: Spoof?", author: { login: "someone" } }], "Ship it?", "Recommendation: Merge it."],
-    ["no matching lines in newest bot comment, not stale advice", [bot("Decision needed: Old?\nRecommendation: Old."), bot("Run completed.")], "labelled needs-human", "labelled needs-human"],
-    ["recommendation only", [bot("Recommendation: Wait.")], "labelled needs-human", "Recommendation: Wait."],
-    ["no bot comments", [], "labelled needs-human", "labelled needs-human"],
+  it("reads it from the hold comment, and an older one without it as no list", () => {
+    const at = "2026-10-30T09:30:00Z";
+    assert.equal(typeof findHolds([holdsComment(at, rawNeedsYou([rawAsk(1)], at))])?.needsYou, "object");
+    assert.equal(findHolds([holdsComment(at)])?.needsYou, undefined);
+  });
+
+  // name, the list: each says why it can't be used, rather than a list
+  const unusable: [string, unknown, RegExp][] = [
+    ["v1, which had only the holds", { ...JSON.parse(DOC_EXAMPLE), schema: "agent-board/needs-you/v1" }, /schema "agent-board\/needs-you\/v1" is not/],
+    ["a later schema", { ...JSON.parse(DOC_EXAMPLE), schema: "agent-board/needs-you/v3" }, /is not agent-board\/needs-you\/v2/],
+    ["no validated_at", { ...JSON.parse(DOC_EXAMPLE), validated_at: "now" }, /malformed/],
+    ["no sources", { ...JSON.parse(DOC_EXAMPLE), sources: {} }, /malformed/],
+    ["items not a list", { ...JSON.parse(DOC_EXAMPLE), items: {} }, /malformed/],
+    ["not an object", [], /not an object/],
   ];
-  for (const [name, nodes, title, note] of cases) it(name, async () => {
-    const { fetchImpl, calls } = scriptedFetch((_m, url) => {
-      if (url.endsWith(usagePath)) return { body: [comment(snapshot([{ ...human, question: null }]))] };
-      if (url.endsWith("/graphql")) {
-        return { body: { data: { repository: { issueOrPullRequest: { comments: { nodes } } } } } };
-      }
-      return undefined;
-    });
-    const holds = await loadHolds(new GitHub(async () => "t", fetchImpl));
-    const cards = inboxCards({ needs: buildNeeds({ entries: [], holds }) });
-    assert.equal(calls.length, 2);
-    const request = calls[1]!.body as { query: string; variables: unknown };
-    assert.match(request.query, /comments\(last:100\)/);
-    assert.deepEqual(request.variables, { owner: "cgwalters-forge", repo: "tracker", number: 446 });
-    assert.deepEqual(cards.map((c) => [c.title, c.note, c.url]), [[title, note, human.url]]);
+  for (const [name, raw, why] of unusable) it(`can't use ${name}`, () => assert.match(String(parseNeedsYou(raw)), why));
+
+  // name, an edit to one ask: it is left out, the others kept, and the list is not complete
+  const refused: [string, Record<string, unknown>][] = [
+    ["an action type it doesn't know", { action: { type: "merge_everything", repository: "o/r", number: 1 } }],
+    ["a repository that climbs", { action: { type: "issue", repository: "o/..", number: 1 } }],
+    ["an approval without its head", { action: { type: "approve_pull_request", repository: "o/r", number: 1 } }],
+    ["a short head", { action: { type: "approve_pull_request", repository: "o/r", number: 1, head: "abc1234" } }],
+    ["a proposal without its comment", { action: { type: "operator_action", repository: "o/r", number: 1 } }],
+    ["a key that is no key", { key: "<b>" }],
+    ["no ask", { ask: "" }],
+    ["a priority the board has not", { priority: "urgent" }],
+  ];
+  for (const [name, edit] of refused) it(`leaves out ${name}`, () => {
+    const l = parseNeedsYou(rawNeedsYou([rawAsk(1), rawAsk(2, edit)], "2026-10-30T09:30:00Z"));
+    assert.ok(typeof l === "object");
+    assert.deepEqual([l.items.map((a) => a.key), l.refused, l.complete], [["cgwalters-forge/tracker#1"], 1, false]);
   });
 
-  it("bounds summary reads and preserves holds when comments are inaccessible", async () => {
-    const { fetchImpl, calls } = scriptedFetch((_m, url) => url.endsWith(usagePath)
-      ? { body: [comment(snapshot(Array.from({ length: 25 }, (_, i) => ({ ...human, item: `cgwalters-forge/tracker#${i + 1}`, url: `https://github.com/cgwalters-forge/tracker/issues/${i + 1}` }))))] }
-      : { status: 404, body: { message: "Not Found" } });
-    const holds = await loadHolds(new GitHub(async () => "t", fetchImpl));
-    assert.equal(holds?.holds.length, 25);
-    assert.equal(calls.length, 21);
-    assert.ok(holds?.holds.every((h) => h.question === "Ship it?" && !h.recommendation));
+  it("never keeps the published target: links are made from the action", () => {
+    const l = parseNeedsYou(rawNeedsYou([rawAsk(1, { target: "javascript:alert(1)" })], "2026-10-30T09:30:00Z"));
+    assert.ok(typeof l === "object" && l.items.length === 1 && !("target" in l.items[0]!));
   });
 
-  const load = (status: number) => {
-    const { fetchImpl } = scriptedFetch((_m, url) => (url.endsWith(usagePath) ? { status, body: status === 200 ? [comment(snapshot())] : { message: "Not Found" } } : undefined));
-    return loadHolds(new GitHub(async () => "t", fetchImpl));
-  };
-  it("reads the usage issue", async () => assert.equal((await load(200))?.holds.length, 2));
-  for (const status of [403, 404, 500]) it(`gets no holds on HTTP ${status}`, async () => assert.equal(await load(status), undefined));
+  it("cuts an ask to its first line and 500 characters", () => {
+    const l = parseNeedsYou(rawNeedsYou([rawAsk(1, { ask: `${"x".repeat(600)}\nmore` })], "2026-10-30T09:30:00Z"));
+    assert.ok(typeof l === "object");
+    assert.equal(l.items[0]!.ask, "x".repeat(500));
+  });
+});
+
+describe("holdAsks", () => {
+  it("lists the operator's holds on items, in the snapshot's order, and nothing else", () => {
+    const holds = parseHolds(body(snapshot([wip, { ...human, operator: false, item: "cgwalters-forge/tracker#1", url: "https://github.com/cgwalters-forge/tracker/issues/1" }, human])))!;
+    assert.deepEqual(holdAsks(holds).map((a) => [a.key, a.ask, a.priority, a.action]), [["cgwalters-forge/tracker#446", "Ship it?", "P0", { type: "issue", repository: "cgwalters-forge/tracker", number: 446 }]]);
+  });
+});
+
+describe("loadHolds", () => {
+  it("reads the usage issue's comments once, and no item's comments", async () => {
+    const { fetchImpl, calls } = scriptedFetch((_m, url) => (url.endsWith(usagePath) ? { body: [comment(snapshot())] } : undefined));
+    assert.equal((await loadHolds(new GitHub(async () => "t", fetchImpl)))?.holds.length, 2);
+    assert.equal(calls.length, 1);
+  });
+
+  for (const status of [403, 404, 500]) it(`throws on HTTP ${status}, for the inbox to say`, async () => {
+    const { fetchImpl } = scriptedFetch((_m, url) => (url.endsWith(usagePath) ? { status, body: { message: "Not Found" } } : undefined));
+    await assert.rejects(loadHolds(new GitHub(async () => "t", fetchImpl)));
+  });
 });

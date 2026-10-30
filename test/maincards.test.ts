@@ -4,12 +4,11 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { GitHub } from "../src/github/api.ts";
-import { parseItem } from "../src/github/board.ts";
-import { buildNeeds } from "../src/github/needs.ts";
-import { needCard, digestCard, type Card } from "../src/github/inbox.ts";
+import { parseNeedsYou } from "../src/github/holds.ts";
+import { type Card, publishedCards } from "../src/github/inbox.ts";
 import { fillInbox } from "../src/github/inboxview.ts";
 import { newestDraft, type ReviewDraftConfig } from "../src/github/reviewdrafts.ts";
-import { fields, scriptedFetch, type Scripted } from "./helpers.ts";
+import { fields, rawAsk, rawNeedsYou, scriptedFetch, type Scripted } from "./helpers.ts";
 
 const dom = new JSDOM(readFileSync(new URL("../static/index.html", import.meta.url), "utf8"), { url: "https://review.example/" });
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, Node: dom.window.Node, HTMLElement: dom.window.HTMLElement,
@@ -22,19 +21,15 @@ const url = "https://github.com/cgwalters-forge/tracker/issues/50";
 const path = "/repos/cgwalters-forge/tracker/issues/50";
 const head = "a".repeat(40);
 const shown = () => ({ title: "Which way?", body: "Q: Which way?", state: "open", html_url: url, labels: [{ name: "needs-human" }, { name: "needs-design" }, { name: "other" }] });
-function answerCard(kind = "needs-human"): Card {
-  return needCard({ key: `hold:${target}`, action: "write", title: "Which way?", where: target, href: url, inPlace: false,
-    hold: { item: target, url, kind, reason: "Decide", question: "Which way?", operator: true, epic: false, priority: null } })!;
+/** The pass's asks of `raw`, as cards. */
+function cards(...raw: Record<string, unknown>[]): Card[] {
+  const l = parseNeedsYou(rawNeedsYou(raw, "2026-10-30T00:00:00Z"));
+  assert.ok(typeof l === "object", String(l));
+  return publishedCards(l.items);
 }
+/** The pass's hold on tracker#50, as its card. */
+const answerCard = (kind = "needs-human"): Card => cards(rawAsk(50, { kind, ask: "Which way?" }))[0]!;
 const questionIssue = () => ({ ...shown(), labels: [{ name: "question" }, ...shown().labels], user: { login: "cgwalters-bot" }, assignees: [{ login: "cgwalters" }] });
-function questionCard(): Card {
-  const item = parseItem({ id: 50, node_id: "I_50", content_type: "Issue", content: questionIssue(), fields: [] });
-  const hold = answerCard();
-  assert.equal(hold.kind, "answer");
-  const [need] = buildNeeds({ entries: [{ key: "item:I_50", kind: "item", title: item.title, where: target, href: "#item/I_50", item }], holds: { at: "2026-10-30T00:00:00Z", holds: [hold.need.hold!] } });
-  assert.ok(need && !need.hold, "the published hold deduplicates into the question row");
-  return needCard(need)!;
-}
 function setup(route: (method: string, path: string) => Scripted | undefined, login = "cgwalters", drafts?: ReviewDraftConfig) {
   const f = scriptedFetch((method, url) => new URL(url).pathname === "/user" ? { body: { login } } : route(method, new URL(url).pathname) ?? (new URL(url).pathname === "/graphql" ? { body: { data: { repository: { issueOrPullRequest: { comments: { nodes: [] } } } } } } : undefined));
   const state = { gh: new GitHub(async () => "test", f.fetchImpl) } as Parameters<typeof inboxHooks>[0];
@@ -136,14 +131,14 @@ test("main refuses a replaced bot-comment ask even when the issue body did not c
   assert.match(form.textContent!, /ask changed/);
 });
 
-test("main checks bot-comment freshness on a question deduplicated with a published hold", async () => {
+test("main checks bot-comment freshness on a question the pass lists", async () => {
   let reads = 0;
   const r = setup((_method, p) => {
     if (p === path) return { body: questionIssue() };
     if (p === "/graphql") return { body: { data: { repository: { issueOrPullRequest: { comments: { nodes: [{ body: reads++ ? "Decision needed: Changed" : "Decision needed: Which way?", author: { login: "cgwalters-bot" } }] } } } } } };
     return undefined;
   });
-  r.paint(questionCard()); await settle();
+  r.paint(answerCard()); await settle();
   const form = r.list.querySelector("form")!;
   form.querySelector("textarea")!.value = "Go left.";
   form.dispatchEvent(new dom.window.Event("submit", { cancelable: true })); await settle();
@@ -151,17 +146,17 @@ test("main checks bot-comment freshness on a question deduplicated with a publis
   assert.match(form.textContent!, /ask changed/);
 });
 
-test("main retains fresh question eligibility checks before offering a form", async () => {
-  for (const changed of [{ assignees: [] }, { labels: shown().labels }, { labels: [...questionIssue().labels, { name: "chore" }] }, { user: { login: "someone-else" } }]) {
+test("main offers no form for a target that closed or moved since the pass listed it", async () => {
+  for (const changed of [{ state: "closed" }, { html_url: "https://github.com/elsewhere/tracker/issues/50" }]) {
     const r = setup((_method, p) => p === path ? { body: { ...questionIssue(), ...changed } } : undefined);
-    r.paint(questionCard()); await settle();
+    r.paint(answerCard()); await settle();
     assert.equal(r.list.querySelector("form"), null);
     assert.match(r.list.textContent!, /not answering/);
     assert.equal(r.writes().length, 0);
   }
 });
 
-test("main receipts use the target and read ask across hold/question source transitions, but allow a new bot ask", async () => {
+test("main receipts use the target and read ask across redraws of a changed card, but allow a new bot ask", async () => {
   let ask = "Decision needed: Which way?";
   const r = setup((method, p) => {
     if (p === path) return { body: questionIssue() };
@@ -173,13 +168,13 @@ test("main receipts use the target and read ask across hold/question source tran
   const form = r.list.querySelector("form")!;
   form.querySelector("textarea")!.value = "Go left.";
   form.dispatchEvent(new dom.window.Event("submit", { cancelable: true })); await settle();
-  r.paint({ ...questionCard(), title: "Refreshed question card" }, true, true); await settle();
+  r.paint({ ...answerCard(), title: "Refreshed question card" }, true, true); await settle();
   assert.match(r.list.textContent!, /Refreshed question card/);
   assert.equal(r.list.querySelector("form"), form);
   assert.equal(form.querySelector("button")!.disabled, true);
   assert.equal(r.writes().length, 1);
   ask = "Decision needed: A genuinely new ask";
-  r.paint({ ...questionCard(), title: "New ask" }, true, true); await settle();
+  r.paint({ ...answerCard(), title: "New ask" }, true, true); await settle();
   assert.notEqual(r.list.querySelector("form"), form);
   assert.equal(r.list.querySelector<HTMLButtonElement>("form button")!.disabled, false);
   assert.match(r.list.textContent!, /A genuinely new ask/);
@@ -222,7 +217,7 @@ for (const kind of ["needs-operator", "epic-unplanned"]) test(`main never releas
 
 test("main digest partial results survive forced redraw without offering approved PRs again", async () => {
   const r = setup((method, p) => method === "GET" ? { body: { state: "open", head: { sha: p.endsWith("/8") ? "b".repeat(40) : head } } } : { body: {} });
-  const card = digestCard({ url, digest: { date: "2026-10-30", approve: [7, 8].map((number) => ({ pr: { owner: "up", repo: "proj", number }, head, reason: "Ready" })), closer: [], waiting: [], stale: [] } })!;
+  const card = cards(...[7, 8].map((n) => rawAsk(n, { key: `up/proj#${n}/digest`, item: `up/proj#${n}`, source: "digest", kind: "digest-approve", recommendation: "Ready", action: { type: "approve_pull_request", repository: "up/proj", number: n, head } })))[0]!;
   r.paint(card);
   r.list.querySelector("button")!.click(); await settle();
   const report = r.list.querySelector(".maintain-results");

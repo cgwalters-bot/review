@@ -93,7 +93,6 @@ export function validateProposal(value: unknown, c: ActionConfig): Proposal {
 
 export interface Comment { id: string; databaseId: number; body: string; updatedAt: string; author: { login: string } | null; editor: { login: string } | null; lastEditedAt: string | null }
 export interface Offered { issue: number; comment: Comment; proposal: Proposal }
-export interface Discovery { offers: Offered[]; warnings: string[] }
 interface Connection { nodes: Comment[]; pageInfo: { hasNextPage: boolean } }
 
 function trusted(comment: Comment, c: ActionConfig): boolean {
@@ -131,46 +130,16 @@ export function proposals(all: Comment[], issue: number, c: ActionConfig): Offer
 }
 
 /**
- * The index of pending proposals: agent-board sets this label on a tracker
- * issue when it posts a proposal there and clears it once the receipt is
- * posted, so the inbox reads the comments of those issues only.
+ * The proposal the pass's needs-you list names (holds.ts), read again from
+ * its issue: only on the configured tracker, by the operator or the
+ * planner and last edited by them, and not yet executed. The list says
+ * where to look; this read is what the card shows and execute() checks.
  */
-export const PROPOSAL_LABEL = "operator-action";
-/**
- * Labelled issues read, most recently updated first. Anyone who can triage
- * the tracker can label an issue; past this many, a poll would spend one
- * GraphQL read per issue with the operator's token.
- */
-export const PROPOSAL_ISSUES = 20;
-
-/** Each labelled issue's proposals as last read, kept while the issue's updated_at is unchanged. */
-export type ProposalCache = Map<number, { updatedAt: string; offers: Offered[] }>;
-
-/**
- * The open proposals on the labelled tracker issues: one conditional read
- * of the index, then the comments of each issue updated since `cache` read
- * it. A proposal edited without the issue moving is caught by execute(),
- * which re-reads the comment before anything is written.
- */
-export async function loadProposals(gh: GitHub, c: ActionConfig, cache: ProposalCache = new Map()): Promise<Discovery> {
-  const { data: issues } = await gh.get<{ number: number; updated_at: string; pull_request?: unknown }[]>(`/repos/${c.tracker}/issues?state=open&labels=${PROPOSAL_LABEL}&sort=updated&direction=desc&per_page=${PROPOSAL_ISSUES}`);
-  const out: Offered[] = [];
-  const warnings: string[] = [];
-  if (issues.length >= PROPOSAL_ISSUES) warnings.push(`${PROPOSAL_ISSUES} or more issues carry the ${PROPOSAL_LABEL} label; only the ${PROPOSAL_ISSUES} updated last are read.`);
-  const listed = new Set<number>();
-  for (const issue of issues) if (!issue.pull_request) {
-    listed.add(issue.number);
-    const known = cache.get(issue.number);
-    if (known && known.updatedAt === issue.updated_at) { out.push(...known.offers); continue; }
-    cache.delete(issue.number);
-    try {
-      const offers = proposals(await comments(gh, c, issue.number), issue.number, c);
-      cache.set(issue.number, { updatedAt: issue.updated_at, offers });
-      out.push(...offers);
-    } catch (e) { warnings.push(`${c.tracker}#${issue.number}: ${String(e)}`); }
-  }
-  for (const n of cache.keys()) if (!listed.has(n)) cache.delete(n);
-  return { offers: out, warnings };
+export async function loadOffer(gh: GitHub, c: ActionConfig, ref: { repository: string; number: number; comment?: number }): Promise<Offered> {
+  if (ref.repository.toLowerCase() !== c.tracker.toLowerCase()) throw new Error(`Proposals are run from ${c.tracker} only, not ${ref.repository}`);
+  const offer = proposals(await comments(gh, c, ref.number), ref.number, c).find((o) => o.comment.databaseId === ref.comment);
+  if (!offer) throw new Error("This proposal is no longer pending: it was executed, changed hands or is gone");
+  return offer;
 }
 
 interface Issue { id: number; node_id: string; title: string; state: string; pull_request?: unknown; labels: { name: string }[]; parent_issue_url?: string | null }

@@ -589,7 +589,7 @@ export async function loadActive(gh: GitHub, now: number = Date.now()): Promise<
     readSource(sources, "board", (source) => loadWholeBoard(source).then((q) => q.items), gh),
     readSource(sources, "heartbeat", (source) => loadHeartbeat(source), gh),
     readSource(sources, "usage", (source) => loadUsage(source), gh),
-    loadHolds(gh),
+    readSource(sources, "holds", (source) => loadHolds(source), gh),
   ]);
   for (const [name, source] of Object.entries(sources)) if (source.error) warnings.push(`Couldn't read ${name}: ${source.error}`);
   const active: Active = { warnings, at: now, sources };

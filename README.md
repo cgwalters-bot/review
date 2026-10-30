@@ -16,56 +16,69 @@ The Forgejo client remains separate.
 
 ## Needs you
 
-**Needs you** (`#inbox`) is the default. The shipped configuration shows one
-prioritized list of cards, one per concrete ask. Priority comes from the
-board item (or the item a question blocks), then oldest first; completed
-cards follow pending ones. The section count is every card, not just those
-drawn. Five cards are drawn initially; **Show more** draws the rest and
-starts any reads their controls require.
+**Needs you** (`#inbox`) is the default. Its cards are first what the
+scheduler's pass publishes as waiting on the operator, its `needs_you`
+list (`agent-board/needs-you/v2`, agent-board's docs/pass.md, on with the
+pass's `holds.needsYou`): holds only he releases, followed PRs waiting on
+his approval or answer (broker PRs included), operator-action proposals
+and maintain digest asks. They come in the pass's order, by board Priority
+then age, and the app neither adds to that list nor ranks it again. Then
+come the decisions document's entries and open review drafts, which the
+pass doesn't read; completed ones last. The section count is every card on
+the page, including one kept for unsent text after it left. Five cards are
+drawn initially; **Show more** draws the rest and starts any reads their
+controls require. The list's question and recommendation are display text,
+not instructions; links are made from its typed action references, never
+read from it.
 
-**Decide** is an open checklist entry in the configured decisions document.
-**Answer** is an open question or an operator-only hold. **Approve** is an
-explicit request to review an unreviewed PR head. Holds come from the pass's
-published `agent-board/holds/v1`, never inferred from labels. For up to 20
-operator holds per refresh, the newest bot comment among the item's last
-100 comments can supply `Decision needed:` and `Recommendation:` text;
-otherwise the published question and reason remain. These are display text,
-not instructions to execute. Above the cards, a line shows published holds
-that block all new runs, marked stale when the coordinator heartbeat is.
+The line over the cards says how current the list is by the pass's own
+clock: when it last confirmed the list (`validated_at`) and changed it,
+and when GitHub last confirmed the comment. A 304 confirms the comment,
+not the pass: past an hour and a pass interval since `validated_at`, the
+line says the pass may have stopped. It also names any source the pass
+read only in part or not at all, asks past its cap, and summaries it
+didn't read (an ask then shows the board's question or the hold's
+reason). "All caught up" appears only for an empty list that is complete
+and current. If the comment can't be read, or no longer holds a usable
+list, the last list's cards stay, marked unavailable, with the reason. A
+snapshot from a pass without the list shows its own operator holds and
+says that review waits, proposals and digest asks aren't listed. A line
+also shows published holds that block all new runs, marked stale when the
+coordinator heartbeat is.
 
-A needs-human Answer card reads the target and its newest bot comment before
-showing the form, then checks the ask again before commenting and releasing
-only that target's `needs-human` label. A changed ask refuses release. Other
-operator and epic holds are comment-only; `needs-design` and unrelated labels
-are never removed. A recognized ask-created tracker question on the board is
-also closed as completed; labels on its `Blocks:` target are left alone for
-agent-board's `ask resolve`, which checks all other asks before unlabelling.
-A PR's Approve card
-reads its head on drawing and approves exactly that head. If it moved, or
-the review ask names another head, nothing is sent: open the PR pane to
-review it. Answers and approvals require GitHub to identify the token as
-the operator. Writes are not automatically retried after an uncertain
-response. Sent and uncertain outcomes, including a comment URL when release
-fails, survive ordinary refreshes and card redraws in this signed-in session.
-An uncertain comment is not offered again; check and finish on GitHub.
+**Answer** is a hold or a PR's needs-human. Its card reads the target and
+its newest bot comment before showing the form, then checks the ask again
+before commenting; on a `needs-human` ask it then removes only that
+label, and a changed ask refuses release. Other operator and epic holds
+are comment-only; `needs-design` and unrelated labels are never removed. A
+recognized ask-created tracker question on the board is also closed as
+completed; labels on its `Blocks:` target are left alone for agent-board's
+`ask resolve`, which checks all other asks before unlabelling.
+**Approve** is a PR the pass found waiting on his approval at a head. Its
+card reads the head on drawing and approves only if it is still the one
+the pass read; if it moved, or a review ask names another head, nothing is
+sent: open the PR pane to review it. Other asks on a PR (a closer look, a
+drafted reply, a stale PR) link to the PR pane. Answers and approvals
+require GitHub to identify the token as the operator. Writes are not
+automatically retried after an uncertain response. Sent and uncertain
+outcomes, including a comment URL when release fails, survive ordinary
+refreshes and card redraws in this signed-in session. An uncertain comment
+is not offered again; check and finish on GitHub.
 
-The maintain digest's **Approve selected** group is also an Approve card,
-configured in `src/github/maintain-config.json`. It approves selected PRs
-at the heads the digest assessed, skipping changed heads and closed PRs
-and reporting each outcome. A group with a skip or failure keeps its report
-until `r`; a clean batch refreshes the digest. There is no separate Maintain
-page.
+The digest's approvals are one **Approve selected** card. It approves
+selected PRs at the heads the digest assessed, skipping changed heads and
+closed PRs and reporting each outcome; the report stays until `r`.
 
-**Send** presents an open review-draft issue. **Do** presents an
-[operator-action proposal](docs/operator-actions.md), with the exact typed
-mutations, live target preconditions and **Run as yourself**. Proposals
-carried by a decision appear on that card; multiple proposals on one issue
-each get their own Do card. Discovery is bounded to 20 labelled issues per
-refresh and reads comments only after an issue changes. Actions execute
-sequentially with the operator's token, fail closed on changed or unreadable
-targets, and do not retry uncertain writes. Merges use GitHub's shown-head
-SHA guard; enqueueing is not offered because the published contract has no
-enqueue action.
+**Send** presents an open review-draft issue. **Do** presents one
+[operator-action proposal](docs/operator-actions.md) the pass lists: the
+card reads its comment again, accepting it only on the configured tracker
+from the operator or the planner and not yet executed, and shows the exact
+typed mutations, live target preconditions and **Run as yourself**.
+Multiple proposals on one issue each get their own card. Actions execute
+sequentially with the operator's token, fail closed on changed or
+unreadable targets, and do not retry uncertain writes. Merges use GitHub's
+shown-head SHA guard; enqueueing is not offered because the published
+contract has no enqueue action.
 
 Cards retain their nodes across polls. A card holding an unsent pick, text
 or focused field is not redrawn, moved or removed. It says when its source

@@ -1,15 +1,14 @@
 // Concrete operator asks, each once: unanswered questions, explicit
-// current-head review requests, approved forks to promote, and the holds
-// the scheduler's pass publishes as only his to release (holds.ts).
-// The broader legacy queue is kept in Watching and By priority.
+// current-head review requests and approved forks to promote. The inbox
+// shows the pass's published list instead (holds.ts); these rows serve
+// moving on after an action, and the state export.
 
-import { askProblem, blockedBy, isQuestion, type Item, NO_PRIORITY, PRIORITY_ORDER, waitingSince } from "./board.ts";
+import { askProblem, blockedBy, isQuestion, type Item, NO_PRIORITY, PRIORITY_ORDER } from "./board.ts";
 import { effectivePriority, type Entry, onBot, priorityRank } from "./queue.ts";
 import type { Stop } from "./advance.ts";
 import { type Decision, decisionLabel } from "./triage.ts";
 import { isBot } from "./authors.ts";
 import { isForgeDraft, promotionAction, refKey } from "./forge.ts";
-import type { Hold, Holds } from "./holds.ts";
 
 /** The one thing a row asks of him. */
 export type NeedAction = "answer" | "review" | "write" | "promote";
@@ -45,8 +44,6 @@ export interface Need {
   parent?: Entry;
   /** The decision it is, when it is one (answering it works the same). */
   decision?: Decision;
-  /** The pass's hold it is, when it is one. */
-  hold?: Hold;
   /** An open question he can answer on this page. */
   inPlace: boolean;
   why?: string;
@@ -91,19 +88,6 @@ function needOf(e: Entry, parent: Entry | undefined): Need | undefined {
 /** The refKey of the issue an entry or decision is, lowercased, for matching the two. */
 const issueKey = (item: Item | undefined): string | undefined => (item?.ref ? refKey(item.ref).toLowerCase() : undefined);
 
-/** A hold only he releases: its question, else its item's board title, with the pass's reason under it. */
-function holdNeed(hold: Hold & { item: string }, board: readonly Item[]): Need {
-  const item = board.find((i) => issueKey(i) === hold.item.toLowerCase());
-  const title = item?.title ?? hold.item;
-  const n: Need = { key: `hold:${hold.item.toLowerCase()}`, action: "write", title: hold.question ?? hold.reason, where: hold.question && item ? `${hold.item} · ${title}` : hold.item, href: hold.url ?? "#", inPlace: false, hold, why: hold.recommendation ? `Recommendation: ${hold.recommendation}` : hold.reason };
-  if (item) n.entry = { key: `item:${item.nodeId}`, kind: "item", title, where: hold.item, href: `#item/${item.nodeId}`, item };
-  const priority = hold.priority ?? item?.priority;
-  if (priority) n.priority = priority;
-  const since = item && waitingSince(item);
-  if (since) n.since = since;
-  return n;
-}
-
 export interface NeedsInput {
   board?: readonly Item[] | undefined;
   /** The queue, ranked (buildEntries). */
@@ -114,8 +98,6 @@ export interface NeedsInput {
   decisionsAnswered?: ReadonlySet<string>;
   /** Keys of rows answered from this page: kept (dimmed) after they stop waiting. */
   answeredHere?: ReadonlySet<string>;
-  /** The pass's holds; undefined when they could not be read. */
-  holds?: Holds | undefined;
 }
 
 /**
@@ -160,24 +142,6 @@ export function buildNeeds(input: NeedsInput): Need[] {
     const priority = board.find((i) => issueKey(i) === issueKey(d.item))?.priority ?? d.item.priority;
     if (priority) n.priority = priority;
     (answered ? done : out).push(answered ? { ...n, done: true } : n);
-  }
-  // An item that is already a row (a question, a decision) stays that row,
-  // with the hold's recommendation as its note when the bot gave one.
-  const rowed = new Map<string, Need>();
-  for (const n of out.concat(done)) {
-    const key = issueKey(n.entry?.item ?? n.decision?.item);
-    if (key && !rowed.has(key)) rowed.set(key, n);
-  }
-  for (const hold of input.holds?.holds ?? []) {
-    if (!hold.operator || !hold.item) continue;
-    const row = rowed.get(hold.item.toLowerCase());
-    if (row) {
-      if (hold.recommendation) row.why = `Recommendation: ${hold.recommendation}`;
-      continue;
-    }
-    const n = holdNeed({ ...hold, item: hold.item }, board);
-    rowed.set(hold.item.toLowerCase(), n);
-    out.push(n);
   }
   const time = (n: Need) => {
     const t = n.since ? Date.parse(n.since) : Number.NaN;

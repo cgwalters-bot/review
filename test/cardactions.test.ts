@@ -4,17 +4,16 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Action, ActionConfig, Comment, Offered, Proposal } from "../src/github/actions.ts";
+import { type Action, type ActionConfig, type Comment, loadOffer, type Proposal } from "../src/github/actions.ts";
 import { proposalCard } from "../src/github/actionsview.ts";
 import { GitHub } from "../src/github/api.ts";
-import { answerHold, approveAt, asOperator, openHead } from "../src/github/backend.ts";
-import type { Hold } from "../src/github/holds.ts";
-import { type Card, digestCard, inboxCards, needCard } from "../src/github/inbox.ts";
+import { approveAt, asOperator, openHead } from "../src/github/backend.ts";
+import { type Ask, parseNeedsYou } from "../src/github/holds.ts";
+import { type Card, publishedCards } from "../src/github/inbox.ts";
 import { fillInbox, type InboxHooks } from "../src/github/inboxview.ts";
-import { approveSelected, type Digest } from "../src/github/maintain.ts";
-import { buildNeeds, type Need } from "../src/github/needs.ts";
+import { approveSelected } from "../src/github/maintain.ts";
 import { createRenderer } from "../src/markdown.ts";
-import { installDom, type Recorded, scriptedFetch, type Scripted } from "./helpers.ts";
+import { installDom, rawAsk, rawNeedsYou, type Recorded, scriptedFetch, type Scripted } from "./helpers.ts";
 
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
@@ -46,20 +45,14 @@ function cardHooks(gh: GitHub, refreshed: string[]): InboxHooks {
     now: Date.parse("2026-10-30T12:00:00Z"),
     render,
     mayAct: true,
-    sendNeed: async () => { throw new Error("unused"); },
     answerEntry: async () => {},
-    headOf: (n) => openHead(gh, n.entry!.pr!.ref),
-    approve: (n, head) => asOperator(gh, async () => {
-      const url = await approveAt(gh, n.entry!.pr!.ref, head);
+    headOf: (a) => openHead(gh, PR),
+    approve: (a, head) => asOperator(gh, async () => {
+      const url = await approveAt(gh, PR, head);
       refreshed.push("approve");
       return url;
     }),
-    answerHold: (n, text) => asOperator(gh, async () => (await answerHold(gh, n.hold!.item!, text)).url),
-    approveDigest: (items) => asOperator(gh, async () => {
-      const rs = await approveSelected(gh, items);
-      if (rs.every((r) => r.status === "approved")) refreshed.push("digest");
-      return rs;
-    }),
+    approveDigest: (items) => asOperator(gh, () => approveSelected(gh, items)),
   };
 }
 
@@ -69,11 +62,16 @@ function draw(cards: Card[], hooks: InboxHooks): HTMLElement {
   return list;
 }
 
-const reviewCard = (): Card => {
-  const pr = { ref: PR, url: "https://github.com/up/proj/pull/7", title: "Fix", body: "", author: "someone", createdAt: "2026-10-29T00:00:00Z", updatedAt: "2026-10-29T00:00:00Z", draft: false };
-  const need: Need = { key: "pr:up/proj#7", action: "review", title: "Fix", where: "up/proj#7", href: "#pr/up/proj/7", inPlace: false, entry: { key: "pr:up/proj#7", kind: "pr", title: "Fix", where: "up/proj#7", href: "#pr/up/proj/7", pr } };
-  return needCard(need)!;
-};
+/** The pass's asks of `raw`, as parsed. */
+function asks(...raw: Record<string, unknown>[]): Ask[] {
+  const l = parseNeedsYou(rawNeedsYou(raw, "2026-10-30T00:00:00Z"));
+  assert.ok(typeof l === "object", String(l));
+  return l.items;
+}
+
+/** A PR of up/proj the pass lists, at head A. */
+const onPr = (n: number, kind: string, type = "approve_pull_request") => rawAsk(n, { key: `up/proj#${n}${kind.startsWith("digest") ? "/digest" : ""}`, item: `up/proj#${n}`, source: kind.startsWith("digest") ? "digest" : "reviews", kind, recommendation: `PR ${n}`, action: { type, repository: "up/proj", number: n, head: A } });
+const reviewCard = (): Card => publishedCards(asks(onPr(7, "review-approve")))[0]!;
 
 describe("Approve card", () => {
   /** A PR at head A, moving to `moved` once the card has read it; reviews answer `review`. */
@@ -114,12 +112,13 @@ describe("Approve card", () => {
     assert.deepEqual(r.refreshed, []);
     assert.match(r.status, /head moved to bbbbbbbbbbbb/);
     assert.equal(r.button.disabled, false);
-    // A poll keeps the report; r redraws, reading the head again, and offers that one.
+    // A poll keeps the report; r redraws, reading the head again: not the one the pass read, so no approval but in the PR pane.
     r.repaint();
     assert.match(r.list.textContent!, /head moved to bbbbbbbbbbbb/);
     r.repaint(true);
     await settle();
-    assert.ok([...r.list.querySelectorAll("button")].some((b) => b.textContent === `Approve ${B.slice(0, 7)}`));
+    assert.equal(r.list.querySelector("button"), null);
+    assert.match(r.list.textContent!, /since the pass read aaaaaaaaaaaa: open the PR to review it/);
   });
 
   it("sends nothing under another viewer's token", async () => {
@@ -153,72 +152,27 @@ describe("Approve card", () => {
   });
 });
 
-describe("hold card", () => {
-  const hold: Hold = { item: "cgwalters-forge/tracker#50", url: "https://github.com/cgwalters-forge/tracker/issues/50", epic: false, kind: "needs-human", reason: "needs a decision", operator: true, priority: "P1", question: "Which way?" };
-  const card = () => needCard(buildNeeds({ entries: [], holds: { at: "2026-10-30T00:00:00Z", holds: [hold] } })[0]!)!;
-
-  async function answer(state: string, login = OPERATOR, url = "https://github.com/cgwalters-forge/tracker/issues/50") {
-    const { gh, calls } = forge((method, path) => {
-      if (method === "GET" && path === "/repos/cgwalters-forge/tracker/issues/50") return { body: { state, html_url: url } };
-      if (method === "POST" && path === "/repos/cgwalters-forge/tracker/issues/50/comments") return { body: { html_url: "https://github.com/cgwalters-forge/tracker/issues/50#issuecomment-1" } };
-      return undefined;
-    }, login);
-    const list = draw([card()], cardHooks(gh, []));
-    const form = list.querySelector("form")!;
-    form.querySelector("textarea")!.value = "Go left.";
-    form.dispatchEvent(new win.Event("submit", { cancelable: true }));
-    await settle();
-    return { list, calls, form, status: form.querySelector("[role=status]")!.textContent! };
-  }
-
-  it("posts his text on the held item and says the hold is not released", async () => {
-    const r = await answer("open");
-    assert.deepEqual(writes(r.calls), ["POST /repos/cgwalters-forge/tracker/issues/50/comments"]);
-    assert.deepEqual(r.calls.find((c) => c.method === "POST")!.body, { body: "Go left.\n" });
-    assert.match(r.status, /^Sent: /);
-    assert.match(r.form.textContent!, /Only a comment: the hold stays until the pass releases it\./);
-    // A comment is no release: the card is not marked done.
-    assert.equal(r.list.querySelector(".card-done"), null);
-  });
-
-  it("refuses a closed or transferred item, and another viewer, before writing", async () => {
-    assert.deepEqual(writes((await answer("closed")).calls), []);
-    const moved = await answer("open", OPERATOR, "https://github.com/elsewhere/tracker/issues/50");
-    assert.deepEqual(writes(moved.calls), []);
-    assert.match(moved.status, /is now https:\/\/github.com\/elsewhere/);
-    const other = await answer("open", "someone-else");
-    assert.deepEqual(writes(other.calls), []);
-    assert.match(other.status, /^Not sent: .*not cgwalters's/);
-    // The unsent text stays for him to send again.
-    assert.equal(other.form.querySelector("textarea")!.value, "Go left.");
-  });
-});
-
 describe("digest card", () => {
-  const item = (number: number, head: string) => ({ pr: { owner: "up", repo: "proj", number }, head, reason: `PR ${number}` });
-  const digest = (): Digest => ({ date: "2026-10-30", approve: [item(7, A), item(8, A), item(9, A)], closer: [], waiting: [], stale: [] });
+  const digest = (): Card[] => publishedCards(asks(onPr(7, "digest-approve"), onPr(8, "digest-approve"), onPr(9, "digest-approve")));
 
   async function approve(route: (method: string, path: string) => Scripted | undefined, login = OPERATOR) {
     const { gh, calls } = forge(route, login);
     const refreshed: string[] = [];
     const hooks = cardHooks(gh, refreshed);
-    const found = { url: "https://github.com/example/ops/issues/4", digest: digest() };
-    const list = draw([digestCard(found)!], hooks);
+    const list = draw(digest(), hooks);
     [...list.querySelectorAll("button")].find((b) => b.textContent === "Approve selected")!.click();
     const results = () => [...list.querySelectorAll(".maintain-results li")].map((li) => li.textContent);
     // A redraw while the batch is in flight leaves the card alone, even on r.
-    fillInbox(list, [digestCard(found)!], hooks, true);
+    fillInbox(list, digest(), hooks, true);
     await settle();
     const r = { calls, refreshed, results: results(), boxes: [...list.querySelectorAll<HTMLInputElement>("input[type=checkbox]")].map((b) => b.disabled) };
-    // So does one after it while it reports a skip or failure, though its approvals changed the card;
-    // a clean batch's card is redrawn, done.
-    fillInbox(list, [digestCard(found)!], hooks);
-    if (r.results.every((t) => t!.startsWith("Approved"))) assert.ok(list.querySelector(".card-done"));
-    else assert.deepEqual(results(), r.results);
+    // So does one after it, clean or not, until r: the pass lists the PRs until its next digest.
+    fillInbox(list, digest(), hooks);
+    assert.deepEqual(results(), r.results);
     return r;
   }
 
-  it("approves each PR at its assessed head, reports a partial failure per PR, and leaves the redraw to the next poll", async () => {
+  it("approves each PR at its assessed head and reports a partial failure per PR", async () => {
     const r = await approve((method, path) => {
       const n = /\/pulls\/(\d+)/.exec(path)?.[1];
       if (method === "GET") return { body: { state: "open", head: { sha: n === "8" ? B : A } } };
@@ -230,13 +184,12 @@ describe("digest card", () => {
     assert.match(r.results[1]!, /^Skipped: up\/proj#8's head moved/);
     assert.match(r.results[2]!, /^Failed or uncertain: up\/proj#9/);
     assert.deepEqual(r.boxes, [true, false, false]);
-    assert.deepEqual(r.refreshed, []);
   });
 
-  it("refreshes once every PR is approved", async () => {
+  it("keeps a clean batch's report, not offering the approvals again", async () => {
     const r = await approve((method) => (method === "GET" ? { body: { state: "open", head: { sha: A } } } : { body: {} }));
     assert.equal(writes(r.calls).length, 3);
-    assert.deepEqual(r.refreshed, ["digest"]);
+    assert.deepEqual(r.boxes, [true, true, true]);
   });
 
   it("approves nothing under another viewer's token", async () => {
@@ -249,15 +202,14 @@ describe("digest card", () => {
 describe("proposal on a card (close, merge)", () => {
   const config: ActionConfig = { operator: OPERATOR, planner: "cgwalters-bot", tracker: "example/tracker", repositories: ["example/tasks", "example/tracker"], project: "", org: "" };
 
-  function offer(actions: Action[]): Offered {
+  function offer(actions: Action[]): Comment {
     const proposal = { schema: "agent-board/operator-action/v1", title: "Tidy up", why: "Superseded.", actions } as Proposal;
-    const comment: Comment = { id: "IC_p", databaseId: 10, body: `\`\`\`agent-board-action\n${JSON.stringify(proposal)}\n\`\`\``, updatedAt: "2026-10-30T00:00:00Z", author: { login: "cgwalters-bot" }, editor: null, lastEditedAt: null };
-    return { issue: 9, comment, proposal };
+    return { id: "IC_p", databaseId: 10, body: `\`\`\`agent-board-action\n${JSON.stringify(proposal)}\n\`\`\``, updatedAt: "2026-10-30T00:00:00Z", author: { login: "cgwalters-bot" }, editor: null, lastEditedAt: null };
   }
 
   /** The tracker's comments with receipts as they are posted, an issue, and a PR whose head is `head` and whose merge answers `merge`. */
-  async function run(o: Offered, opts: { head?: string; merge?: number; login?: string } = {}) {
-    const comments: Comment[] = [o.comment];
+  async function run(o: Comment, opts: { head?: string; merge?: number; login?: string } = {}) {
+    const comments: Comment[] = [o];
     let issueState = "open";
     const { gh, calls } = forge((method, path, body) => {
       const b = body as Record<string, any> | undefined;
@@ -278,8 +230,10 @@ describe("proposal on a card (close, merge)", () => {
     }, opts.login);
     const refreshed: string[] = [];
     let busy = false;
-    const hooks: InboxHooks = { ...cardHooks(gh, refreshed), offerBody: (x) => proposalCard(gh, config, x, () => busy, (v) => { busy = v; if (!v) refreshed.push("proposal"); }) };
-    const list = draw(inboxCards({ offers: [o] }), hooks);
+    // As main.ts's offerBody: the proposal the pass lists, read again from its comment.
+    const hooks: InboxHooks = { ...cardHooks(gh, refreshed), offerBody: async (a) => proposalCard(gh, config, await loadOffer(gh, config, a.action), () => busy, (v) => { busy = v; if (!v) refreshed.push("proposal"); }) };
+    const ask = rawAsk(9, { key: "example/tracker#9/comment-10", item: "example/tracker#9", source: "proposals", kind: "operator-action", action: { type: "operator_action", repository: "example/tracker", number: 9, comment: 10 } });
+    const list = draw(publishedCards(asks(ask)), hooks);
     await settle();
     const button = [...list.querySelectorAll("button")].find((x) => x.textContent === "Run as yourself")!;
     const before = calls.length;

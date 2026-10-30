@@ -1,49 +1,40 @@
-// The inbox: one card per thing only the operator can do, each from a live
-// predicate with its own leave rule (#135, §2 of its design):
+// The inbox: one card per thing only the operator can do.
 //
-// - Answer and Approve: the "Needs you" rows (needs.ts), an ask on an open
-//   issue, a hold of the pass's only he releases and a review request at an
-//   unreviewed head; answered dims the card until the bot acts, the item
-//   closing, the pass releasing it or the head being reviewed removes it.
-//   An Approve card for a review request approves in place at the head
-//   read as it is drawn; a hold's card posts his text on the item.
-// - Digest: the maintain digest's Approve as a group, until every PR in
-//   it is approved at the assessed head.
-// - Send: an open review-draft issue; ticking its send box dims it until the
-//   tracker's workflow closes the issue.
-// - Do: an open operator-action proposal no decision or ask carries.
-// - Document entry: an open decisions document entry; ticking an option dims
-//   it, its About item closing or merging resolves it, and comments on the
-//   item since the ask mark it as changed.
+// - What the pass publishes (holds.ts's needs-you list): its holds that
+//   only he releases, review waits, operator-action proposals and digest
+//   asks, in the pass's order and no others. A hold or a PR's needs-human
+//   is Answer, an approval at a head Approve, a proposal Do, the digest's
+//   approvals one Approve as a group, anything else a link to where it is
+//   done. Each card reads its target again before it writes.
+// - Then what the pass does not read: open decisions document entries
+//   (Decide; ticking an option dims one, its About item closing resolves
+//   it, comments on the item since the ask mark it) and open review-draft
+//   issues (Send; a ticked send box dims one until the tracker's workflow
+//   closes it).
 //
-// Each predicate takes what the page already read and returns the card, or
-// undefined when the thing has left. A proposal whose issue a decision or
-// ask is about, or links to, rides on that card (attachOffers): many
-// decisions are exactly an operator action. Cards are listed by board
-// Priority, then age; the view draws the first screen of them, and a
-// proposal's live preconditions are read only once its card is drawn.
-// Failed dispatch runs are not cards: rerunning them is the pass's job.
+// The list says how current it is from the pass's own clock, not from the
+// HTTP read: a 304 says the comment is unchanged, not that the pass still
+// runs. Empty means "nothing waits" only for a complete list the pass
+// confirmed recently. A list that can't be read again keeps its cards,
+// marked unavailable, and says why.
 
-import type { Offered } from "./actions.ts";
-import { OPERATOR, TRACKER_REPO } from "./config.ts";
 import type { DocumentEntry, Mark } from "./decisiondocument.ts";
-import type { Digest, Found } from "./maintain.ts";
-import type { Need } from "./needs.ts";
-import { priorityRank } from "./queue.ts";
+import { OPERATOR } from "./config.ts";
+import type { Ask, AskRef, NeedsYou } from "./holds.ts";
+import type { ApproveItem } from "./maintain.ts";
 import type { DraftIssue } from "./reviewdrafts.ts";
+import { ago } from "../time.ts";
 
-export type CardKind = "document" | "answer" | "approve" | "digest" | "send" | "do";
-
-/** The kinds in the order the inbox lists them. */
-export const CARD_KINDS: readonly CardKind[] = ["document", "answer", "approve", "digest", "send", "do"];
+export type CardKind = "answer" | "approve" | "open" | "do" | "digest" | "document" | "send";
 
 export const CARD_LABEL: Record<CardKind, string> = {
-  document: "Decide",
   answer: "Answer",
   approve: "Approve",
-  digest: "Approve",
-  send: "Send",
+  open: "Act",
   do: "Do",
+  digest: "Approve",
+  document: "Decide",
+  send: "Send",
 };
 
 interface CardBase {
@@ -59,43 +50,56 @@ interface CardBase {
   answered?: boolean;
   /** A line under the title: what changed, or why it waits. */
   note?: string;
-  /** The board Priority of the item it is about, when the board gives one. */
+  /** The board Priority the pass gave it. */
   priority?: string;
-  /** Proposals this decision or ask carries, each with its exact mutations and a Run button. */
-  offers?: readonly Offered[];
+  /** From a list that can't be read now: shown, marked, until one can. */
+  unavailable?: boolean;
 }
 
 export type Card = CardBase & (
-  | { kind: "answer" | "approve"; need: Need }
-  | { kind: "digest"; digest: Digest }
+  | { kind: "answer" | "approve" | "open" | "do"; ask: Ask }
+  | { kind: "digest"; items: ApproveItem[] }
   | { kind: "send"; draft: DraftIssue }
-  | { kind: "do"; offer: Offered }
   | { kind: "document"; entry: DocumentEntry; mark?: Mark }
 );
 
+const PULLS = ["pull_request", "approve_pull_request", "review_pull_request", "reply_pull_request", "close_pull_request"];
+
+/** The page on GitHub an ask's action is on, made from its parts. */
+export function askUrl(r: AskRef): string {
+  return `https://github.com/${r.repository}/${PULLS.includes(r.type) ? "pull" : "issues"}/${r.number}${r.comment ? `#issuecomment-${r.comment}` : ""}`;
+}
+
+/** Where the app opens it: the PR pane, or the issue's item view. */
+export function askHref(r: AskRef): string {
+  return `#${PULLS.includes(r.type) ? "pr" : "issue"}/${r.repository}/${r.number}`;
+}
+
 const open = (state: string | undefined): boolean => state === undefined || state === "open";
 
-/**
- * An Answer or Approve card for a "Needs you" row. A row on a closed item
- * or a PR no longer open has left, whatever the queue still says; so has a
- * review request once the head it names was reviewed.
- */
-export function needCard(n: Need): Card | undefined {
-  const item = n.decision?.item ?? n.entry?.item;
-  if (!open(item?.state)) return undefined;
-  const approve = n.action === "review" || n.action === "promote";
-  if (n.action === "review" && n.entry?.wait?.reviewedCurrentHead) return undefined;
-  const url = n.hold?.url ?? n.entry?.pr?.url ?? item?.url;
+/** The card for one published ask. */
+export function askCard(a: Ask, unavailable = false): Card {
+  const type = a.action.type;
+  const kind = type === "operator_action" ? "do" : type === "approve_pull_request" ? "approve" : type === "issue" || type === "pull_request" ? "answer" : "open";
+  const note = [a.recommendation && `Recommendation: ${a.recommendation}`, a.carried && "Carried over: the pass did not read its source again."].filter(Boolean).join(" ");
   return {
-    kind: approve ? "approve" : "answer",
-    need: n,
-    key: n.key,
-    title: n.title,
-    where: n.where,
-    ...(url ? { url } : {}),
-    ...(n.since ? { since: n.since } : {}),
-    ...(n.done ? { answered: true, note: "Answered: waiting on the bot." } : n.why ? { note: n.why } : {}),
+    kind, ask: a, key: a.key, title: a.ask, where: `${a.item} · ${a.kind}`, url: askUrl(a.action), since: a.waitingSince,
+    ...(a.priority ? { priority: a.priority } : {}), ...(note ? { note } : {}), ...(unavailable ? { unavailable } : {}),
   };
+}
+
+/** The asks as cards in the pass's order, the digest's approvals one group where the first of them ranks. */
+export function publishedCards(asks: readonly Ask[], unavailable = false): Card[] {
+  const digest = asks.filter((a) => a.kind === "digest-approve" && a.action.head);
+  const items = digest.map((a): ApproveItem => {
+    const [owner = "", repo = ""] = a.action.repository.split("/");
+    return { pr: { owner, repo, number: a.action.number }, head: a.action.head!, reason: a.recommendation ?? a.ask };
+  });
+  return asks.flatMap((a): Card[] => {
+    if (!digest.includes(a)) return [askCard(a, unavailable)];
+    if (a !== digest[0]) return [];
+    return [{ kind: "digest", items, key: "digest", title: `Approve ${items.length} PR${items.length === 1 ? "" : "s"} as a group`, where: "the maintain digest", since: a.waitingSince, ...(unavailable ? { unavailable } : {}) }];
+  });
 }
 
 /** A Send card for an open review-draft issue; a ticked box waits on the tracker's workflow, which closes the issue. */
@@ -110,63 +114,6 @@ export function sendCard(d: DraftIssue & { issue: { state?: string } }): Card | 
     url: d.issue.html_url,
     ...(d.box === "ticked" ? { answered: true, note: "Send is ticked: waiting on the tracker's workflow." } : {}),
   };
-}
-
-/** The maintain digest's Approve as a group, while it lists any PR; every one approved dims it. */
-export function digestCard(found: Found): Card | undefined {
-  const d = found.digest;
-  if (!d?.approve.length) return undefined;
-  return {
-    kind: "digest",
-    digest: d,
-    key: `digest:${d.date}`,
-    title: `Approve ${d.approve.length} PR${d.approve.length === 1 ? "" : "s"} as a group`,
-    where: `Maintain digest of ${d.date}`,
-    url: found.url,
-    since: `${d.date}T00:00:00Z`,
-    ...(d.approve.every((it) => it.approved) ? { answered: true, note: "All approved at the assessed heads." } : found.stale ? { note: "This digest is more than a day old: check before approving." } : {}),
-  };
-}
-
-/** A Do card for a proposal no decision carries; its live preconditions are read when it is drawn. */
-export function doCard(o: Offered): Card {
-  return { kind: "do", offer: o, key: `do:${o.comment.databaseId}`, title: o.proposal.title, where: `${TRACKER_REPO}#${o.issue}`, note: o.proposal.why, since: o.comment.updatedAt };
-}
-
-/** `owner/repo#n`, lowercased: how a card and a proposal name the same issue. */
-const refOf = (repo: string, number: number): string => `${repo}#${number}`.toLowerCase();
-
-/** The issue a decision or ask is about, and the text that may link to another. */
-function decisionOf(c: Card): { ref?: string; text: string } | undefined {
-  if (c.kind === "document") return { ...(c.entry.about ? { ref: refOf(c.entry.about.repo, c.entry.about.number) } : {}), text: c.entry.text };
-  if (c.kind !== "answer") return undefined;
-  const item = c.need.decision?.item ?? c.need.entry?.item;
-  return { ...(item?.ref ? { ref: refOf(`${item.ref.owner}/${item.ref.repo}`, item.ref.number) } : {}), text: item?.body ?? "" };
-}
-
-/** Whether `text` links to issue `number` of `repo`, as `owner/repo#n` or its URL. */
-export function linksTo(text: string, repo: string, number: number): boolean {
-  const name = repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:(?<![\\w./-])${name}#|https://github\\.com/${name}/(?:issues|pull)/)${number}(?!\\d)`, "i").test(text);
-}
-
-/**
- * Put each proposal on the first card, in order, of a decision or ask
- * about its tracker issue, else of one whose text links to it; a proposal
- * no card takes is a Do card of its own. A proposal rides on one card only,
- * so it has one Run button.
- */
-export function attachOffers(cards: readonly Card[], offers: readonly Offered[]): Card[] {
-  const out = cards.map((c) => ({ ...c }));
-  const loose: Card[] = [];
-  for (const o of offers) {
-    const ref = refOf(TRACKER_REPO, o.issue);
-    const about = out.find((c) => decisionOf(c)?.ref === ref) ?? out.find((c) => linksTo(decisionOf(c)?.text ?? "", TRACKER_REPO, o.issue));
-    // Separate decisions on one issue need separate titles, reasons and Run buttons.
-    if (about && offers.filter((other) => other.issue === o.issue).length === 1) about.offers = [...about.offers ?? [], o];
-    else loose.push(doCard(o));
-  }
-  return [...out, ...loose];
 }
 
 /**
@@ -194,50 +141,66 @@ export function documentCard(entry: DocumentEntry, mark: Mark | undefined): Card
   };
 }
 
-export interface InboxInput {
-  needs?: readonly Need[];
-  document?: { entries: readonly DocumentEntry[]; marks: ReadonlyMap<string, Mark> };
-  drafts?: readonly DraftIssue[];
-  /** The board Priority of an item, by its lowercased `owner/repo#n`. */
-  priorityOf?: (item: string) => string | undefined;
-  /** The open proposals, as loaded. */
-  offers?: readonly Offered[];
-  /** The maintain digest, as loaded. */
-  digest?: Found;
+/** What the inbox last read of the pass's list. */
+export interface Published {
+  /** The asks to show: the list's, else the snapshot's own operator holds (holdAsks). */
+  asks: Ask[];
+  /** The last list read, kept while a later read has none. */
+  list?: NeedsYou;
+  /** When GitHub last confirmed the comment holding `list`, a 304 included; undefined while it is the cache's. */
+  checkedAt?: number;
+  /** Why the latest read gave no list to use. */
+  error?: string;
+  /** `asks` are from a read that can't be confirmed now. */
+  unavailable: boolean;
 }
 
 /**
- * Every card, the ones still waiting on him before those he did, each part
- * by board Priority, then oldest first, then kind. Proposals ride on their
- * decisions (attachOffers), the earliest such card first.
+ * Older than this, the pass's list is not known to be current: the pass
+ * writes an unchanged list again once it is an hour old, and runs every
+ * ten minutes (tracker's poll.yml).
  */
-export function inboxCards(input: InboxInput): Card[] {
-  const priorityOf = input.priorityOf ?? (() => undefined);
-  const cards = [
-    ...(input.document?.entries ?? []).map((e) => documentCard(e, input.document?.marks.get(e.id))),
-    ...(input.needs ?? []).map(needCard),
-    ...(input.drafts ?? []).map(sendCard),
-    input.digest && digestCard(input.digest),
-  ].filter((c): c is Card => c !== undefined);
-  const loose = attachOffers(sortCards(cards, priorityOf), input.offers ?? []);
-  return sortCards(loose, priorityOf);
+export const NEEDS_YOU_MAX_AGE_MS = 70 * 60_000;
+
+/** A source the pass did not read whole, as "proposals partial". */
+const shortfall = (l: NeedsYou): string[] => Object.entries(l.sources).flatMap(([name, read]) => (read === "complete" || read === "off" ? [] : [`${name} ${read}`]));
+
+/**
+ * What the inbox says over the cards of the pass's list, and whether an
+ * empty inbox may say nothing waits: only a complete list, read now and
+ * confirmed by the pass within NEEDS_YOU_MAX_AGE_MS.
+ */
+export function publishedNote(p: Published, now: number): { text: string; settled: boolean } {
+  const l = p.list;
+  if (!l && !p.error) return { text: "Reading the pass's needs-you list…", settled: false };
+  const parts: string[] = [];
+  if (p.error) parts.push(`${p.error}.`);
+  if (l) {
+    const old = now - Date.parse(l.validatedAt) > NEEDS_YOU_MAX_AGE_MS;
+    parts.push(`${p.unavailable ? "Cards from the list the pass" : "The pass's list:"} confirmed ${ago(l.validatedAt, now)}, changed ${ago(l.changedAt, now)}${p.checkedAt === undefined ? ", shown from this browser's cache" : `, checked on GitHub ${ago(new Date(p.checkedAt).toISOString(), now)}`}${p.unavailable ? "; marked unavailable until it can be read again." : "."}`);
+    if (old) parts.push("The pass has not confirmed it for over an hour: it may have stopped, and this may be out of date.");
+    const missing = [...shortfall(l), ...(l.omitted ? [`${l.omitted} past the pass's cap`] : []), ...(l.refused ? [`${l.refused} unreadable here`] : [])];
+    if (!l.complete) parts.push(`Incomplete${missing.length ? ` (${missing.join(", ")})` : ""}: more may wait on you.`);
+    if (l.summaries !== "complete") parts.push("Not every summary was read: some asks show the board's question or the hold's reason.");
+    return { text: parts.join(" "), settled: !p.error && p.checkedAt !== undefined && l.complete && !old };
+  }
+  parts.push(p.asks.length && !p.unavailable ? "Shown: the snapshot's own operator holds; review waits, proposals and digest asks are not listed." : "Holds, review waits, proposals and digest asks are not listed.");
+  return { text: parts.join(" "), settled: false };
 }
 
-/** Cards in the inbox's order, each given its Priority: a need's own, else the board's for the item it names. */
-export function sortCards(cards: readonly Card[], priorityOf: (item: string) => string | undefined): Card[] {
-  const ranked = cards.map((c, i) => {
-    const priority = c.kind === "answer" || c.kind === "approve" ? c.need.priority : priorityOf(c.where.toLowerCase());
-    return { c: priority ? { ...c, priority } : c, i };
-  });
-  const since = (c: Card) => {
-    const t = Date.parse(c.since ?? "");
-    return Number.isFinite(t) ? t : Infinity;
-  };
-  return ranked.sort((a, b) => Number(a.c.answered === true) - Number(b.c.answered === true)
-    || priorityRank(a.c.priority) - priorityRank(b.c.priority)
-    || since(a.c) - since(b.c)
-    || CARD_KINDS.indexOf(a.c.kind) - CARD_KINDS.indexOf(b.c.kind)
-    || a.i - b.i).map(({ c }) => c);
+export interface InboxInput {
+  published?: Published;
+  document?: { entries: readonly DocumentEntry[]; marks: ReadonlyMap<string, Mark> };
+  drafts?: readonly DraftIssue[];
+}
+
+/** Every card: the pass's in its order, then the document's and the drafts', those he did last. */
+export function inboxCards(input: InboxInput): Card[] {
+  const local = [
+    ...(input.document?.entries ?? []).map((e) => documentCard(e, input.document?.marks.get(e.id))),
+    ...(input.drafts ?? []).map(sendCard),
+  ].filter((c): c is Card => c !== undefined);
+  return [...publishedCards(input.published?.asks ?? [], input.published?.unavailable), ...local.filter((c) => !c.answered), ...local.filter((c) => c.answered)];
 }
 
 /** Whether `login` may act on the inbox's cards: the operator, or a token GitHub hasn't named yet. */

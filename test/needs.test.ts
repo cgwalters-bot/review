@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Item } from "../src/github/board.ts";
 import type { ForgePr, Verdict } from "../src/github/forge.ts";
-import type { Hold, Holds } from "../src/github/holds.ts";
-import { inboxCards } from "../src/github/inbox.ts";
 import { parseRoute } from "../src/github/keys.ts";
 import { botWaitingCount, buildNeeds, type Need, needStops, waitingCount } from "../src/github/needs.ts";
 import { buildEntries, type Entry } from "../src/github/queue.ts";
@@ -43,9 +41,6 @@ function pr(owner: string, repo: string, number: number): ForgePr {
 
 const rows = (needs: readonly Need[]) => needs.map((n) => [n.key, n.action]);
 const entriesOf = (items: Item[], answered: string[] = []) => buildEntries(items, [], new Map(), true, new Set(answered));
-const ref = (n: number) => `cgwalters-forge/tracker#${n}`;
-const hold = (n: number | null, over: Partial<Hold> = {}): Hold => ({ item: n === null ? null : ref(n), url: n === null ? null : `${TRACKER}/${n}`, epic: false, kind: "needs-human", reason: "labelled needs-human", operator: true, priority: null, question: null, ...over });
-const holds = (...list: Hold[]): Holds => ({ at: "2026-10-26T00:00:00Z", holds: list });
 
 describe("representative operator asks", () => {
   const forkBody = "<!-- bot-meta -->\n- Upstream: `upstream/widget`\n- Contribution policy: `human-text`\n<!-- /bot-meta -->";
@@ -253,50 +248,8 @@ describe("buildNeeds", () => {
   });
 
   it("steps through questions in place and opens the rest", () => {
-    const stops = needStops(buildNeeds({ entries: entriesOf([ask("PVTI_q", 21, "question", `${TRACKER}/9`)]), holds: holds(hold(22)) }));
-    assert.deepEqual(stops.map((s) => [s.key, s.href, s.inPlace]), [["item:PVTI_q", "#", true], [`hold:${ref(22)}`, `${TRACKER}/22`, false]]);
+    const stops = needStops(buildNeeds({ entries: entriesOf([ask("PVTI_q", 21, "question", `${TRACKER}/9`)]) }));
+    assert.deepEqual(stops.map((s) => [s.key, s.href, s.inPlace]), [["item:PVTI_q", "#", true]]);
   });
 });
 
-describe("the pass's holds", () => {
-  it("lists those only he releases, led by the question, with the reason, Priority and link", () => {
-    const board = [tracked("PVTI_446", 446, { title: "Release 1.0", movedAt: "2026-10-20T00:00:00Z" })];
-    const needs = buildNeeds({ entries: [], board, holds: holds(hold(null, { kind: "wip", operator: false }), hold(445, { kind: "pr-open", operator: false }), hold(446, { priority: "P0", question: "Ship it?" }), hold(596, { epic: true, kind: "epic-unplanned", reason: "got no plan" })) });
-    assert.deepEqual(needs.map((n) => [n.key, n.title, n.where, n.why, n.priority, n.href, n.since, n.entry?.key]), [
-      ["hold:cgwalters-forge/tracker#446", "Ship it?", `${ref(446)} · Release 1.0`, "labelled needs-human", "P0", `${TRACKER}/446`, "2026-10-20T00:00:00Z", "item:PVTI_446"],
-      // Not on the board: its reference is all there is to call it.
-      ["hold:cgwalters-forge/tracker#596", "got no plan", ref(596), "got no plan", undefined, `${TRACKER}/596`, undefined, undefined],
-    ]);
-  });
-
-  it("leaves an item that is already a question its question's row", () => {
-    const q = ask("PVTI_q", 21, "question", `${TRACKER}/9`);
-    assert.deepEqual(rows(buildNeeds({ entries: entriesOf([q]), board: [q], holds: holds(hold(21)) })), [["item:PVTI_q", "answer"]]);
-  });
-
-  it("notes a hold's recommendation on the question or decision row its item already is", () => {
-    const q = ask("PVTI_q", 21, "question", `${TRACKER}/9`);
-    const d = parseDecision(tracked("I_40", 40, { title: "D2: Another?", body: `Unblocks:\n- ${TRACKER}/9\n\n${QUESTION}`, labels: ["question", "decision"] }));
-    const needs = buildNeeds({ entries: entriesOf([q]), board: [q], decisions: [d], holds: holds(hold(21, { recommendation: "Merge it." }), hold(40, { recommendation: "Wait." })) });
-    assert.deepEqual(needs.map((n) => [n.key, n.why]), [["decision:I_40", "Recommendation: Wait."], ["item:PVTI_q", "Recommendation: Merge it."]]);
-  });
-
-  describe("never consult the labels", () => {
-    const labelled = [tracked("held", 98, { labels: ["needs-human"] }), tracked("escalate", 11, { labels: ["escalate"] })];
-    // name, the snapshot, the keys listed
-    const cases: [string, Holds | undefined, string[]][] = [
-      ["no snapshot: nothing", undefined, []],
-      ["an empty snapshot: nothing", holds(), []],
-      ["a snapshot: its holds alone", holds(hold(98)), ["hold:cgwalters-forge/tracker#98"]],
-    ];
-    for (const [name, snapshot, want] of cases) it(name, () => assert.deepEqual(buildNeeds({ entries: entriesOf(labelled), board: labelled, holds: snapshot }).map((n) => n.key).sort(), [...want].sort()));
-  });
-
-  it("are carded P0, P1, P2, then none, the oldest first at each", () => {
-    const moved = (n: number, day: number) => tracked(`PVTI_${n}`, n, { movedAt: `2026-10-${String(day).padStart(2, "0")}T00:00:00Z` });
-    const board = [moved(1, 20), moved(2, 10), moved(3, 15), moved(4, 1), moved(5, 5), moved(6, 2)];
-    const snapshot = holds(hold(1, { priority: "P1" }), hold(2, { priority: "P1" }), hold(3), hold(4, { priority: "P2" }), hold(5, { priority: "P0" }), hold(6));
-    const cards = inboxCards({ needs: buildNeeds({ entries: [], board, holds: snapshot }) });
-    assert.deepEqual(cards.map((c) => [c.where, c.priority, c.url]), ([[5, "P0"], [2, "P1"], [1, "P1"], [4, "P2"], [6, undefined], [3, undefined]] as const).map(([n, p]) => [ref(n), p, `${TRACKER}/${n}`]));
-  });
-});
