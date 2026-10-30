@@ -33,13 +33,21 @@ otherwise the published question and reason remain. These are display text,
 not instructions to execute. Above the cards, a line shows published holds
 that block all new runs, marked stale when the coordinator heartbeat is.
 
-A hold's text box posts a comment as you; it does not itself release the
-hold. The pass must publish a new snapshot without it. A PR's Approve card
+A needs-human Answer card reads the target and its newest bot comment before
+showing the form, then checks the ask again before commenting and releasing
+only that target's `needs-human` label. A changed ask refuses release. Other
+operator and epic holds are comment-only; `needs-design` and unrelated labels
+are never removed. A recognized ask-created tracker question on the board is
+also closed as completed; labels on its `Blocks:` target are left alone for
+agent-board's `ask resolve`, which checks all other asks before unlabelling.
+A PR's Approve card
 reads its head on drawing and approves exactly that head. If it moved, or
 the review ask names another head, nothing is sent: open the PR pane to
 review it. Answers and approvals require GitHub to identify the token as
 the operator. Writes are not automatically retried after an uncertain
-response.
+response. Sent and uncertain outcomes, including a comment URL when release
+fails, survive ordinary refreshes and card redraws in this signed-in session.
+An uncertain comment is not offered again; check and finish on GitHub.
 
 The maintain digest's **Approve selected** group is also an Approve card,
 configured in `src/github/maintain-config.json`. It approves selected PRs
@@ -67,7 +75,8 @@ between Needs you and Status does not discard unsent answers.
 
 The optional single checklist document is configured in
 `src/github/decisions-config.json`: `document` names `repo` and `number`;
-`legacyQuestions` retains old per-issue asks, and `inbox` enables cards.
+`legacyQuestions` retains old per-issue asks. The page always uses cards;
+the old `inbox` switch no longer selects a separate row-based writer.
 Entries use `### D12 Question`, `- [ ] A) Answer` options and a `Reply:`
 line. `About: owner/repo#12`, optionally followed by `, asked 2026-10-15`,
 identifies its subject. With `resolve: true`, each refresh checks subjects

@@ -293,19 +293,53 @@ export async function asOperator<T>(gh: GitHub, write: () => Promise<T>): Promis
   return write();
 }
 
-/**
- * Post his text on a held item (OWNER/REPO#N), read fresh and still open.
- * Only a comment: agent-board's holds/v1 publishes no write that releases
- * a hold, so the hold stands until the pass's own snapshot drops it.
- */
-export async function answerHold(gh: GitHub, item: string, text: string): Promise<Posted> {
+/** Read the exact target, not a transferred issue, before showing or answering its ask. */
+export async function readAnswerTarget(gh: GitHub, item: string, question = false): Promise<RawContent> {
+  const [owner = "", repo = "", n] = item.split(/[/#]/);
+  if (question) return freshAsk(gh, { owner, repo, number: Number(n) }, "question", TRACKER_SCOPE);
+  const issue = await gh.send<RawContent>("GET", `/repos/${owner}/${repo}/issues/${Number(n)}`);
+  const actual = parseIssueUrl(issue.html_url ?? "");
+  if (!actual || refKey(actual).toLowerCase() !== item.toLowerCase() || issue.state !== "open") throw new Error(`not answering: ${item} is ${issue.state === "open" ? `now ${issue.html_url}` : issue.state ?? "not open"}`);
+  return issue;
+}
+
+/** Answer only the ask shown. A comment never releases arbitrary pass holds. */
+export async function answerHold(gh: GitHub, item: string, text: string, shown?: RawContent, release = false, check?: () => Promise<void>): Promise<Posted> {
   const [owner = "", repo = "", n] = item.split(/[/#]/);
   const ref = { owner, repo, number: Number(n) };
   const body = formatComment(text);
-  const issue = await gh.send<RawContent>("GET", `/repos/${owner}/${repo}/issues/${ref.number}`);
-  const actual = parseIssueUrl(issue.html_url ?? "");
-  if (!actual || refKey(actual).toLowerCase() !== item.toLowerCase() || issue.state !== "open") throw new Error(`not answering: ${item} is ${issue.state === "open" ? `now ${issue.html_url}` : issue.state ?? "not open"}`);
-  return comment(gh, ref, body);
+  const issue = await readAnswerTarget(gh, item);
+  const identity = (i: RawContent) => JSON.stringify([i.title, i.body, labelNames(i.labels).sort(), assigneeLogins(i.assignees).sort(), i.user?.login, !!i.pull_request]);
+  const same = (now: RawContent) => {
+    if (shown && identity(now) !== identity(shown)) throw new Error("The ask changed; not answering or releasing it. Reload and read it again.");
+    if (release && !labelNames(now.labels).includes("needs-human")) throw new Error("The intended needs-human hold is no longer present");
+  };
+  same(issue);
+  await check?.();
+  if (!shown) return comment(gh, ref, body);
+  // ask-created tracker questions may be closed, not arbitrary held work.
+  // Never follow editable Blocks: text to unlabel a different target here.
+  const question = parseQuestion(issue.body ?? "");
+  const close = release && question.blocks !== undefined && askProblem({
+    kind: issue.pull_request ? "pr" : "issue", ref, state: issue.state ?? "",
+    labels: labelNames(issue.labels), assignees: assigneeLogins(issue.assignees), author: issue.user?.login ?? "",
+  }, "question") === undefined;
+  if (close) {
+    const board = await loadWholeBoard(gh);
+    if (!board.items.some((i) => i.ref && refKey(i.ref).toLowerCase() === item.toLowerCase())) throw new Error("The question is no longer on the board; not resolving it");
+  }
+  let posted: Posted;
+  try { posted = await comment(gh, ref, body); }
+  catch (e) { throw new MaybeSentError(`Comment failed or uncertain: ${String(e)}. Check GitHub; do not repost.`); }
+  if (release) {
+    try {
+      same(await readAnswerTarget(gh, item));
+      await check?.();
+      if (close) await gh.send("PATCH", `/repos/${owner}/${repo}/issues/${n}`, { state: "closed", state_reason: "completed" });
+      await gh.send("DELETE", `/repos/${owner}/${repo}/issues/${n}/labels/needs-human`);
+    } catch (e) { throw new MaybeSentError(`Answer posted: ${posted.url}; release failed: ${String(e)}. Finish on GitHub; do not repost.`); }
+  }
+  return posted;
 }
 
 /**

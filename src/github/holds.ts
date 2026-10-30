@@ -128,6 +128,14 @@ const DECISION_COMMENTS = `query($owner:String!,$repo:String!,$number:Int!) {
   } }
 }`;
 
+/** Fresh bounded read: a newer bot comment may replace the ask without editing the issue. */
+export async function readHoldAsk(gh: GitHub, owner: string, repo: string, number: number): Promise<string | undefined> {
+  const result = await gh.send<{ data?: { repository?: { issueOrPullRequest?: { comments: { nodes: { body: string; author: { login: string } | null }[] } } } } }>("POST", "/graphql", { query: DECISION_COMMENTS, variables: { owner, repo, number } });
+  const nodes = result.data?.repository?.issueOrPullRequest?.comments.nodes;
+  if (!nodes) throw new Error("The hold's current question could not be read");
+  return nodes.findLast((c) => isBot(c.author?.login))?.body;
+}
+
 /** The published holds, read with the viewer's token; undefined on any failure or when none is published, which the inbox says as not read. */
 export async function loadHolds(gh: GitHub): Promise<Holds | undefined> {
   try {

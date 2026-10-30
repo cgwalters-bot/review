@@ -32,12 +32,15 @@ export const CARD_CHANGED_NOTE = "This changed since it was drawn; send or clear
 export const CARD_GONE_NOTE = "This has left the inbox; your unsent text is kept until you clear it or press r.";
 
 export interface InboxHooks {
+  /** Session receipts, keyed by target and ask, not visual card metadata. */
+  writes?: Map<string, HTMLElement>;
+  answerBody?(n: Need): Promise<HTMLElement>;
   now: number;
   render: Renderer;
   /** Whether the signed-in token may act (the operator's, or not yet named). */
   mayAct: boolean;
   /** Post the answer to an Answer card's question; resolves to the comment's URL. */
-  sendNeed(n: Need, a: Answer): Promise<string>;
+  sendNeed?(n: Need, a: Answer): Promise<string>;
   /** Tick option `letter` of document entry `entry` (as the card shows it) and fill its reply. */
   answerEntry(entry: DocumentEntry, letter: string, reply: string): Promise<void>;
   /** The body of a Send card: the draft as its review will look, with Send. */
@@ -153,8 +156,9 @@ function action(c: Card, hooks: InboxHooks): HTMLElement | null {
   if (c.answered) return null;
   switch (c.kind) {
     case "answer": {
+      if (hooks.answerBody && hooks.mayAct) return bodySlot(hooks.answerBody(c.need));
       const item = c.need.decision?.item ?? c.need.entry?.item;
-      if (c.need.inPlace && item?.ref && hooks.mayAct) return answerForm(item.ref, c.need.decision?.question ?? questionOf(item), false, (a) => hooks.sendNeed(c.need, a), `card-${item.ref.owner}-${item.ref.repo}-${item.ref.number}-`, NOTE_ROWS);
+      if (c.need.inPlace && item?.ref && hooks.mayAct && hooks.sendNeed) return answerForm(item.ref, c.need.decision?.question ?? questionOf(item), false, (a) => hooks.sendNeed!(c.need, a), `card-${item.ref.owner}-${item.ref.repo}-${item.ref.number}-`, NOTE_ROWS);
       const held = c.need.hold?.item;
       if (!held || !hooks.answerHold || !hooks.mayAct) return needLink(c.need);
       const [owner = "", repo = "", n] = held.split(/[/#]/);
@@ -191,6 +195,9 @@ function bodySlot(body: Promise<HTMLElement>): HTMLElement {
 }
 
 export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
+  const key = JSON.stringify(c.kind === "answer" ? [c.kind, c.key, c.need.hold?.kind, c.need.hold?.question, c.need.decision?.item.body, c.need.entry?.item?.body] : c.kind === "digest" ? [c.kind, c.digest.approve.map((a) => [a.pr, a.head])] : c.kind === "send" ? [c.kind, c.key, c.draft.issue.body, c.draft.found?.raw] : [c.kind, c.key, cardSignature(c)]);
+  const previous = hooks.writes?.get(key);
+  if (c.kind !== "answer" && previous?.querySelector("[data-sent], [data-keep]")) return previous;
   const head = h("div", { class: "card-head" },
     h("span", { class: `kind c-${c.kind}` }, CARD_LABEL[c.kind]),
     c.priority ? pill(c.priority) : null,
@@ -214,6 +221,7 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   if (act) el.append(act);
   // The operator action a decision comes down to, under its answer.
   if (hooks.offerBody) for (const o of c.offers ?? []) el.append(bodySlot(hooks.offerBody(o)));
+  if (c.kind !== "answer") hooks.writes?.set(key, el);
   return el;
 }
 
