@@ -16,6 +16,8 @@ import type { Offered } from "./actions.ts";
 import { type Heartbeat, isStale } from "./heartbeat.ts";
 import type { Holds } from "./holds.ts";
 import { type Card, CARD_LABEL } from "./inbox.ts";
+import type { ApproveItem, ApproveResult } from "./maintain.ts";
+import { approveGroup, KEEP_ATTR, KEEP_BUSY } from "./maintainview.ts";
 import { ACTION_LABEL, ACTION_TITLE, type Need } from "./needs.ts";
 import { age, answerForm, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
 
@@ -43,6 +45,44 @@ export interface InboxHooks {
   draftBody?(card: Card & { kind: "send" }): Promise<HTMLElement>;
   /** A proposal's body, on a Do card or the decision carrying it: its live facts and exact mutations, with Run. */
   offerBody?(offer: Offered): Promise<HTMLElement>;
+  /** A review card's PR head now, read as the card is drawn. */
+  headOf?(n: Need): Promise<string>;
+  /** Approve a review card's PR at the `head` it showed; refuses if it moved. Resolves to the review's URL. */
+  approve?(n: Need, head: string): Promise<string>;
+  /** Post his text on a hold's item; resolves to the comment's URL. It does not release the hold. */
+  answerHold?(n: Need, text: string): Promise<string>;
+  /** Send the digest's picked approvals (approveSelected). */
+  approveDigest?(items: readonly ApproveItem[]): Promise<ApproveResult[]>;
+}
+
+/** Why the write may or may not have happened, and that nothing retries it. */
+const failed = (e: unknown): string => `Not sent, or uncertain: ${e instanceof Error ? e.message : String(e)}. Check on GitHub before trying again.`;
+
+/**
+ * Approve in place, at the head read as the card is drawn. He hasn't seen
+ * the diff here, so the confirmation says so; the write reads the head
+ * again and sends nothing if it moved.
+ */
+async function approveBody(n: Need, hooks: InboxHooks): Promise<HTMLElement> {
+  const head = await hooks.headOf!(n);
+  const button = h("button", { type: "button", class: "primary" }, `Approve ${head.slice(0, 7)}`);
+  const status = h("p", { class: "status", role: "status" });
+  button.addEventListener("click", () => {
+    if (button.disabled || !window.confirm(`Approve ${n.where} at ${head.slice(0, 12)} as you, without its diff open here? If the head moved, nothing is sent.`)) return;
+    button.disabled = true;
+    status.textContent = "Sending…";
+    status.setAttribute(KEEP_ATTR, KEEP_BUSY);
+    hooks.approve!(n, head).then((url) => {
+      status.removeAttribute(KEEP_ATTR);
+      status.replaceChildren("Approved: ", link(url, url));
+    }, (e: unknown) => {
+      // Kept until r, which reads the head again: it may have moved, or the approval gone out.
+      status.setAttribute(KEEP_ATTR, "");
+      status.textContent = failed(e);
+      button.disabled = false;
+    });
+  });
+  return h("div", { class: "actions" }, button, status);
 }
 
 /** Cards drawn at first, about a phone's screen; "Show more" draws as many again. */
@@ -56,6 +96,7 @@ export function cardSignature(c: Card): string {
   switch (c.kind) {
     case "answer":
     case "approve": return JSON.stringify([...base, c.need.action, c.need.href, c.need.inPlace, c.need.priority, c.need.decision?.item.body, c.need.entry?.item?.body]);
+    case "digest": return JSON.stringify([...base, c.digest.approve]);
     case "send": return JSON.stringify([...base, c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused]);
     case "do": return JSON.stringify([...base, c.offer.comment.databaseId, c.offer.comment.updatedAt]);
     case "document": return JSON.stringify([...base, c.entry.text, c.mark]);
@@ -70,6 +111,7 @@ export function cardSignature(c: Card): string {
 export function holdsDraft(card: Element): boolean {
   const active = card.ownerDocument.activeElement;
   if (active && card.contains(active) && active.matches("input, textarea, select")) return true;
+  if (card.querySelector(`[${KEEP_ATTR}]`)) return true;
   return [...card.querySelectorAll("form:not([data-sent])")].some((form) =>
     [...form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("textarea, input[type=text]")].some((t) => t.value.trim() !== "") ||
     form.querySelector("input[type=radio]:checked") !== null);
@@ -105,6 +147,8 @@ function entryForm(c: Card & { kind: "document" }, hooks: InboxHooks): HTMLEleme
   return form;
 }
 
+const needLink = (n: Need): HTMLElement => h("a", { class: `action a-${n.action}`, href: n.href, title: ACTION_TITLE[n.action] }, ACTION_LABEL[n.action]);
+
 /** The card's one action: in place where the page can do it, else a link to where it is done. */
 function action(c: Card, hooks: InboxHooks): HTMLElement | null {
   if (c.answered) return null;
@@ -112,10 +156,16 @@ function action(c: Card, hooks: InboxHooks): HTMLElement | null {
     case "answer": {
       const item = c.need.decision?.item ?? c.need.entry?.item;
       if (c.need.inPlace && item?.ref && hooks.mayAct) return answerForm(item.ref, c.need.decision?.question ?? questionOf(item), false, (a) => hooks.sendNeed(c.need, a), `card-${item.ref.owner}-${item.ref.repo}-${item.ref.number}-`, NOTE_ROWS);
-      return h("a", { class: `action a-${c.need.action}`, href: c.need.href, title: ACTION_TITLE[c.need.action] }, ACTION_LABEL[c.need.action]);
+      const held = c.need.hold?.item;
+      if (!held || !hooks.answerHold || !hooks.mayAct) return needLink(c.need);
+      const [owner = "", repo = "", n] = held.split(/[/#]/);
+      const form = answerForm({ owner, repo, number: Number(n) }, { options: [] }, false, (a) => hooks.answerHold!(c.need, a.text), `hold-${owner}-${repo}-${n}-`, NOTE_ROWS);
+      form.querySelector(".target")!.textContent = `Posts a comment as you on ${held}. Only a comment: the hold stays until the pass releases it.`;
+      return form;
     }
-    case "approve": return h("a", { class: `action a-${c.need.action}`, href: c.need.href, title: ACTION_TITLE[c.need.action] }, ACTION_LABEL[c.need.action]);
+    case "approve": return needLink(c.need);
     case "document": return hooks.mayAct && c.entry.options.length ? entryForm(c, hooks) : null;
+    case "digest":
     case "send":
     case "do": return null;
   }
@@ -156,9 +206,11 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
     [SIG_ATTR]: cardSignature(c),
   }, head, h("p", { class: "card-where" }, c.where), c.note ? h("p", { class: "card-note" }, c.note) : null);
   if (c.kind === "document" && c.entry.text.trim()) el.append(h("details", { class: "dec-body" }, h("summary", {}, "The whole entry"), h("div", { class: "md" }, hooks.render(c.entry.text, c.entry.about?.repo))));
-  // Read on drawing (the draft's PR, the proposal's targets): filled in when it arrives.
-  const body = c.kind === "send" ? hooks.draftBody?.(c) : c.kind === "do" ? hooks.offerBody?.(c.offer) : undefined;
+  // Read on drawing (the draft's PR, the proposal's targets, the PR's head): filled in when it arrives.
+  const review = c.kind === "approve" && c.need.action === "review" && c.need.entry?.pr && !c.answered && hooks.mayAct && hooks.headOf && hooks.approve;
+  const body = c.kind === "send" ? hooks.draftBody?.(c) : c.kind === "do" ? hooks.offerBody?.(c.offer) : review ? approveBody(c.need, hooks) : undefined;
   if (body) el.append(bodySlot(body));
+  if (c.kind === "digest" && hooks.approveDigest && hooks.mayAct) el.append(approveGroup(c.digest, hooks.approveDigest));
   const target = c.kind === "document" ? c.entry.about ? `https://github.com/${c.entry.about.repo}/issues/${c.entry.about.number}` : DECISIONS_CONFIG.document ? `https://github.com/${DECISIONS_CONFIG.document.repo}/issues/${DECISIONS_CONFIG.document.number}` : undefined
     : c.kind === "do" ? `https://github.com/${TRACKER_REPO}/issues/${c.offer.issue}` : c.url;
   const pool = c.kind === "answer" || c.kind === "approve" ? (c.need.decision?.item ?? c.need.entry?.item)?.engine : undefined;
@@ -206,7 +258,8 @@ function moreButton(list: HTMLElement, drawn: number, total: number, more: () =>
  */
 export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: InboxHooks, force = false): void {
   const shown = new Map([...list.querySelectorAll<HTMLElement>(`:scope > .${CARD_CLASS}`)].map((el) => [el.getAttribute(ROW_KEY_ATTR)!, el]));
-  const keep = (el: HTMLElement): boolean => !force && holdsDraft(el);
+  // Not even r redraws writes still going out: a fresh card would offer them again.
+  const keep = (el: HTMLElement): boolean => (!force && holdsDraft(el)) || el.querySelector(`[${KEEP_ATTR}="${KEEP_BUSY}"]`) !== null;
   const limit = Number(list.getAttribute(LIMIT_ATTR)) || INBOX_PAGE;
   const drawn = cards.filter((c, i) => {
     if (i < limit) return true;
@@ -220,7 +273,9 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
   const wanted = drawn.map((c) => {
     const el = shown.get(c.key);
     shown.delete(c.key);
-    if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS)) return el;
+    // r clears a write's kept report too, reading the card's state again.
+    const report = force && el?.querySelector(`[${KEEP_ATTR}=""]`);
+    if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS) && !report) return el;
     if (el && keep(el)) {
       staleNote(el, CARD_CHANGED_NOTE);
       return el;

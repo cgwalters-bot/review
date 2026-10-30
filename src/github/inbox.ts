@@ -5,6 +5,10 @@
 //   issue, a hold of the pass's only he releases and a review request at an
 //   unreviewed head; answered dims the card until the bot acts, the item
 //   closing, the pass releasing it or the head being reviewed removes it.
+//   An Approve card for a review request approves in place at the head
+//   read as it is drawn; a hold's card posts his text on the item.
+// - Digest: the maintain digest's Approve as a group, until every PR in
+//   it is approved at the assessed head.
 // - Send: an open review-draft issue; ticking its send box dims it until the
 //   tracker's workflow closes the issue.
 // - Do: an open operator-action proposal no decision or ask carries.
@@ -23,19 +27,21 @@
 import type { Offered } from "./actions.ts";
 import { OPERATOR, TRACKER_REPO } from "./config.ts";
 import type { DocumentEntry, Mark } from "./decisiondocument.ts";
+import type { Digest, Found } from "./maintain.ts";
 import type { Need } from "./needs.ts";
 import { priorityRank } from "./queue.ts";
 import type { DraftIssue } from "./reviewdrafts.ts";
 
-export type CardKind = "document" | "answer" | "approve" | "send" | "do";
+export type CardKind = "document" | "answer" | "approve" | "digest" | "send" | "do";
 
 /** The kinds in the order the inbox lists them. */
-export const CARD_KINDS: readonly CardKind[] = ["document", "answer", "approve", "send", "do"];
+export const CARD_KINDS: readonly CardKind[] = ["document", "answer", "approve", "digest", "send", "do"];
 
 export const CARD_LABEL: Record<CardKind, string> = {
   document: "Decide",
   answer: "Answer",
   approve: "Approve",
+  digest: "Approve",
   send: "Send",
   do: "Do",
 };
@@ -61,6 +67,7 @@ interface CardBase {
 
 export type Card = CardBase & (
   | { kind: "answer" | "approve"; need: Need }
+  | { kind: "digest"; digest: Digest }
   | { kind: "send"; draft: DraftIssue }
   | { kind: "do"; offer: Offered }
   | { kind: "document"; entry: DocumentEntry; mark?: Mark }
@@ -102,6 +109,22 @@ export function sendCard(d: DraftIssue & { issue: { state?: string } }): Card | 
     where: `#${d.issue.number}`,
     url: d.issue.html_url,
     ...(d.box === "ticked" ? { answered: true, note: "Send is ticked: waiting on the tracker's workflow." } : {}),
+  };
+}
+
+/** The maintain digest's Approve as a group, while it lists any PR; every one approved dims it. */
+export function digestCard(found: Found): Card | undefined {
+  const d = found.digest;
+  if (!d?.approve.length) return undefined;
+  return {
+    kind: "digest",
+    digest: d,
+    key: `digest:${d.date}`,
+    title: `Approve ${d.approve.length} PR${d.approve.length === 1 ? "" : "s"} as a group`,
+    where: `Maintain digest of ${d.date}`,
+    url: found.url,
+    since: `${d.date}T00:00:00Z`,
+    ...(d.approve.every((it) => it.approved) ? { answered: true, note: "All approved at the assessed heads." } : found.stale ? { note: "This digest is more than a day old: check before approving." } : {}),
   };
 }
 
@@ -179,6 +202,8 @@ export interface InboxInput {
   priorityOf?: (item: string) => string | undefined;
   /** The open proposals, as loaded. */
   offers?: readonly Offered[];
+  /** The maintain digest, as loaded. */
+  digest?: Found;
 }
 
 /**
@@ -192,6 +217,7 @@ export function inboxCards(input: InboxInput): Card[] {
     ...(input.document?.entries ?? []).map((e) => documentCard(e, input.document?.marks.get(e.id))),
     ...(input.needs ?? []).map(needCard),
     ...(input.drafts ?? []).map(sendCard),
+    input.digest && digestCard(input.digest),
   ].filter((c): c is Card => c !== undefined);
   const loose = attachOffers(sortCards(cards, priorityOf), input.offers ?? []);
   return sortCards(loose, priorityOf);

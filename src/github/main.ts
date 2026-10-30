@@ -12,9 +12,12 @@ import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
 import { itemAction, reviewAskFor, reviewComment, type RunRef } from "./asks.ts";
-import type { Item } from "./board.ts";
+import type { IssueRef, Item } from "./board.ts";
 import { findRouteItem, loadRouteItem } from "./itemroute.ts";
 import {
+  answerHold,
+  approveAt,
+  asOperator,
   type Context,
   loadAnswered,
   loadContext,
@@ -23,6 +26,7 @@ import {
   loadQueue,
   loadRuns,
   type OpenBoard,
+  openHead,
   postAnswer,
   postAskComment,
   rerunFailedJobs,
@@ -49,7 +53,7 @@ import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from 
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
-import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, refreshDocument, sendDocumentEdit } from "./decisiondocument.ts";
+import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, sendDocumentEdit } from "./decisiondocument.ts";
 import { inboxCards, mayAct, needCard } from "./inbox.ts";
 import { fillInbox, type InboxHooks, passLine } from "./inboxview.ts";
 import {
@@ -86,7 +90,7 @@ import { ACTION_CONFIG, loadProposals, type Offered, PROPOSAL_LABEL, type Propos
 import { proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
 import { draftCard, draftReviewForm, reviewDraftsPanel } from "./reviewdraftsview.ts";
-import { type Found as MaintainFound, loadDigest, MAINTAIN_CONFIG } from "./maintain.ts";
+import { approveSelected, type Found as MaintainFound, loadDigest, MAINTAIN_CONFIG } from "./maintain.ts";
 import { maintainView } from "./maintainview.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { botWaitingCount, filterNeeds, type Need, needStops } from "./needs.ts";
@@ -513,6 +517,8 @@ interface Inbox {
   offers?: Offered[];
   /** Each labelled issue's proposals, re-read only once the issue moves. */
   proposals: ProposalCache;
+  /** The maintain digest, for its Approve as a group card. */
+  digest?: MaintainFound;
   /** Document writes, one after another, each on the body the last left. */
   writes: Promise<void>;
   /** Proposal executions: one at a time, and no reload of the proposals (which would redraw its card) meanwhile. */
@@ -532,7 +538,6 @@ function mountInbox(state: State, home: Home): void {
   const inbox: Inbox = { list, pass: h("div"), status, notes: new Map(), empty, proposals: new Map(), writes: Promise.resolve(), busy: false };
   state.inbox = inbox;
   if (REVIEW_DRAFT_CONFIG) tail.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => void refreshDrafts(state)));
-  home.slots.decisionDocument.hidden = true;
   home.slots.needs.hidden = true;
   home.sections.needs.body.prepend(inbox.pass, status, list, empty, tail);
 }
@@ -566,14 +571,38 @@ function inboxHooks(state: State): InboxHooks {
     now: Date.now(),
     render,
     mayAct: mayAct(state.login),
-    sendNeed: (n, a) => sendNeed(state, n, a),
-    answerEntry: (entry, letter, reply) => answerEntry(state, entry, letter, reply),
+    sendNeed: (n, a) => asOperator(state.gh, () => sendNeed(state, n, a)),
+    answerEntry: (entry, letter, reply) => asOperator(state.gh, () => answerEntry(state, entry, letter, reply)),
+    headOf: (n) => openHead(state.gh, n.entry!.pr!.ref),
+    approve: (n, head) => asOperator(state.gh, async () => {
+      const ref = n.entry!.pr!.ref;
+      const found = reviewAskFor(state.items, ref);
+      const url = await approveAt(state.gh, ref, head, found && { ref: found.ref, head: found.target.head });
+      reviewed(state, ref, head, "approve", url, found);
+      // The card leaves once the queue sees the approval; others keep their unsent text.
+      rebuildEntries(state);
+      paintNeeds(state);
+      return url;
+    }),
+    // The hold stands until the pass's next snapshot drops it: nothing here marks it done.
+    answerHold: (n, text) => asOperator(state.gh, async () => (await answerHold(state.gh, n.hold!.item!, text)).url),
+    approveDigest: (items) => asOperator(state.gh, async () => {
+      const rs = await approveSelected(state.gh, items);
+      // A card reporting a skip or failure is kept as it is until r (KEEP_ATTR); only a clean batch is read again now.
+      if (rs.every((r) => r.status === "approved")) void refreshMaintain(state);
+      return rs;
+    }),
     ...(REVIEW_DRAFT_CONFIG ? { draftBody: (c) => draftCard(state.gh, REVIEW_DRAFT_CONFIG!, render, c.draft) } : {}),
     ...(ACTION_CONFIG ? {
       offerBody: (offer) => proposalCard(state.gh, ACTION_CONFIG!, offer, () => state.inbox?.busy === true, (v) => {
         if (!state.inbox) return;
         state.inbox.busy = v;
-        if (!v) paintInbox(state);
+        // The queue now shows what it closed or merged; the card, with its
+        // results, stays until the proposals' own poll reads the receipt.
+        if (!v) {
+          paintInbox(state);
+          refreshSoon(state);
+        }
       }),
     } : {}),
   };
@@ -622,7 +651,7 @@ function paintInbox(state: State, force = false): void {
   // An item's board Priority, for the order.
   const board = [...(state.active?.board ?? []), ...state.items];
   const priorities = new Map(board.flatMap((i) => (i.ref && i.priority ? [[refKey(i.ref).toLowerCase(), i.priority] as const] : [])));
-  const cards = inboxCards({ needs: state.needs, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}), priorityOf: (item) => priorities.get(item), ...(inbox.offers ? { offers: inbox.offers } : {}) });
+  const cards = inboxCards({ needs: state.needs, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}), priorityOf: (item) => priorities.get(item), ...(inbox.offers ? { offers: inbox.offers } : {}), ...(inbox.digest ? { digest: inbox.digest } : {}) });
   fillInbox(inbox.list, cards, inboxHooks(state), force);
   inbox.pass.replaceChildren(passLine(state.active?.holds, state.active?.local, Date.now()) ?? "");
   // The count is the list's, as "Show more" counts it; those he answered are dimmed in it.
@@ -669,7 +698,12 @@ async function refreshMaintain(state: State): Promise<boolean> {
     slot.dataset.signature = signature;
     if (found?.digest) slot.dataset.shown = "1";
     else delete slot.dataset.shown;
-    slot.replaceChildren(h("h2", {}, "Maintain"), ...maintainView(state.gh, found, error));
+    slot.replaceChildren(h("h2", {}, "Maintain"), ...maintainView(found, error));
+    if (state.inbox) {
+      if (found) state.inbox.digest = found;
+      else delete state.inbox.digest;
+      paintInbox(state);
+    }
   }
   return !error;
 }
@@ -1062,7 +1096,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       { name: "decisions", path: "the decisions document and tracker questions", cadence: POLL_INTERVAL_MS, views: VIEWS, read: (force) => refreshDecisions(get(), force && get().view === SECTION_VIEW.needs) },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
       // The inbox's own reads, only while it is on (DECISIONS_CONFIG.inbox).
-      { name: "maintain", path: `the maintain digest issue ${MAINTAIN_CONFIG?.issue ?? ""}, its last week's comments, /user and up to 100 reviews per approval candidate`, cadence: POLL_INTERVAL_MS, views: ["maintain"], read: () => refreshMaintain(get()), when: () => MAINTAIN_CONFIG !== undefined },
+      { name: "maintain", path: `the maintain digest issue ${MAINTAIN_CONFIG?.issue ?? ""}, its last week's comments, /user and up to 100 reviews per approval candidate`, cadence: POLL_INTERVAL_MS, views: ["maintain", SECTION_VIEW.needs], read: () => refreshMaintain(get()), when: () => MAINTAIN_CONFIG !== undefined },
       { name: "drafts", path: "the open review-draft issues", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDrafts(get()), when: () => get().inbox !== undefined && REVIEW_DRAFT_CONFIG !== undefined },
       { name: "proposals", path: `the ${PROPOSAL_LABEL} issues in ${TRACKER_REPO} and, once changed, their comments`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshProposals(get()), when: () => get().inbox !== undefined && ACTION_CONFIG !== undefined },
     ],
@@ -1293,30 +1327,7 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
         found && !canReview(detail)
           ? await submitAskedReview(state.gh, found.ref, ref, found.target.head, reviews, onSent)
           : await submitReview(state.gh, ref, reviews, onSent);
-      state.reviewed.set(key, detail.head);
-      // Show its effect now: search and the reviews API lag a write.
-      const verdict = REVIEW_VERDICT[action];
-      if (verdict) {
-        state.pending.set(key, { state: verdict, head: detail.head, at: Date.now() });
-        // Read its reviews again on the next poll, even before search notices.
-        state.verdicts.delete(key);
-        // A PR listed for what waits on him has no verdict overlay: apply the review to its wait (and again after each read).
-        state.waiting = overlayWaiting(state.waiting, state.pending, Date.now());
-      }
-      // Tell the bot on its review ask. The review went out either way.
-      const note = found ? reviewComment(action, ref, detail.head, url) : undefined;
-      if (found && note) {
-        // Answered as far as the queue goes, before the comment lands.
-        state.sent.add(found.item.nodeId);
-        postAskComment(state.gh, found.ref, "review", note).catch((e: unknown) => {
-          // Not answered after all: the ask is listed again.
-          state.sent.delete(found.item.nodeId);
-          rebuildEntries(state);
-          update(state, false, false);
-          state.error = `Your review went out, but the comment telling the bot on ${refKey(found.ref)} didn't: ${message(e)}. Comment there yourself.`;
-          renderChrome(state);
-        });
-      }
+      reviewed(state, ref, detail.head, action, url, found);
       const from = byId("view").querySelector(`form.${REVIEW_FORM_CLASS}`);
       acted(state, { key: `pr:${key}`, title: detail.title, hash, from });
       void refetchPr(state, ref, from, false);
@@ -1340,6 +1351,38 @@ function renderPr(state: State, ref: { owner: string; repo: string; number: numb
   }, { reviewedHere: state.reviewed.has(key), ...(ask ? { ask } : {}), ...(reruns ? { reruns } : {}) });
   state.pane = pane;
   showMain(pane.el);
+}
+
+/**
+ * Apply his review of `ref` at `head`, sent from its pane or an Inbox
+ * card, to the page, and tell the bot on its review ask (`found`).
+ */
+function reviewed(state: State, ref: IssueRef, head: string, action: ReviewAction, url: string, found: ReturnType<typeof reviewAskFor>): void {
+  const key = refKey(ref);
+  state.reviewed.set(key, head);
+  // Show its effect now: search and the reviews API lag a write.
+  const verdict = REVIEW_VERDICT[action];
+  if (verdict) {
+    state.pending.set(key, { state: verdict, head, at: Date.now() });
+    // Read its reviews again on the next poll, even before search notices.
+    state.verdicts.delete(key);
+    // A PR listed for what waits on him has no verdict overlay: apply the review to its wait (and again after each read).
+    state.waiting = overlayWaiting(state.waiting, state.pending, Date.now());
+  }
+  // Tell the bot on its review ask. The review went out either way.
+  const note = found ? reviewComment(action, ref, head, url) : undefined;
+  if (found && note) {
+    // Answered as far as the queue goes, before the comment lands.
+    state.sent.add(found.item.nodeId);
+    postAskComment(state.gh, found.ref, "review", note).catch((e: unknown) => {
+      // Not answered after all: the ask is listed again.
+      state.sent.delete(found.item.nodeId);
+      rebuildEntries(state);
+      update(state, false, false);
+      state.error = `Your review went out, but the comment telling the bot on ${refKey(found.ref)} didn't: ${message(e)}. Comment there yourself.`;
+      renderChrome(state);
+    });
+  }
 }
 
 /** The verdict a review of his gives the PR; a comment-only one leaves it waiting on him. */
@@ -1693,7 +1736,7 @@ async function refreshDecisions(state: State, force = false): Promise<boolean> {
       inboxNote(inbox, "document", e instanceof GitHubError && e.status === 404 ? "Cannot read the decisions issue: it may be private and this viewer's token has no access, or the issue does not exist." : `Couldn't read the decisions document: ${message(e)}`);
     }
     paintInbox(state, force);
-  } else if (state.home) await refreshDocument(state.gh, state.home.slots.decisionDocument, render, DECISIONS_CONFIG.document, force);
+  }
   if (!DECISIONS_CONFIG.legacyQuestions) return true;
   const read = async (gh: GitHub) => {
     const q = await loadDecisions(gh);
