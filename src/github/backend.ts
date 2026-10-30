@@ -43,9 +43,10 @@ import {
   TRACKER_SCOPE,
 } from "./board.ts";
 import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, OPERATOR, QUESTION_LABEL, DONE, FETCH_CONCURRENCY, LINKED_STATUSES, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
-import { composeReviews, refKey } from "./forge.ts";
+import { refKey } from "./forge.ts";
 import { mapLimit, submitReview } from "./prs.ts";
 import type { ReviewRequest } from "./forge.ts";
+import { approveSelected } from "./maintain.ts";
 
 const PROJECT = `/orgs/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
 
@@ -294,9 +295,8 @@ export async function asOperator<T>(gh: GitHub, write: () => Promise<T>): Promis
 }
 
 /** Read the exact target, not a transferred issue, before showing or answering its ask. */
-export async function readAnswerTarget(gh: GitHub, item: string, question = false): Promise<RawContent> {
+export async function readAnswerTarget(gh: GitHub, item: string): Promise<RawContent> {
   const [owner = "", repo = "", n] = item.split(/[/#]/);
-  if (question) return freshAsk(gh, { owner, repo, number: Number(n) }, "question", TRACKER_SCOPE);
   const issue = await gh.send<RawContent>("GET", `/repos/${owner}/${repo}/issues/${Number(n)}`);
   const actual = parseIssueUrl(issue.html_url ?? "");
   if (!actual || refKey(actual).toLowerCase() !== item.toLowerCase() || issue.state !== "open") throw new Error(`not answering: ${item} is ${issue.state === "open" ? `now ${issue.html_url}` : issue.state ?? "not open"}`);
@@ -304,19 +304,18 @@ export async function readAnswerTarget(gh: GitHub, item: string, question = fals
 }
 
 /** Answer only the ask shown. A comment never releases arbitrary pass holds. */
-export async function answerHold(gh: GitHub, item: string, text: string, shown?: RawContent, release = false, check?: () => Promise<void>): Promise<Posted> {
+export async function answerHold(gh: GitHub, item: string, text: string, shown: RawContent, release = false, check?: () => Promise<void>): Promise<Posted> {
   const [owner = "", repo = "", n] = item.split(/[/#]/);
   const ref = { owner, repo, number: Number(n) };
   const body = formatComment(text);
   const issue = await readAnswerTarget(gh, item);
   const identity = (i: RawContent) => JSON.stringify([i.title, i.body, labelNames(i.labels).sort(), assigneeLogins(i.assignees).sort(), i.user?.login, !!i.pull_request]);
   const same = (now: RawContent) => {
-    if (shown && identity(now) !== identity(shown)) throw new Error("The ask changed; not answering or releasing it. Reload and read it again.");
     if (release && !labelNames(now.labels).includes("needs-human")) throw new Error("The intended needs-human hold is no longer present");
+    if (identity(now) !== identity(shown)) throw new Error("The ask changed; not answering or releasing it. Reload and read it again.");
   };
   same(issue);
   await check?.();
-  if (!shown) return comment(gh, ref, body);
   // ask-created tracker questions may be closed, not arbitrary held work.
   // Never follow editable Blocks: text to unlabel a different target here.
   const question = parseQuestion(issue.body ?? "");
@@ -467,23 +466,19 @@ export async function submitAskedReview(
   return submitReview(gh, pr, reviews, onSent);
 }
 
-/** An open PR's head now, for an Approve card to show and approve. */
-export async function openHead(gh: GitHub, pr: IssueRef): Promise<string> {
-  const now = await gh.send<{ state: string; head: { sha: string } }>("GET", `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`);
-  if (now.state !== "open") throw new Error(`${refKey(pr)} is ${now.state}`);
-  return now.head.sha;
-}
-
 /**
  * Approve `pr` at `head`, the head an Inbox card read: through its review
  * ask when one names it. Without the PR pane's prompt, an ask about
  * another head refuses rather than approving one the bot didn't ask about.
+ * Undefined means the viewer already approved this head; nothing was written.
  */
-export async function approveAt(gh: GitHub, pr: IssueRef, head: string, ask?: { ref: IssueRef; head: string }): Promise<string> {
-  const reviews = composeReviews("approve", "", head);
-  if (!ask) return submitReview(gh, pr, reviews);
-  if (ask.head !== head) throw new Error(`not approving: ${refKey(ask.ref)} asks about ${ask.head.slice(0, 12)}, but the head is ${head.slice(0, 12)}; open the PR to review it`);
-  return submitAskedReview(gh, ask.ref, pr, ask.head, reviews);
+export async function approveAt(gh: GitHub, pr: IssueRef, head: string, ask?: { ref: IssueRef; head: string }): Promise<string | undefined> {
+  if (ask && ask.head !== head) throw new Error(`not approving: ${refKey(ask.ref)} asks about ${ask.head.slice(0, 12)}, but the head is ${head.slice(0, 12)}; open the PR to review it`);
+  if (ask) await freshReviewAsk(gh, ask.ref, pr, ask.head);
+  const [result] = await approveSelected(gh, [{ pr, head, reason: "" }]);
+  if (result!.status === "approved") return result!.url;
+  if (result!.note?.includes("already approved")) return undefined;
+  throw new Error(result!.note);
 }
 
 /**

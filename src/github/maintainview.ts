@@ -6,7 +6,7 @@ import { prRoute } from "./view.ts";
 /** A PR as a link into the existing PR pane. */
 const prLink = (pr: PrRef): HTMLElement => h("a", { href: prRoute(pr) }, refText(pr));
 
-const APPROVED = " — Already approved at the assessed head";
+const APPROVED = " — Done at HEAD";
 
 /**
  * On a card's part that must not be redrawn (inboxview's fillInbox): a
@@ -39,7 +39,7 @@ export function approveGroup(items: readonly ApproveItem[], approve: (items: rea
       results.replaceChildren(...rs.map((r) => h("li", { class: r.status }, r.status === "approved" ? `Approved ${refText(r.pr)}.` : `${r.status === "skipped" ? "Skipped" : "Failed or uncertain"}: ${r.note}.`)));
       for (const r of rs) {
         const i = items.findIndex((it) => it.pr === r.pr);
-        if (r.status !== "approved" || i < 0) continue;
+        if (i < 0 || !items[i]!.approved) continue;
         boxes[i]!.checked = false;
         boxes[i]!.disabled = true;
         labels[i]!.textContent = APPROVED;

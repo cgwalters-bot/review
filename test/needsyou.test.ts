@@ -17,7 +17,7 @@ const proposalComment = (n: number) => ({ id: `IC_${n}`, databaseId: n, updatedA
   body: `\`\`\`agent-board-action\n${JSON.stringify({ schema: "agent-board/operator-action/v1", title: `Decision ${n}`, why: `Reason ${n}`, actions: [{ type: "add_label", repo: "cgwalters-forge/tracker", number: 1013, label: `choice-${n}` }] })}\n\`\`\`` });
 
 /** What the holds comment read answers next: a status, the comments, and whether an unchanged one is a 304. */
-interface Holds { status: number; comments: unknown[]; etag: string; gate?: Promise<void> }
+interface Holds { status: number; comments: unknown[]; etag: string; gate?: Promise<void>; approvals?: Record<number, string[]>; fail?: number; labels?: string[]; reviewError?: number; writeGate?: Promise<void> }
 
 let runs = 0;
 
@@ -33,7 +33,7 @@ async function boot(t: TestContext, holds: Holds) {
   const { window } = dom;
   window.scrollTo = () => {};
   window.confirm = () => true;
-  const reads = { holds: [] as (string | null)[], writes: [] as string[] };
+  const reads = { holds: [] as (string | null)[], writes: [] as string[], reviews: [] as number[] };
   Object.assign(globalThis, {
     window, document: window.document, Node: window.Node, HTMLElement: window.HTMLElement,
     ResizeObserver: class { observe() {} disconnect() {} },
@@ -50,12 +50,26 @@ async function boot(t: TestContext, holds: Holds) {
         return sent === holds.etag ? json(null, 304, { ETag: holds.etag }) : json(holds.comments, 200, { ETag: holds.etag });
       }
       if (url.pathname === "/user") return json({ login: "cgwalters" });
+      const pull = url.pathname.match(/\/pulls\/(\d+)(\/reviews)?$/);
+      if (pull) {
+        const n = Number(pull[1]);
+        if (method === "POST") {
+          await holds.writeGate;
+          return json({ html_url: `https://github.com/up/proj/pull/${n}#pullrequestreview-1` }, holds.fail === n ? 502 : 200);
+        }
+        if (pull[2]) {
+          reads.reviews.push(n);
+          if (holds.reviewError) return json({ message: "reviews unavailable" }, holds.reviewError);
+          return json((holds.approvals?.[n] ?? []).map((commit_id) => ({ user: { login: "cgwalters" }, state: "APPROVED", commit_id })));
+        }
+        return json({ state: "open", head: { sha: "a".repeat(40) } });
+      }
       if (url.pathname.endsWith("/fields")) return json(fields());
       if (url.pathname === "/search/issues") return json({ items: [], total_count: 0 });
       if (url.pathname === "/repos/cgwalters-forge/operator/issues/1") return json({ body: "" });
       if (url.pathname.startsWith("/repos/cgwalters-forge/tracker/issues/") && /\/issues\/\d+$/.test(url.pathname)) {
         const n = url.pathname.split("/").at(-1);
-        return json({ title: `Issue ${n}`, body: `Q: Ask ${n}?`, state: "open", html_url: `https://github.com/cgwalters-forge/tracker/issues/${n}`, labels: [{ name: "needs-human" }] });
+        return json({ title: `Issue ${n}`, body: `Q: Ask ${n}?`, state: "open", html_url: `https://github.com/cgwalters-forge/tracker/issues/${n}`, labels: (holds.labels ?? ["needs-human"]).map((name) => ({ name })) });
       }
       if (url.pathname === "/graphql") {
         const { query } = JSON.parse(String(init?.body)) as { query: string };
@@ -113,6 +127,82 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 const listed = (at: number, items: unknown[], over: Record<string, unknown> = {}) => [holdsComment(iso(at), rawNeedsYou(items, iso(at), over))];
 
 describe("Needs you from the pass's published list", () => {
+  const approval = (n: number, digest = false) => rawAsk(n, { key: `up/proj#${n}${digest ? "/digest" : ""}`, item: `up/proj#${n}`, kind: digest ? "digest-approve" : "review-approve", source: digest ? "digest" : "reviews", action: { type: "approve_pull_request", repository: "up/proj", number: n, head: "a".repeat(40) } });
+
+  for (const same of [true, false]) it(`after reload, ${same ? "skips a current" : "writes past an older"} viewer approval`, async (t) => {
+    const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [approval(7)]), approvals: { 7: [(same ? "a" : "b").repeat(40)] } };
+    const app = await boot(t, holds);
+    try {
+      await app.reload();
+      assert.deepEqual(app.reads.reviews, [], "no approval reads on poll or reload");
+      await app.until(() => !!app.doc.querySelector(".card-body button"), "approval button");
+      app.doc.querySelector<HTMLButtonElement>(".card-body button")!.click();
+      await app.until(() => !!app.doc.querySelector("[data-sent]"), "approval result");
+      assert.deepEqual(app.reads.writes, same ? [] : ["POST /repos/up/proj/pulls/7/reviews"]);
+      assert.match(app.doc.querySelector(".card")!.textContent!, same ? /already approved at HEAD/ : /Approved:/);
+      assert.ok(app.doc.querySelector(".card-done button:disabled"));
+      await app.reload();
+      assert.ok(app.doc.querySelector(".card-done button:disabled"), "done receipt survives reload");
+    } finally { await app.close(); }
+  });
+
+  it("reports skipped, written and failed digest items separately", async (t) => {
+    const app = await boot(t, { status: 200, etag: '"a"', comments: listed(T0, [7, 8, 9].map((n) => approval(n, true))), approvals: { 7: ["a".repeat(40)], 8: ["b".repeat(40)] }, fail: 9 });
+    try {
+      app.doc.querySelector<HTMLButtonElement>(".maintain-sec button")!.click();
+      await app.until(() => !!app.doc.querySelector(".maintain-results .failed"), "partial batch");
+      const results = app.doc.querySelector(".maintain-results")!.textContent!;
+      assert.match(results, /Skipped: up\/proj#7 already approved at HEAD/);
+      assert.match(results, /Approved up\/proj#8/);
+      assert.match(results, /Failed or uncertain: up\/proj#9/);
+      assert.deepEqual(app.reads.writes, ["POST /repos/up/proj/pulls/8/reviews", "POST /repos/up/proj/pulls/9/reviews"]);
+      assert.deepEqual([...app.doc.querySelectorAll<HTMLInputElement>(".maintain-sec input[type=checkbox]")].map((b) => [b.checked, b.disabled]), [[false, true], [false, true], [true, false]]);
+    } finally { await app.close(); }
+  });
+
+  for (const overlapping of [true, false]) it(`shares ${overlapping ? "an in-flight" : "a completed but still unread"} approval across single and digest cards`, async (t) => {
+    let release = () => {};
+    const writeGate = new Promise<void>((resolve) => { release = resolve; });
+    const app = await boot(t, { status: 200, etag: '"a"', comments: listed(T0, [approval(7), approval(7, true)]), ...(overlapping ? { writeGate } : {}) });
+    try {
+      await app.until(() => !!app.doc.querySelector(".c-approve button"), "single approval");
+      app.doc.querySelector<HTMLButtonElement>(".c-approve button")!.click();
+      await app.until(() => app.reads.writes.length === 1, "first approval write");
+      if (!overlapping) await app.until(() => !!app.doc.querySelector(".c-approve [data-sent]"), "completed approval");
+      app.doc.querySelector<HTMLButtonElement>(".c-digest button")!.click();
+      await settle();
+      assert.equal(app.reads.writes.length, 1, "the other card must not post while the first is in flight or lagging");
+      release();
+      await app.until(() => !!app.doc.querySelector(".maintain-results .skipped"), "deduplicated digest result");
+      assert.match(app.doc.querySelector(".maintain-results")!.textContent!, /already approved at HEAD/);
+      assert.deepEqual(app.reads.reviews, [7], "the shared receipt bridges the unread write");
+    } finally { release(); await app.close(); }
+  });
+
+  for (const capped of [true, false]) it(`refuses approval when reviews are ${capped ? "capped" : "unreadable"}`, async (t) => {
+    const app = await boot(t, { status: 200, etag: '"a"', comments: listed(T0, [approval(7)]), ...(capped ? { approvals: { 7: Array(100).fill("b".repeat(40)) } } : { reviewError: 502 }) });
+    try {
+      await app.until(() => !!app.doc.querySelector(".card-body button"), "approval button");
+      app.doc.querySelector<HTMLButtonElement>(".card-body button")!.click();
+      await app.until(() => /Not sent/.test(app.doc.querySelector(".card [role=status]")?.textContent ?? ""), "read refusal");
+      assert.deepEqual(app.reads.writes, []);
+      assert.match(app.doc.querySelector(".card [role=status]")!.textContent!, capped ? /Reviews exceed one page/ : /reviews unavailable/);
+    } finally { await app.close(); }
+  });
+
+  for (const removed of [false, true]) it(`refuses review-needs-human release with ${removed ? "a removed" : "no"} label before commenting`, async (t) => {
+    const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [rawAsk(7, { kind: "review-needs-human", action: { type: "pull_request", repository: "cgwalters-forge/tracker", number: 7 } })]), labels: removed ? ["needs-human"] : [] };
+    const app = await boot(t, holds);
+    try {
+      await app.until(() => !!app.doc.querySelector(".card textarea"), "answer form");
+      holds.labels = [];
+      app.doc.querySelector<HTMLTextAreaElement>(".card textarea")!.value = "Proceed";
+      app.doc.querySelector(".card form")!.dispatchEvent(new app.window.Event("submit", { bubbles: true, cancelable: true }));
+      await app.until(() => /not answering|hold is no longer present/.test(app.doc.querySelector(".card [role=status]")?.textContent ?? ""), "release refusal");
+      assert.deepEqual(app.reads.writes, []);
+    } finally { await app.close(); }
+  });
+
   it("shows a complete current list in the pass's order and count, and an empty one as caught up", async (t) => {
     const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0 - 5 * MINUTE, [rawAsk(9, { priority: "P2" }), rawAsk(3, { priority: "P0" })]) };
     const app = await boot(t, holds);
@@ -133,6 +223,14 @@ describe("Needs you from the pass's published list", () => {
     try {
       assert.match(app.note(), /Incomplete \(items partial, reviews unread\): more may wait on you\./);
       assert.deepEqual([app.count(), app.empty()], ["0", false]);
+    } finally { await app.close(); }
+  });
+
+  it("does not call unknown source values complete", async (t) => {
+    const app = await boot(t, { status: 200, etag: '"a"', comments: listed(T0, [], { sources: { items: "complete", reviews: "new-value" } }) });
+    try {
+      assert.match(app.note(), /Incomplete/);
+      assert.equal(app.empty(), false);
     } finally { await app.close(); }
   });
 
@@ -178,6 +276,25 @@ describe("Needs you from the pass's published list", () => {
       assert.deepEqual(app.keys(), ["cgwalters-forge/tracker#446"]);
       assert.match(app.note(), /no needs-you list.*Shown: the snapshot's own operator holds; review waits, proposals and digest asks are not listed\./);
       assert.equal(app.empty(), false);
+    } finally { await app.close(); }
+  });
+
+  it("keeps unavailable old cards alongside new snapshot holds after the list disappears", async (t) => {
+    const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [rawAsk(1)]) };
+    const app = await boot(t, holds);
+    try {
+      holds.comments = [holdsComment(iso(T0), undefined, [{ item: "cgwalters-forge/tracker#9", url: "https://github.com/cgwalters-forge/tracker/issues/9", epic: false, kind: "needs-human", reason: "new hold", operator: true, priority: "P0", question: "New ask" }])];
+      holds.etag = '"b"';
+      await app.wake(2 * MINUTE);
+      assert.deepEqual(app.keys(), ["cgwalters-forge/tracker#1", "cgwalters-forge/tracker#9"]);
+      assert.equal(app.doc.querySelectorAll(".card-unavailable").length, 1);
+      assert.match(app.doc.querySelector('[data-key="cgwalters-forge/tracker#9"]')!.textContent!, /New ask/);
+      holds.status = 502;
+      for (let poll = 0; poll < 2; poll++) {
+        await app.wake(2 * MINUTE);
+        assert.deepEqual(app.keys(), ["cgwalters-forge/tracker#1", "cgwalters-forge/tracker#9"]);
+        assert.equal(app.doc.querySelectorAll(".card-unavailable").length, 2);
+      }
     } finally { await app.close(); }
   });
 

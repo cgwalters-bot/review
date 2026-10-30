@@ -40,10 +40,8 @@ export interface InboxHooks {
   draftBody?(card: Card & { kind: "send" }): Promise<HTMLElement>;
   /** A Do card's body: its proposal read again, its live facts and exact mutations, with Run. */
   offerBody?(a: Ask): Promise<HTMLElement>;
-  /** An Approve card's PR head now, read as the card is drawn. */
-  headOf?(a: Ask): Promise<string>;
-  /** Approve an Approve card's PR at `head`; refuses if it moved. Resolves to the review's URL. */
-  approve?(a: Ask, head: string): Promise<string>;
+  /** Approve at `head`, refusing a moved head; URL if written, undefined if already approved. */
+  approve?(a: Ask, head: string): Promise<string | undefined>;
   /** Send the digest's picked approvals (approveSelected). */
   approveDigest?(items: readonly ApproveItem[]): Promise<ApproveResult[]>;
 }
@@ -52,14 +50,12 @@ export interface InboxHooks {
 const failed = (e: unknown): string => `Not sent, or uncertain: ${e instanceof Error ? e.message : String(e)}. Check on GitHub before trying again.`;
 
 /**
- * Approve in place, at the head the pass read, if it is still the head as
- * the card is drawn. He hasn't seen the diff here, so the confirmation
- * says so; the write reads the head again and sends nothing if it moved.
+ * Approve in place at the pass's head. The write checks the live head and
+ * viewer's approvals, not every card on every poll.
  */
-async function approveBody(a: Ask, hooks: InboxHooks): Promise<HTMLElement> {
-  const head = await hooks.headOf!(a);
+function approveBody(a: Ask, hooks: InboxHooks): HTMLElement {
+  const head = a.action.head!;
   const where = `${a.action.repository}#${a.action.number}`;
-  if (head !== a.action.head) return h("p", { class: "warn" }, `The head moved to ${head.slice(0, 12)} since the pass read ${a.action.head?.slice(0, 12)}: `, h("a", { href: askHref(a.action) }, "open the PR"), " to review it.");
   const button = h("button", { type: "button", class: "primary" }, `Approve ${head.slice(0, 7)}`);
   const status = h("p", { class: "status", role: "status" });
   button.addEventListener("click", () => {
@@ -71,7 +67,8 @@ async function approveBody(a: Ask, hooks: InboxHooks): Promise<HTMLElement> {
       status.removeAttribute(KEEP_ATTR);
       // Sent: a redraw shows this card again rather than offer the approval twice.
       status.setAttribute("data-sent", "");
-      status.replaceChildren("Approved: ", link(url, url));
+      status.closest(`.${CARD_CLASS}`)?.classList.add(CARD_DONE_CLASS);
+      status.replaceChildren(...(url ? ["Approved: ", link(url, url)] : ["Skipped: already approved at HEAD."]));
     }, (e: unknown) => {
       // Kept until r, which reads the head again: it may have moved, or the approval gone out.
       status.setAttribute(KEEP_ATTR, "");
@@ -79,7 +76,7 @@ async function approveBody(a: Ask, hooks: InboxHooks): Promise<HTMLElement> {
       button.disabled = false;
     });
   });
-  return h("div", { class: "actions" }, button, status);
+  return h("div", { class: "card-body actions" }, button, status);
 }
 
 /** Cards drawn at first, about a phone's screen; "Show more" draws as many again. */
@@ -153,7 +150,7 @@ function action(c: Card, hooks: InboxHooks): HTMLElement | null {
   if (c.answered) return null;
   switch (c.kind) {
     case "answer": if (hooks.answerBody && hooks.mayAct) return bodySlot(hooks.answerBody(c.ask)); break;
-    case "approve": if (hooks.headOf && hooks.approve && hooks.mayAct) return bodySlot(approveBody(c.ask, hooks)); break;
+    case "approve": if (hooks.approve && hooks.mayAct) return approveBody(c.ask, hooks); break;
     case "do": if (hooks.offerBody) return bodySlot(hooks.offerBody(c.ask)); break;
     case "open": break;
     case "document": return hooks.mayAct && c.entry.options.length ? entryForm(c, hooks) : null;

@@ -143,20 +143,13 @@ describe("fillInbox", () => {
     assert.match(card.textContent!, /Unavailable: from the last list read/);
   });
 
-  it("approves in place only at the head the pass read", async () => {
+  it("offers the pass's head without a drawing-time read", async () => {
     const head = "a".repeat(40);
     const approval = askCard(asks(rawAsk(4, { key: "up/proj#4", item: "up/proj#4", kind: "review-approve", action: { type: "approve_pull_request", repository: "up/proj", number: 4, head } }))[0]!);
-    const draw = async (now: string) => {
-      const list = document.createElement("div");
-      fillInbox(list, [approval], { ...hooks, headOf: async () => now, approve: async () => "https://github.com/up/proj/pull/4#pullrequestreview-1" });
-      await settle();
-      return list;
-    };
-    assert.equal((await draw(head)).querySelector("button")?.textContent, "Approve aaaaaaa");
-    const moved = await draw("b".repeat(40));
-    assert.equal(moved.querySelector("button"), null);
-    assert.match(moved.textContent!, /The head moved to bbbbbbbbbbbb since the pass read aaaaaaaaaaaa/);
-    assert.equal(moved.querySelector<HTMLAnchorElement>(".warn a")?.getAttribute("href"), "#pr/up/proj/4");
+    const list = document.createElement("div");
+    fillInbox(list, [approval], { ...hooks, approve: async () => "https://github.com/up/proj/pull/4#pullrequestreview-1" });
+    await settle();
+    assert.equal(list.querySelector("button")?.textContent, "Approve aaaaaaa");
   });
 
   it("doesn't redraw or move a card whose empty field has the focus", () => {

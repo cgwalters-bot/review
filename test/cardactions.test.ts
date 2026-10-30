@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import { type Action, type ActionConfig, type Comment, loadOffer, type Proposal } from "../src/github/actions.ts";
 import { proposalCard } from "../src/github/actionsview.ts";
 import { GitHub } from "../src/github/api.ts";
-import { approveAt, asOperator, openHead } from "../src/github/backend.ts";
+import { approveAt, asOperator } from "../src/github/backend.ts";
 import { type Ask, parseNeedsYou } from "../src/github/holds.ts";
 import { type Card, publishedCards } from "../src/github/inbox.ts";
 import { fillInbox, type InboxHooks } from "../src/github/inboxview.ts";
@@ -34,6 +34,7 @@ function forge(route: (method: string, path: string, body: unknown) => Scripted 
   const f = scriptedFetch((method, url) => {
     const path = new URL(url).pathname;
     if (path === "/user") return { body: { login } };
+    if (method === "GET" && path.endsWith("/reviews")) return { body: [] };
     return route(method, path, f.calls.at(-1)?.body);
   });
   return { gh: new GitHub(async () => "t", f.fetchImpl), calls: f.calls };
@@ -46,7 +47,6 @@ function cardHooks(gh: GitHub, refreshed: string[]): InboxHooks {
     render,
     mayAct: true,
     answerEntry: async () => {},
-    headOf: (a) => openHead(gh, PR),
     approve: (a, head) => asOperator(gh, async () => {
       const url = await approveAt(gh, PR, head);
       refreshed.push("approve");
@@ -76,9 +76,8 @@ const reviewCard = (): Card => publishedCards(asks(onPr(7, "review-approve")))[0
 describe("Approve card", () => {
   /** A PR at head A, moving to `moved` once the card has read it; reviews answer `review`. */
   function pull(opts: { moved?: string; review?: number } = {}) {
-    let reads = 0;
     return (method: string, path: string): Scripted | undefined => {
-      if (method === "GET" && path === "/repos/up/proj/pulls/7") return { body: { state: "open", html_url: "https://github.com/up/proj/pull/7", head: { sha: reads++ && opts.moved ? opts.moved : A } } };
+      if (method === "GET" && path === "/repos/up/proj/pulls/7") return { body: { state: "open", html_url: "https://github.com/up/proj/pull/7", head: { sha: opts.moved ?? A } } };
       if (method === "POST" && path === "/repos/up/proj/pulls/7/reviews") return { status: opts.review ?? 200, body: { html_url: "https://github.com/up/proj/pull/7#pullrequestreview-1" } };
       return undefined;
     };
@@ -101,24 +100,23 @@ describe("Approve card", () => {
   it("approves the head the card read, as the operator, then refreshes", async () => {
     const r = await click(pull());
     assert.deepEqual(writes(r.calls), ["POST /repos/up/proj/pulls/7/reviews"]);
-    assert.deepEqual(r.calls.find((c) => c.method === "POST")!.body, { event: "APPROVE", commit_id: A, body: "" });
+    assert.deepEqual(r.calls.find((c) => c.url.endsWith("/reviews") && c.method === "POST")!.body, { event: "APPROVE", commit_id: A });
     assert.deepEqual(r.refreshed, ["approve"]);
     assert.match(r.status, /^Approved: /);
   });
 
-  it("sends nothing when the head moved after the card read it", async () => {
+  it("sends nothing when the head moved since the pass read it", async () => {
     const r = await click(pull({ moved: B }));
     assert.deepEqual(writes(r.calls), []);
     assert.deepEqual(r.refreshed, []);
-    assert.match(r.status, /head moved to bbbbbbbbbbbb/);
+    assert.match(r.status, /head moved/i);
     assert.equal(r.button.disabled, false);
-    // A poll keeps the report; r redraws, reading the head again: not the one the pass read, so no approval but in the PR pane.
+    // A poll keeps the report; r permits another action-time check.
     r.repaint();
-    assert.match(r.list.textContent!, /head moved to bbbbbbbbbbbb/);
+    assert.match(r.list.textContent!, /head moved/i);
     r.repaint(true);
     await settle();
-    assert.equal(r.list.querySelector("button"), null);
-    assert.match(r.list.textContent!, /since the pass read aaaaaaaaaaaa: open the PR to review it/);
+    assert.equal(r.list.querySelector("button")?.textContent, "Approve aaaaaaa");
   });
 
   it("sends nothing under another viewer's token", async () => {

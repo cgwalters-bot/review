@@ -153,6 +153,8 @@ export interface Published {
   error?: string;
   /** `asks` are from a read that can't be confirmed now. */
   unavailable: boolean;
+  /** Current snapshot holds alongside an unavailable older list; these supersede matching keys. */
+  holds?: Ask[];
 }
 
 /**
@@ -200,7 +202,8 @@ export function inboxCards(input: InboxInput): Card[] {
     ...(input.document?.entries ?? []).map((e) => documentCard(e, input.document?.marks.get(e.id))),
     ...(input.drafts ?? []).map(sendCard),
   ].filter((c): c is Card => c !== undefined);
-  return [...publishedCards(input.published?.asks ?? [], input.published?.unavailable), ...local.filter((c) => !c.answered), ...local.filter((c) => c.answered)];
+  const holds = input.published?.holds ?? [];
+  return [...publishedCards((input.published?.asks ?? []).filter((a) => !holds.some((h) => h.key === a.key)), input.published?.unavailable), ...publishedCards(holds), ...local.filter((c) => !c.answered), ...local.filter((c) => c.answered)];
 }
 
 /** Whether `login` may act on the inbox's cards: the operator, or a token GitHub hasn't named yet. */

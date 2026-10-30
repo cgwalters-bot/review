@@ -216,7 +216,7 @@ for (const kind of ["needs-operator", "epic-unplanned"]) test(`main never releas
 });
 
 test("main digest partial results survive forced redraw without offering approved PRs again", async () => {
-  const r = setup((method, p) => method === "GET" ? { body: { state: "open", head: { sha: p.endsWith("/8") ? "b".repeat(40) : head } } } : { body: {} });
+  const r = setup((method, p) => method === "GET" ? { body: p.endsWith("/reviews") ? [] : { state: "open", head: { sha: p.endsWith("/8") ? "b".repeat(40) : head } } } : { body: {} });
   const card = cards(...[7, 8].map((n) => rawAsk(n, { key: `up/proj#${n}/digest`, item: `up/proj#${n}`, source: "digest", kind: "digest-approve", recommendation: "Ready", action: { type: "approve_pull_request", repository: "up/proj", number: n, head } })))[0]!;
   r.paint(card);
   r.list.querySelector("button")!.click(); await settle();

@@ -189,7 +189,7 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
   if (!validatedAt || !changedAt || !Array.isArray(raw.items) || !isCount(raw.omitted) || !READS.includes(raw.summaries as string) || !sources.length) return "the needs-you list is malformed";
   const items = raw.items.map(parseAsk).filter((a) => a !== undefined);
   const refused = raw.items.length - items.length;
-  const complete = raw.complete === true && refused === 0 && raw.count === raw.items.length && raw.omitted === 0 && sources.every(([, v]) => v === "complete" || v === "off");
+  const complete = raw.complete === true && refused === 0 && raw.count === raw.items.length && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
   return { complete, validatedAt, changedAt, sources: Object.fromEntries(sources), summaries: raw.summaries as string, omitted: raw.omitted, items, refused };
 }
 

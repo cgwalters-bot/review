@@ -25,7 +25,6 @@ import {
   loadWholeBoard,
   loadRuns,
   MaybeSentError,
-  openHead,
   postAnswer,
   postAskComment,
   rerunFailedJobs,
@@ -77,7 +76,7 @@ import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewd
 import { draftCard, draftReviewForm } from "./reviewdraftsview.ts";
 import { approveSelected } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
-import { botWaitingCount, filterNeeds, type Need, needStops } from "./needs.ts";
+import { botWaitingCount, type Need, needStops } from "./needs.ts";
 import { loadHeartbeat } from "./heartbeat.ts";
 import { type Ask, holdAsks, loadHolds, readHoldAsk } from "./holds.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
@@ -107,7 +106,7 @@ import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
 import { isSection, loadSectionPrefs, type SectionId, type SectionPrefs, saveSectionPref, sectionOpen } from "./sections.ts";
 import { DEFAULT_VIEW, fillNav, SECTION_VIEW, showView, VIEW_ATTR, VIEW_TITLE, type ViewId, viewHash, VIEWS, visibleView } from "./shell.ts";
 import { checkedText, SourceLayer } from "./sourcelayer.ts";
-import { loadAdvance, loadNeedsPriority, saveAdvance } from "./store.ts";
+import { loadAdvance, saveAdvance } from "./store.ts";
 import { type Decision, decisionLabel, parseDecision, sortDecisions } from "./triage.ts";
 import { agoLabel, answerForm, answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
@@ -198,8 +197,6 @@ interface State {
   inbox?: Inbox;
   /** What the pass's needs-you list said when last read. */
   published: Published;
-  /** The priority those rows are filtered by. */
-  needsPriority: string;
   /** Why GitHub hasn't confirmed `login` (it is then the cache's, or unknown); retried at each poll. */
   loginError?: string;
   loginChecking?: boolean;
@@ -510,12 +507,11 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
       return body;
     },
     answerEntry: (entry, letter, reply) => asOperator(state.gh, () => answerEntry(state, entry, letter, reply)),
-    headOf: (a) => openHead(state.gh, askPr(a)),
     approve: (a, head) => asOperator(state.gh, async () => {
       const ref = askPr(a);
       const found = reviewAskFor(state.items, ref);
       const url = await approveAt(state.gh, ref, head, found && { ref: found.ref, head: found.target.head });
-      reviewed(state, ref, head, "approve", url, found);
+      if (url) reviewed(state, ref, head, "approve", url, found);
       rebuildEntries(state);
       return url;
     }),
@@ -736,7 +732,7 @@ async function loadInboxContext(gh: GitHub): Promise<Active> {
 function readPublished(prev: Published, active: Active): Published {
   const source = active.sources?.holds;
   const kept: Published = prev.list
-    ? { asks: prev.list.items, list: prev.list, ...(prev.checkedAt === undefined ? {} : { checkedAt: prev.checkedAt }), unavailable: true }
+    ? { asks: [...prev.asks.filter((a) => !prev.holds?.some((h) => h.key === a.key)), ...(prev.holds ?? [])], list: prev.list, ...(prev.checkedAt === undefined ? {} : { checkedAt: prev.checkedAt }), unavailable: true }
     : { asks: prev.asks, unavailable: prev.asks.length > 0 };
   if (source?.state === "unavailable") return { ...kept, error: `Couldn't read the pass's snapshot: ${source.error ?? "no reason given"}` };
   const holds = active.holds;
@@ -745,9 +741,9 @@ function readPublished(prev: Published, active: Active): Published {
   const error = !holds
     ? "The pass has published no hold snapshot"
     : list === undefined
-      ? "The pass's snapshot has no needs-you list: holds.needsYou is off, the pass is older, or the list was over the comment's size cap"
+      ? "The pass's snapshot has no needs-you list"
       : `The pass's needs-you list can't be used: ${list}`;
-  return prev.list ? { ...kept, error } : { asks: holds ? holdAsks(holds) : [], unavailable: false, error };
+  return prev.list ? { ...kept, error, holds: holds ? holdAsks(holds) : [] } : { asks: holds ? holdAsks(holds) : [], unavailable: false, error };
 }
 
 /**
@@ -1239,9 +1235,7 @@ function allRows(): HTMLElement[] {
 
 /** "Needs you" as a list to step through: questions are answered in place, the rest open. */
 function needsOrigin(state: State, hash: string): Origin {
-  // Moving on after an answer stays within the rows the priority filter shows.
-  const shown = (needs: readonly Need[]) => needStops(filterNeeds(needs, state.needsPriority));
-  return { hash, stops: shown(state.needs), live: () => shown(currentNeeds(state)) };
+  return { hash, stops: needStops(state.needs), live: () => needStops(currentNeeds(state)) };
 }
 
 interface DecisionsRead {
@@ -1843,7 +1837,6 @@ async function start(source: TokenSource): Promise<void> {
     selected: undefined,
     prefs: loadSectionPrefs(),
     needs: [],
-    needsPriority: loadNeedsPriority(),
     answeredHere: new Set(),
     activeRunning: false,
     decisionsAnswered: new Set(),

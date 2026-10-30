@@ -55,8 +55,9 @@ recognized ask-created tracker question on the board is also closed as
 completed; labels on its `Blocks:` target are left alone for agent-board's
 `ask resolve`, which checks all other asks before unlabelling.
 **Approve** is a PR the pass found waiting on his approval at a head. Its
-card reads the head on drawing and approves only if it is still the one
-the pass read; if it moved, or a review ask names another head, nothing is
+card checks the head and your existing approvals when you act, and writes
+only if the head is still the one the pass read and you haven't approved
+it already; if it moved, or a review ask names another head, nothing is
 sent: open the PR pane to review it. Other asks on a PR (a closer look, a
 drafted reply, a stale PR) link to the PR pane. Answers and approvals
 require GitHub to identify the token as the operator. Writes are not
@@ -64,6 +65,11 @@ automatically retried after an uncertain response. Sent and uncertain
 outcomes, including a comment URL when release fails, survive ordinary
 refreshes and card redraws in this signed-in session. An uncertain comment
 is not offered again; check and finish on GitHub.
+
+Approval checks read at most 100 reviews per PR, only when you act. If
+that page cannot rule out an existing approval, nothing is written.
+Single and digest cards share in-flight and five-minute write receipts
+(at most 100 heads per signed-in client), including uncertain failures.
 
 The digest's approvals are one **Approve selected** card. It approves
 selected PRs at the heads the digest assessed, skipping changed heads and

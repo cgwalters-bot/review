@@ -89,7 +89,7 @@ export function rawNeedsYou(items: unknown[], at: string, over: Record<string, u
 }
 
 /** The bot's hold comment holding `needsYou` (left out where undefined), as the pass renders it. */
-export function holdsComment(at: string, needsYou?: unknown): { user: { login: string }; body: string } {
-  const snapshot = { schema: "agent-board/holds/v1", at, truncated: 0, holds: [], ...(needsYou === undefined ? {} : { needs_you: needsYou }) };
+export function holdsComment(at: string, needsYou?: unknown, holds: unknown[] = []): { user: { login: string }; body: string } {
+  const snapshot = { schema: "agent-board/holds/v1", at, truncated: 0, holds, ...(needsYou === undefined ? {} : { needs_you: needsYou }) };
   return { user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\nHolds as of ${at}.\n\n\`\`\`json\n${JSON.stringify(snapshot)}\n\`\`\`\n` };
 }
