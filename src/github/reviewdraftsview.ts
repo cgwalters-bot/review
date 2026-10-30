@@ -1,6 +1,7 @@
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import type { GitHub } from "./api.ts";
+import { asOperator } from "./backend.ts";
 import { dispatchFailed, EVENTS, loadDraftIssues, readPr, refText, sendDraft, startDraft, type DraftIssue, type Excerpt, type ReviewDraftConfig } from "./reviewdrafts.ts";
 
 /**
@@ -89,8 +90,9 @@ export async function draftCard(gh: GitHub, c: ReviewDraftConfig, render: Render
   send.addEventListener("click", () => {
     if (send.disabled || !window.confirm(`Approve sending this review of ${draft ? refText(draft.pr) : "this PR"}?`)) return;
     send.disabled = true; status.textContent = "Ticking the send box…";
-    void sendDraft(gh, c, d).then(() => { status.textContent = "Ticked: the tracker's workflow sends it."; })
-      .catch((e: unknown) => { status.textContent = String(e); send.disabled = false; });
+    card.dataset.sent = "sending";
+    void asOperator(gh, () => sendDraft(gh, c, d)).then(() => { status.textContent = "Ticked: the tracker's workflow sends it."; })
+      .catch((e: unknown) => { status.textContent = `Not sent or uncertain: ${String(e)}. Check GitHub; do not retry here.`; });
   });
   card.append(send, status);
   return card;

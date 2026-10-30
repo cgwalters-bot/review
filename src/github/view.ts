@@ -299,8 +299,10 @@ export function describeTarget(ref: IssueRef): string {
 function sendingForm(form: HTMLElement, button: HTMLButtonElement, status: HTMLElement, send: () => Promise<string> | undefined): void {
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
+    if (button.disabled) return;
     const sending = send();
     if (!sending) return;
+    form.dataset.sent = "sending";
     button.disabled = true;
     status.textContent = "Sending…";
     sending
@@ -313,7 +315,9 @@ function sendingForm(form: HTMLElement, button: HTMLButtonElement, status: HTMLE
       })
       .catch((e: unknown) => {
         status.textContent = `Not sent: ${e instanceof Error ? e.message : String(e)}`;
-        button.disabled = false;
+        button.disabled = e instanceof Error && e.name === "MaybeSentError";
+        if (button.disabled) form.dataset.sent = "uncertain";
+        else delete form.dataset.sent;
       });
   });
 }

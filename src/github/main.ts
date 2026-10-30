@@ -2,7 +2,7 @@
 // sections, board items and forge PRs, keyboard commands, and polling
 // while the tab is visible, of only what the view on screen shows.
 
-import type { Answer } from "../answer.ts";
+import { formatAnswer, parseQuestion } from "../answer.ts";
 import { h } from "../dom.ts";
 import { pageState, type PageState } from "./state.ts";
 import { readSource, type Sources } from "./freshness.ts";
@@ -10,10 +10,11 @@ import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
 import { itemAction, reviewAskFor, reviewComment, type RunRef } from "./asks.ts";
-import type { IssueRef, Item } from "./board.ts";
+import { type IssueRef, type Item, labelNames } from "./board.ts";
 import { findRouteItem, loadRouteItem } from "./itemroute.ts";
 import {
   answerHold,
+  readAnswerTarget,
   approveAt,
   asOperator,
   type Context,
@@ -23,6 +24,7 @@ import {
   loadQueue,
   loadWholeBoard,
   loadRuns,
+  MaybeSentError,
   openHead,
   postAnswer,
   postAskComment,
@@ -69,17 +71,16 @@ import { composeReviews, type ForgePr, refKey, type ReviewAction, VERDICT_LABEL 
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillStatus, fillNeeds, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { fillStatus, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadProposals, type Offered, PROPOSAL_LABEL, type ProposalCache } from "./actions.ts";
 import { proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
-import { draftCard, draftReviewForm, reviewDraftsPanel } from "./reviewdraftsview.ts";
+import { draftCard, draftReviewForm } from "./reviewdraftsview.ts";
 import { approveSelected, type Found as MaintainFound, loadDigest, MAINTAIN_CONFIG } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { botWaitingCount, filterNeeds, type Need, needStops } from "./needs.ts";
-import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
 import { loadHeartbeat } from "./heartbeat.ts";
-import { loadHolds } from "./holds.ts";
+import { loadHolds, readHoldAsk } from "./holds.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -107,14 +108,15 @@ import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
 import { isSection, loadSectionPrefs, type SectionId, type SectionPrefs, saveSectionPref, sectionOpen } from "./sections.ts";
 import { DEFAULT_VIEW, fillNav, SECTION_VIEW, showView, VIEW_ATTR, VIEW_TITLE, type ViewId, viewHash, VIEWS, visibleView } from "./shell.ts";
 import { checkedText, SourceLayer } from "./sourcelayer.ts";
-import { loadAdvance, loadNeedsPriority, saveAdvance, saveNeedsPriority } from "./store.ts";
+import { loadAdvance, loadNeedsPriority, saveAdvance } from "./store.ts";
 import { type Decision, decisionLabel, parseDecision, sortDecisions } from "./triage.ts";
-import { agoLabel, answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
+import { agoLabel, answerForm, answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
 const render = createRenderer(window);
 
 interface State {
+  cardWrites?: Map<string, HTMLElement>;
   routed?: { id: string; item?: Item; error?: string; loading?: boolean };
   people?: People;
   peopleRunning?: boolean;
@@ -193,14 +195,13 @@ interface State {
   prefs: SectionPrefs;
   /** The rows of "Needs you" as last drawn, and a signature of them. */
   needs: Need[];
-  /** With DECISIONS_CONFIG.inbox, the inbox's cards and what they are made from beyond the needs. */
+  /** The inbox's cards and their sources beyond the needs. */
   inbox?: Inbox;
   /** The priority those rows are filtered by. */
   needsPriority: string;
   /** Why GitHub hasn't confirmed `login` (it is then the cache's, or unknown); retried at each poll. */
   loginError?: string;
   loginChecking?: boolean;
-  needsSig?: string;
   /** Keys of questions answered from the page: kept in the list, dimmed, until a reload. */
   answeredHere: Set<string>;
   /** The open PR's pane, which handles its own keys. */
@@ -412,14 +413,7 @@ function homeHooks(state: State): HomeHooks {
 function mountHome(state: State): Home {
   if (state.home?.el.isConnected) return state.home;
   state.home = homeSkeleton(homeHooks(state));
-  // Things to do, so in the inbox, at its top.
-  const inbox = (el: HTMLElement) => {
-    el.setAttribute(VIEW_ATTR, SECTION_VIEW.needs);
-    state.home!.el.prepend(el);
-  };
-  // Proposals show only as the inbox's cards.
-  if (DECISIONS_CONFIG.inbox) mountInbox(state, state.home);
-  else if (REVIEW_DRAFT_CONFIG) inbox(reviewDraftsPanel(state.gh, REVIEW_DRAFT_CONFIG, render));
+  mountInbox(state, state.home);
   showMain(state.home.el);
   return state.home;
 }
@@ -488,12 +482,51 @@ function inboxNote(inbox: Inbox, what: string, text: string): void {
   inbox.status.textContent = [...inbox.notes.values()].join(" ");
 }
 
-function inboxHooks(state: State): InboxHooks {
+export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHooks {
   return {
+    writes: state.cardWrites ??= new Map(),
     now: Date.now(),
     render,
     mayAct: mayAct(state.login),
-    sendNeed: (n, a) => asOperator(state.gh, () => sendNeed(state, n, a)),
+    answerBody: async (n) => {
+      const item = n.decision?.item ?? n.entry?.item;
+      const target = n.hold?.item ?? (item?.ref && refKey(item.ref));
+      if (!target) throw new Error("This question has no target");
+      const receipts = state.cardWrites ??= new Map();
+      // The last answer attempted on this target, shown beside a failed read so its outcome and comment URL stay visible.
+      const lastKey = JSON.stringify(["answered", target.toLowerCase()]);
+      const [owner = "", repo = "", number] = target.split(/[/#]/);
+      let shown: Awaited<ReturnType<typeof readAnswerTarget>>, ask: string | undefined;
+      try {
+        shown = await readAnswerTarget(state.gh, target, !n.hold);
+        if (item && (shown.title !== item.title || (shown.body ?? "") !== item.body)) throw new Error("The ask changed; reload and read it again");
+        ask = await readHoldAsk(state.gh, owner, repo, Number(number));
+      } catch (e) {
+        const last = receipts.get(lastKey);
+        if (!last?.querySelector("[data-sent]")) throw e;
+        return h("div", {}, h("p", { class: "warn" }, String(e)), last);
+      }
+      const key = JSON.stringify([target.toLowerCase(), shown.title, shown.body, ask]);
+      const previous = receipts.get(key);
+      if (previous?.querySelector("[data-sent]")) return previous;
+      const check = async () => {
+        if (await readHoldAsk(state.gh, owner, repo, Number(number)) !== ask) throw new Error("The ask changed; not releasing it. Reload and read it again.");
+      };
+      const release = n.hold ? n.hold.kind === "needs-human" : labelNames(shown.labels).includes("needs-human");
+      const form = answerForm({ owner, repo, number: Number(number) }, parseQuestion(shown.body ?? ""), false,
+        (a) => {
+          const attempted = receipts.get(key);
+          if (attempted && attempted !== body && attempted.querySelector("[data-sent]")) return Promise.reject(new MaybeSentError(attempted.querySelector("[role=status]")?.textContent ?? "Already attempted; check GitHub"));
+          receipts.set(key, body);
+          receipts.set(lastKey, body);
+          return asOperator(state.gh, async () => (await answerHold(state.gh, target, formatAnswer(a), shown, release, check)).url);
+        }, `card-${target}-`, 2);
+      form.querySelector(".target")!.textContent = release
+        ? `Posts your answer, then removes only needs-human on ${target}. Other holds stay.`
+        : `Only a comment on ${target}: this hold cannot be released by an answer.`;
+      const body = h("div", {}, h("div", { class: "md" }, render([shown.body, ask].filter(Boolean).join("\n\n"), `${owner}/${repo}`)), form);
+      return body;
+    },
     answerEntry: (entry, letter, reply) => asOperator(state.gh, () => answerEntry(state, entry, letter, reply)),
     headOf: (n) => openHead(state.gh, n.entry!.pr!.ref),
     approve: (n, head) => asOperator(state.gh, async () => {
@@ -514,7 +547,7 @@ function inboxHooks(state: State): InboxHooks {
       if (rs.every((r) => r.status === "approved")) void refreshMaintain(state);
       return rs;
     }),
-    ...(REVIEW_DRAFT_CONFIG ? { draftBody: (c) => draftCard(state.gh, REVIEW_DRAFT_CONFIG!, render, c.draft) } : {}),
+    ...(drafts ? { draftBody: (c) => draftCard(state.gh, drafts, render, c.draft) } : {}),
     ...(ACTION_CONFIG ? {
       offerBody: (offer) => proposalCard(state.gh, ACTION_CONFIG!, offer, () => state.inbox?.busy === true, (v) => {
         if (!state.inbox) return;
@@ -637,25 +670,6 @@ function renderHome(state: State): void {
   tickSources(state);
 }
 
-/** What the "Needs you" rows act through. */
-function needsHooks(state: State, now: number): NeedsHooks {
-  return {
-    login: state.login,
-    loginError: state.loginError,
-    checkLogin: () => void confirmLogin(state),
-    priority: state.needsPriority,
-    pickPriority: (priority) => {
-      state.needsPriority = priority;
-      saveNeedsPriority(priority);
-      markSelected(state, false);
-    },
-    now,
-    render,
-    labelOf: labelOf(state),
-    send: (need, answer) => sendNeed(state, need, answer),
-  };
-}
-
 function currentNeeds(state: State): Need[] {
   return snapshot(state).people.filter((need) => DECISIONS_CONFIG.legacyQuestions || need.action !== "answer");
 }
@@ -673,37 +687,8 @@ function paintNeeds(state: State, force = false): void {
   const home = state.home;
   if (!home || state.closed) return;
   const needs = currentNeeds(state);
-  if (state.inbox) {
-    // Its cards keep their own unsent forms (fillInbox).
-    state.needs = needs;
-    paintInbox(state, force);
-    renderChrome(state);
-    return;
-  }
-  const hooks = needsHooks(state, Date.now());
-  const sig = needsSignature(needs, hooks, state.entries);
-  const forms: NeedsForm[] = [...home.slots.needs.querySelectorAll("form.answer")].map((form) => ({
-    sent: form.hasAttribute("data-sent"),
-    text: form.querySelector<HTMLTextAreaElement>("textarea")?.value ?? "",
-    picked: form.querySelector("input[type=radio]:checked") !== null,
-  }));
-  const policy = needsRedraw({ signature: sig, previousSignature: state.needsSig, forms, note: state.itemNote, force });
-  if (policy.action === "skip") return;
-  if (policy.note === undefined) delete state.itemNote;
-  else state.itemNote = policy.note;
-  if (policy.action === "defer") {
-    renderChrome(state);
-    return;
-  }
   state.needs = needs;
-  state.needsSig = sig;
-  // A redraw keeps him on the row he is on (e.g. the one he moved on to).
-  const on = document.activeElement?.closest(".need")?.id;
-  fillNeeds(home, needs, hooks, state.entries);
-  // The dashboard starts open unless he chose to collapse it.
-  if (state.prefs.needs === undefined) setSectionOpen(home, "needs", true, false, homeHooks(state));
-  if (on) document.getElementById(on)?.focus({ preventScroll: true });
-  markSelected(state, false);
+  paintInbox(state, force);
   renderChrome(state);
 }
 
@@ -1257,44 +1242,6 @@ async function refreshContext(state: State, item: Item): Promise<void> {
   if (routeItemId(state) !== item.nodeId) return;
   const container = byId("view").querySelector(`.${CONTEXT_CLASS}`);
   container?.replaceChildren(contextView(item, ctx, render, contextHooks(state, item)));
-}
-
-/**
- * Answer a row of "Needs you" in place: post the comment as him, mark
- * the row done until the page reloads, and move on to the next row.
- */
-async function sendNeed(state: State, need: Need, answer: Answer): Promise<string> {
-  const item = need.decision?.item ?? need.entry?.item;
-  if (!item?.ref) throw new Error("this question has no issue to answer on");
-  const hash = window.location.hash;
-  const posted = await postAnswer(state.gh, item.ref, answer);
-  // The next read confirms it: his comment is now after the bot's last.
-  if (need.entry?.item) {
-    state.sent.add(need.entry.item.nodeId);
-    state.context.delete(need.entry.item.nodeId);
-  }
-  if (need.decision) state.decisionsAnswered.add(need.decision.item.nodeId);
-  state.answeredHere.add(need.key);
-  if (state.inbox) {
-    // The inbox has no next row to move on to: the card dims in place, and other cards keep their unsent text.
-    // After the form marks itself sent (once this resolves), or it would count as unsent text.
-    setTimeout(() => {
-      rebuildEntries(state);
-      paintNeeds(state);
-    }, 0);
-    refreshSoon(state);
-    return posted.url;
-  }
-  const title = need.decision ? `${decisionLabel(need.decision)}: ${need.title}` : need.title;
-  acted(state, {
-    key: need.key,
-    title,
-    hash,
-    from: document.getElementById(needId(need))?.querySelector("form.answer") ?? null,
-    origin: needsOrigin(state, hash),
-    focus: (key) => focusRow(state, "needs", key),
-  });
-  return posted.url;
 }
 
 /** Move to the row of `section` with stop key `key`, opening "View all" if it is hidden. */
