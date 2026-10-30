@@ -7,7 +7,6 @@
 import type { Answer } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
-import { chatButton, chatItem } from "./chatitem.ts";
 import { TRACKER_REPO } from "./config.ts";
 import { DECISIONS_CONFIG } from "./decisiondocument.ts";
 import { questionOf } from "./board.ts";
@@ -211,17 +210,8 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   const body = c.kind === "send" ? hooks.draftBody?.(c) : c.kind === "do" ? hooks.offerBody?.(c.offer) : review ? approveBody(c.need, hooks) : undefined;
   if (body) el.append(bodySlot(body));
   if (c.kind === "digest" && hooks.approveDigest && hooks.mayAct) el.append(approveGroup(c.digest, hooks.approveDigest));
-  const target = c.kind === "document" ? c.entry.about ? `https://github.com/${c.entry.about.repo}/issues/${c.entry.about.number}` : DECISIONS_CONFIG.document ? `https://github.com/${DECISIONS_CONFIG.document.repo}/issues/${DECISIONS_CONFIG.document.number}` : undefined
-    : c.kind === "do" ? `https://github.com/${TRACKER_REPO}/issues/${c.offer.issue}` : c.url;
-  const pool = c.kind === "answer" || c.kind === "approve" ? (c.need.decision?.item ?? c.need.entry?.item)?.engine : undefined;
-  const chat = chatButton(chatItem(target, c.title, pool));
-  // The card's buttons on one row: Chat beside a form's Send, else beside the link.
   const act = action(c, hooks);
-  const formRow = act?.querySelector<HTMLElement>(":scope > .actions");
-  const row = formRow ?? h("div", { class: "actions" }, act);
-  if (chat) row.append(chat);
-  if (formRow) el.append(act!);
-  else if (row.firstChild) el.append(row);
+  if (act) el.append(act);
   // The operator action a decision comes down to, under its answer.
   if (hooks.offerBody) for (const o of c.offers ?? []) el.append(bodySlot(hooks.offerBody(o)));
   return el;

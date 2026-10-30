@@ -6,7 +6,7 @@ import { GitHub } from "../src/github/api.ts";
 import {
   approveSelected, closerMinutes, DAY_MINUTES, DIGEST_SCHEMA, digestIsStale, fileUrl, loadDigest, MAINTAIN_CONFIG, maintainConfig, newestDigest, parseDigest, type MaintainConfig,
 } from "../src/github/maintain.ts";
-import { approveGroup, maintainView } from "../src/github/maintainview.ts";
+import { approveGroup } from "../src/github/maintainview.ts";
 import type { RawComment, RawIssue } from "../src/github/reviewdrafts.ts";
 import { isView } from "../src/github/shell.ts";
 import { installDom, scriptedFetch } from "./helpers.ts";
@@ -21,7 +21,7 @@ const block = (o: unknown) => `\`\`\`agent-board-maintain-digest\n${JSON.stringi
 test("the shipped configuration reads tracker#965, an empty one is off, and an invalid one is refused", () => {
   assert.deepEqual(MAINTAIN_CONFIG, { issue: "cgwalters-forge/tracker#965", authors: ["cgwalters-bot"] });
   assert.deepEqual(maintainConfig(rawConfig), MAINTAIN_CONFIG);
-  assert.equal(isView("maintain"), true);
+  assert.equal(isView("maintain"), false, "the digest is an inbox card, not a separate view");
   assert.equal(maintainConfig({ issue: "", authors: [] }), undefined);
   assert.deepEqual(maintainConfig(c), c);
   for (const bad of [{ ...c, issue: "" }, { ...c, issue: "x" }, { ...c, authors: [] }, { ...c, authors: ["a b"] }]) {
@@ -102,18 +102,14 @@ test("digest date outranks text order, with newer comments and later blocks brea
   assert.equal(newestDigest(issue(today), [comment(4, dated("2099-01-01"), "mallory")], c)?.digest?.date, "2026-10-27");
 });
 
-test("today and yesterday are current UTC days; older digests visibly warn with their date", () => {
+test("today and yesterday are current UTC days; older digests are stale", () => {
   installDom();
   const now = Date.parse("2026-10-27T23:59:00Z");
   for (const [date, stale] of [["2026-10-27", false], ["2026-10-26", false], ["2026-10-25", true]] as const) {
     assert.equal(digestIsStale(date, now), stale);
     const found = newestDigest(issue(block({ schema: DIGEST_SCHEMA, date })), [], c)!;
     found.stale = digestIsStale(date, now);
-    const el = document.createElement("div");
-    el.append(...maintainView(found, undefined));
-    assert.match(el.textContent!, new RegExp(`Digest of ${date}`));
-    assert.equal(!!el.querySelector("[role=alert]"), stale);
-    if (stale) assert.match(el.textContent!, /Warning: this digest is more than a day old/);
+    assert.equal(found.stale, stale);
   }
   assert.equal(digestIsStale("2026-10-25", Date.parse("2026-10-27T00:00:00Z")), true);
 });
@@ -219,19 +215,10 @@ test("Approve selected approves at the assessed head, and skips a PR whose head 
   assert.match(el.textContent!, /Already approved at the assessed head/);
 });
 
-test("the view shows three sections, leaves Approve as a group to the Inbox, links each PR into the PR pane, and totals the time", () => {
+test("the inbox approval group selects the digest's candidates", () => {
   installDom();
   const found = newestDigest(issue(TEXT), [], c)!;
-  const el = document.createElement("div");
-  el.append(...maintainView(found, undefined));
-  assert.deepEqual([...el.querySelectorAll("h3")].map((x) => x.textContent), ["Needs a closer look", "Waiting on the author", "Stale"]);
-  assert.equal(el.querySelectorAll("input").length, 0);
-  assert.match(el.textContent!, /2 to approve as a group are on the Inbox/);
   assert.equal(approveGroup(found.digest!, async () => []).querySelectorAll<HTMLInputElement>("input[type=checkbox]:checked").length, 2);
-  assert.ok(el.querySelector("a[href='#pr/up/proj/9']"));
-  assert.match(el.textContent ?? "", /65 of 60 minutes/);
-  assert.ok(el.querySelector(".maintain-over"));
-  assert.equal(el.querySelector(".maintain-reply")?.textContent, "Thanks! Could you rebase on main and add a test?");
 });
 
 test("the shipped issue without a digest yet shows the empty state, not an error", async () => {
@@ -244,7 +231,4 @@ test("the shipped issue without a digest yet shows the empty state, not an error
   const gh = new GitHub(async () => "t", f.fetchImpl);
   const found = await loadDigest(gh, MAINTAIN_CONFIG!);
   assert.equal(found, undefined);
-  const el = document.createElement("div");
-  el.append(...maintainView(found, undefined));
-  assert.equal(el.textContent, "No digest posted yet.");
 });

@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { currentStep, type DispatchData, loadDispatch, parseDispatchTitle, type ResultCache, statusResult } from "../src/github/dispatch.ts";
-import { dispatchPanel } from "../src/github/dispatchview.ts";
 import type { RunJob } from "../src/github/runs.ts";
-import { installDom } from "./helpers.ts";
 
 const NOW = Date.parse("2026-10-25T13:40:00Z");
 const RUNS = "/repos/cgwalters-forge/tracker/actions/workflows/dispatch.yml/runs?per_page=100";
@@ -106,23 +104,6 @@ describe("loading dispatch runs", () => {
     assert.equal(comments(), 1);
     assert.deepEqual(again.finished[0]?.result, data.finished[0]?.result);
 
-    const win = installDom();
-    try {
-      const panel = dispatchPanel(data, NOW);
-      const live = panel.querySelectorAll(".dispatch-run.live");
-      assert.equal(live.length, data.live.length);
-      assert.match(panel.querySelector("h2")?.textContent ?? "", /2 live/);
-      const card = panel.querySelector(`[data-run-id="${LIVE.id}"]`);
-      assert.match(card?.textContent ?? "", /implement.*cgwalters-forge\/review#154.*claude.*14m/);
-      assert.equal(card?.querySelector(".dr-step")?.textContent, "Run ./.agentic-job-source/run (since 12m)");
-      assert.equal(panel.querySelector(`[data-run-id="${QUEUED.id}"] .dr-step`)?.textContent, "Waiting for a runner.");
-      const done = panel.querySelector(`[data-run-id="${DONE.id}"]`);
-      assert.equal(done?.querySelector(".dr-result")?.textContent, "PR");
-      assert.match(done?.querySelector(".dr-head")?.textContent ?? "", /finished 17m ago/);
-      assert.match(done?.querySelector(".dr-step")?.textContent ?? "", /^✅ dispatch ended well\. Result: /);
-    } finally {
-      win.close();
-    }
   });
 
   it("is unavailable when a list can't be read, and doesn't read jobs", async () => {

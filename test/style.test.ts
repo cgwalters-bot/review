@@ -9,7 +9,7 @@ const css = readFileSync(new URL("../static/style.css", import.meta.url), "utf8"
 
 it("never truncates titles or other display text with ellipsis or line clamps", () => {
   assert.doesNotMatch(css, /text-overflow\s*:\s*ellipsis|(?:-webkit-)?line-clamp\s*:/);
-  for (const selector of [".row .title", ".as-agent .as-who", "button.tfile .tname"]) {
+  for (const selector of [".row .title", "button.tfile .tname"]) {
     const rule = css.slice(css.indexOf(`${selector} {`)).split("}")[0]!;
     assert.match(rule, /overflow-wrap:\s*anywhere/);
     assert.doesNotMatch(rule, /white-space:\s*nowrap|overflow:\s*hidden/);
@@ -24,7 +24,6 @@ it("uses the design's type scale and pairwise theme tokens", () => {
   assert.match(css, /--surface-2: #eef1f5/);
   assert.equal(css.match(/--surface-2: #1c2532/g)?.length, 2);
   assert.equal(css.match(/--live: #6fcf97/g)?.length, 2);
-  assert.match(css, /prefers-reduced-motion: reduce/);
 });
 
 // jsdom's getComputedStyle ignores !important and specificity, so read the CSSOM instead.

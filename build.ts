@@ -9,8 +9,7 @@
 // The output is code only. Nothing about the board or its items is
 // fetched or embedded at build time.
 
-import { chmod, copyFile, mkdir, rm, readFile, writeFile } from "node:fs/promises";
-import { CHAT_CONFIG } from "./src/github/chatconfig.ts";
+import { chmod, copyFile, mkdir, rm } from "node:fs/promises";
 import * as esbuild from "esbuild";
 
 const OUT_DIR = "dist";
@@ -34,10 +33,6 @@ const options: esbuild.BuildOptions = {
 await rm(OUT_DIR, { recursive: true, force: true });
 await mkdir(OUT_DIR, { recursive: true });
 await Promise.all(STATIC_FILES.map((f) => copyFile(`static/${f}`, `${OUT_DIR}/${f}`)));
-if (CHAT_CONFIG) {
-  const html = await readFile(`${OUT_DIR}/index.html`, "utf8");
-  await writeFile(`${OUT_DIR}/index.html`, html.replace("connect-src https://api.github.com;", `connect-src https://api.github.com wss://*.${CHAT_CONFIG.tailnetDomain};`));
-}
 
 if (process.argv.includes("--serve")) {
   const ctx = await esbuild.context(options);

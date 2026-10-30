@@ -11,7 +11,6 @@ import type { Heartbeat } from "../src/github/heartbeat.ts";
 import type { Hold } from "../src/github/holds.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
-import { ITEM_CHAT_EVENT, type ChatItem } from "../src/github/chatitem.ts";
 
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
@@ -72,32 +71,6 @@ describe("fillInbox", () => {
       const run = [...card.querySelectorAll("button")].filter((b) => b.textContent === "Run as yourself");
       assert.equal(run.length, 1);
       assert.equal(run[0]!.disabled, false);
-    }
-  });
-
-  it("adds Chat to cards without consuming their unsent forms", () => {
-    const list = document.createElement("div");
-    fillInbox(list, [question(), documentCard(parseDocument("### D1 Pick one\nAbout: o/r#2\n- [ ] A) This\nReply:\n")[0]!, undefined)!], hooks);
-    assert.equal(list.querySelectorAll("button.item-chat").length, 2);
-    const card = cardOf(list, "item:I_1")!;
-    card.querySelector("textarea")!.value = "Unsent answer";
-    card.querySelector<HTMLButtonElement>(".item-chat")!.click();
-    assert.equal(card.querySelector("textarea")!.value, "Unsent answer");
-    assert.equal(card.querySelector<HTMLButtonElement>(".item-chat")!.type, "button");
-  });
-
-  it("keeps the board item's pool in Answer and Approve chat requests", () => {
-    for (const kind of ["answer", "approve"] as const) {
-      const c = question();
-      assert.ok(c.kind === "answer");
-      c.need.entry!.item!.engine = "openai";
-      const list = document.createElement("div");
-      fillInbox(list, [{ ...c, kind }], hooks);
-      let item: ChatItem | undefined;
-      list.addEventListener(ITEM_CHAT_EVENT, (e) => { item = (e as CustomEvent<ChatItem>).detail; });
-      list.querySelector<HTMLButtonElement>(".item-chat")!.click();
-      assert.equal(item?.pool, "openai");
-      assert.equal(item?.ref, "o/r#1");
     }
   });
 
@@ -248,10 +221,9 @@ describe("card layout at phone and desktop widths (no layout engine)", () => {
     assert.ok(link.kind === "answer");
     fillInbox(list, [question(), { ...link, key: "item:I_2", need: { ...link.need, inPlace: false } }], hooks);
     for (const card of list.children) {
-      const chat = card.querySelector(".item-chat")!;
-      assert.equal(card.querySelectorAll(".actions").length, 1, "one row");
-      assert.equal(chat.parentElement, card.querySelector(".actions"), "Chat on the row with the action");
-      assert.ok(chat.parentElement!.querySelector("button[type=submit], a.action"));
+      assert.ok(card.querySelectorAll(".actions").length <= 1, "at most one action row");
+      assert.equal(card.querySelector(".item-chat"), null, "no dead Chat control");
+      assert.ok(card.querySelector("button[type=submit], a.action"));
     }
   });
 });

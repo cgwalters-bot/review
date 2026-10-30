@@ -32,15 +32,13 @@ describe("views", () => {
     hidden = false;
   });
 
-  it("shows each section in its view only, the summary on Usage and the freshness line in all", () => {
+  it("shows only Needs you and Status, with freshness in both", () => {
     const home = mounted();
     for (const view of VIEWS) {
       showView(home.el, view);
       for (const id of SECTIONS) assert.equal(home.sections[id].details.hidden, SECTION_VIEW[id] !== view, `${id} in ${view}`);
-      assert.equal(home.slots.summary.hidden, view !== "usage");
       assert.equal(home.slots.freshness.hidden, false);
-      assert.equal(home.slots.weekly.hidden, view !== "usage");
-      assert.equal(home.slots.runs.hidden, view !== "agents");
+      assert.equal(home.slots.statusNote.hidden, view !== "status");
       assert.equal(home.el.querySelector<HTMLElement>("#sec-people")!.hidden, view !== "inbox");
     }
   });
@@ -49,13 +47,13 @@ describe("views", () => {
     const home = mounted();
     const row = (slot: HTMLElement, key: string) => slot.appendChild(Object.assign(win.document.createElement("a"), { className: ROW_CLASS, href: `#${key}` }));
     const need = row(home.slots.needs, "need");
-    const prio = row(home.slots.priority, "prio");
+    const status = row(home.slots.statusNote, "status");
     const draft = home.slots.needs.appendChild(win.document.createElement("textarea"));
     draft.value = "half written";
     showView(home.el, "inbox");
     assert.deepEqual(walkRows(home.el), [need]);
-    showView(home.el, "board");
-    assert.deepEqual(walkRows(home.el), [prio]);
+    showView(home.el, "status");
+    assert.deepEqual(walkRows(home.el), [status]);
     showView(home.el, "inbox");
     assert.equal(home.slots.needs.querySelector("textarea"), draft);
     assert.equal(draft.value, "half written");
@@ -64,8 +62,8 @@ describe("views", () => {
   it("knows the view on screen: none while the tab is hidden or the page isn't shown", () => {
     const home = mounted();
     assert.equal(visibleView(win.document, HOME_CLASS), undefined);
-    showView(home.el, "agents");
-    assert.equal(visibleView(win.document, HOME_CLASS), "agents");
+    showView(home.el, "status");
+    assert.equal(visibleView(win.document, HOME_CLASS), "status");
     hidden = true;
     assert.equal(visibleView(win.document, HOME_CLASS), undefined);
     hidden = false;
@@ -76,9 +74,10 @@ describe("views", () => {
   it("links each view, marking the current one", () => {
     const nav = win.document.createElement("nav");
     fillNav(nav, "inbox");
-    fillNav(nav, "usage");
-    assert.deepEqual([...nav.querySelectorAll("a")].map((a) => a.getAttribute("href")), ["#inbox", "#maintain", "#agents", "#board", "#activity", "#usage"]);
-    assert.deepEqual([...nav.querySelectorAll("[aria-current=page]")].map((a) => a.textContent), ["Usage"]);
+    fillNav(nav, "status");
+    assert.deepEqual([...nav.querySelectorAll("a")].map((a) => a.getAttribute("href")), ["#inbox", "#status"]);
+    assert.deepEqual([...nav.querySelectorAll("a")].map((a) => a.textContent), ["Needs you", "Status"]);
+    assert.deepEqual([...nav.querySelectorAll("[aria-current=page]")].map((a) => a.textContent), ["Status"]);
   });
 });
 
@@ -98,9 +97,9 @@ describe("the source layer", () => {
       [
         { name: "queue", path: "board", cadence, views: VIEWS },
         { name: "active", path: "heartbeat", cadence, views: VIEWS, read: read("active") },
-        { name: "runs", path: "runs", cadence, views: ["agents"], read: read("runs") },
+        { name: "runs", path: "runs", cadence, views: ["status"], read: read("runs") },
         { name: "decisions", path: "issues", cadence, views: ["inbox"], read: read("decisions") },
-        { name: "ops", path: "events", cadence, views: ["agents"], read: read("ops"), when: () => foldOpen },
+        { name: "ops", path: "events", cadence, views: ["status"], read: read("ops"), when: () => foldOpen },
       ],
       () => visibleView(win.document, HOME_CLASS),
     );
@@ -116,7 +115,7 @@ describe("the source layer", () => {
     l.tick(false, NOW);
     await settle();
     assert.deepEqual(reads, ["active", "decisions"]);
-    showView(home.el, "agents");
+    showView(home.el, "status");
     l.tick(false, NOW + 1_000);
     await settle();
     assert.deepEqual(reads, ["active", "decisions", "runs"], "active isn't due again; runs is new");
@@ -155,20 +154,20 @@ describe("the source layer", () => {
 
   it("reads a source shown in a fold only while it is open, and counts it in the view's age only then", async () => {
     const home = mounted();
-    showView(home.el, "agents");
+    showView(home.el, "status");
     const { l, reads, open } = layer();
     l.checked("queue", NOW);
     l.tick(false, NOW);
     await settle();
     assert.deepEqual(reads, ["active", "runs"]);
-    assert.deepEqual(l.freshness("agents").sources.map((s) => s.name), ["queue", "active", "runs"]);
-    assert.notEqual(l.freshness("agents").at, undefined);
+    assert.deepEqual(l.freshness("status").sources.map((s) => s.name), ["queue", "active", "runs"]);
+    assert.notEqual(l.freshness("status").at, undefined);
     open(true);
-    assert.equal(l.freshness("agents").at, undefined, "the open fold's source hasn't been read yet");
+    assert.equal(l.freshness("status").at, undefined, "the open fold's source hasn't been read yet");
     l.tick(false, NOW);
     await settle();
     assert.deepEqual(reads, ["active", "runs", "ops"]);
-    assert.equal(l.freshness("agents").at, NOW, "the oldest check is the queue's");
+    assert.equal(l.freshness("status").at, NOW, "the oldest check is the queue's");
   });
 
   it("doesn't count a read that failed, or read nothing, as a check", async () => {
