@@ -75,7 +75,6 @@ export interface Slots {
   statusNote: HTMLElement;
   focus: HTMLElement;
   needs: HTMLElement;
-  decisionDocument: HTMLElement;
   agents: HTMLElement;
   /** The ops detail under the agents, and its fold. */
   ops: HTMLElement;
@@ -159,7 +158,6 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const weekly = h("section", { class: "usage-body weekly-usage", id: "weekly-usage", "aria-label": "Weekly subscription usage" }, h("h2", {}, "Weekly subscription usage"), h("p", { class: "note" }, "Reading usage…"));
   const cost = h("div", { class: "cost-slot" });
   const needs = h("div", { class: "needs-slot" });
-  const decisionDocument = h("div", { class: "decision-document-slot" });
   const statusComputed = h("div", { class: "status-computed" }, h("p", { class: "note" }, "Reading the board…"));
   const statusNote = h("div", { class: "status-note" });
   const status = h("section", { class: "dashboard-status", "aria-label": "Status" }, h("h2", {}, "Status"), statusComputed, statusNote);
@@ -178,7 +176,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const maintain = h("section", { class: "maintain", "aria-label": "Maintain" }, h("h2", {}, "Maintain"), h("p", { class: "note" }, "Reading the digest…"));
   const ctx = { expected };
   const sections: Record<SectionId, SectionEls> = {
-    needs: section("needs", ctx, hooks, decisionDocument, needs),
+    needs: section("needs", ctx, hooks, needs),
     agents: section("agents", ctx, hooks, agents, ops.box),
     changes: section("changes", ctx, hooks, feed, news),
     priority: section("priority", ctx, hooks, priority, themes.box),
@@ -208,7 +206,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
     ...SECTIONS.filter((id) => id !== "needs").map((id) => sections[id].details),
     freshness,
   );
-  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, statusComputed, statusNote, focus, needs, decisionDocument, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly, cost, dashboard, maintain }, expected };
+  return { el, sections, slots: { summary, people, peopleCount, runs, dispatch, freshness, status, statusComputed, statusNote, focus, needs, agents, ops: ops.slot, opsBox: ops.box, feed, news, priority, themes: themes.slot, themesBox: themes.box, usage, weekly, cost, dashboard, maintain }, expected };
 }
 
 export function fillState(home: Home, state: PageState): void {

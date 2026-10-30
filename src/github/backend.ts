@@ -42,8 +42,8 @@ import {
   type SubIssueSummary,
   TRACKER_SCOPE,
 } from "./board.ts";
-import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, QUESTION_LABEL, DONE, FETCH_CONCURRENCY, LINKED_STATUSES, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
-import { refKey } from "./forge.ts";
+import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, OPERATOR, QUESTION_LABEL, DONE, FETCH_CONCURRENCY, LINKED_STATUSES, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
+import { composeReviews, refKey } from "./forge.ts";
 import { mapLimit, submitReview } from "./prs.ts";
 import type { ReviewRequest } from "./forge.ts";
 
@@ -282,6 +282,33 @@ export async function viewer(gh: GitHub): Promise<string> {
 }
 
 /**
+ * Run an Inbox card's `write` only under the operator's own token, as
+ * GitHub names it now: the page's login may be unconfirmed or stale, and
+ * another token's approval or answer would count for nothing, or for
+ * someone else.
+ */
+export async function asOperator<T>(gh: GitHub, write: () => Promise<T>): Promise<T> {
+  const { login } = await gh.send<{ login: string }>("GET", "/user");
+  if (login.toLowerCase() !== OPERATOR.toLowerCase()) throw new Error(`this token is ${login}'s, not ${OPERATOR}'s; nothing was sent`);
+  return write();
+}
+
+/**
+ * Post his text on a held item (OWNER/REPO#N), read fresh and still open.
+ * Only a comment: agent-board's holds/v1 publishes no write that releases
+ * a hold, so the hold stands until the pass's own snapshot drops it.
+ */
+export async function answerHold(gh: GitHub, item: string, text: string): Promise<Posted> {
+  const [owner = "", repo = "", n] = item.split(/[/#]/);
+  const ref = { owner, repo, number: Number(n) };
+  const body = formatComment(text);
+  const issue = await gh.send<RawContent>("GET", `/repos/${owner}/${repo}/issues/${ref.number}`);
+  const actual = parseIssueUrl(issue.html_url ?? "");
+  if (!actual || refKey(actual).toLowerCase() !== item.toLowerCase() || issue.state !== "open") throw new Error(`not answering: ${item} is ${issue.state === "open" ? `now ${issue.html_url}` : issue.state ?? "not open"}`);
+  return comment(gh, ref, body);
+}
+
+/**
  * The open asks he has answered (or commented on) and the bot hasn't acted
  * on yet, by node id. Reads comments only of open asks that have any; the reads
  * are conditional, so an unchanged issue costs nothing, and at most
@@ -404,6 +431,25 @@ export async function submitAskedReview(
 ): Promise<string> {
   await freshReviewAsk(gh, ask, pr, askedHead, scope);
   return submitReview(gh, pr, reviews, onSent);
+}
+
+/** An open PR's head now, for an Approve card to show and approve. */
+export async function openHead(gh: GitHub, pr: IssueRef): Promise<string> {
+  const now = await gh.send<{ state: string; head: { sha: string } }>("GET", `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`);
+  if (now.state !== "open") throw new Error(`${refKey(pr)} is ${now.state}`);
+  return now.head.sha;
+}
+
+/**
+ * Approve `pr` at `head`, the head an Inbox card read: through its review
+ * ask when one names it. Without the PR pane's prompt, an ask about
+ * another head refuses rather than approving one the bot didn't ask about.
+ */
+export async function approveAt(gh: GitHub, pr: IssueRef, head: string, ask?: { ref: IssueRef; head: string }): Promise<string> {
+  const reviews = composeReviews("approve", "", head);
+  if (!ask) return submitReview(gh, pr, reviews);
+  if (ask.head !== head) throw new Error(`not approving: ${refKey(ask.ref)} asks about ${ask.head.slice(0, 12)}, but the head is ${head.slice(0, 12)}; open the PR to review it`);
+  return submitAskedReview(gh, ask.ref, pr, ask.head, reviews);
 }
 
 /**

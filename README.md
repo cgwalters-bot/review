@@ -266,11 +266,8 @@ for private repositories. Entries use `### D12 Question`, checklist options
 `- [ ] A) Answer ← recommended: reason`, and one `Reply:` line. `## Done`
 starts the collapsed history. Each entry's text is rendered as GitHub-flavored
 markdown by the same sanitizing renderer as issue bodies (task list items show
-☑ or ☐). Answers tick one option and fill a one-line reply
-only within that id. With `checkboxes: true` in `document` (off by default),
-an open entry's task list items, other than the lettered options the form
-answers, are checkboxes: a tap ticks or unticks that
-one line through the same write as Send, and done entries stay read-only.
+☑ or ☐). The entries show only as the Inbox's Decide cards (below). Answers tick one option and fill a one-line reply
+only within that id.
 An entry names the issue or PR it is about with an `About: owner/repo#12`
 line, optionally `, asked 2026-10-15` (or a UTC time such as
 `2026-10-15T09:30Z`); without one, the item agent-board's heading says it
@@ -278,18 +275,14 @@ blocks, as in `### D12 Enable scheduler? (P0, blocks owner/repo#7)`, which
 gives no ask time, so only its closing or merging is read. With
 `resolve: true` in `document` (off unless set; the shipped document sets it),
 each refresh reads the items of the first ten open entries with an About
-line: an entry whose item is closed or merged moves, read-only, to a
-collapsed **Resolved** with a line saying so, however the document still
-reads; an entry whose item has comments since the ask stays, marked to be
-checked before answering. An item the viewer cannot read leaves its entry as
-it is.
-A fresh body comparison refuses stale forms and taps with
+line: an entry whose item is closed or merged leaves the Inbox, however the
+document still reads; an entry whose item has comments since the ask stays,
+marked to be checked before answering. An item the viewer cannot read leaves
+its entry as it is.
+A fresh body comparison refuses stale answers with
 “changed, reload”; GitHub has no atomic issue-body compare-and-swap, so an edit
-between that final read and write can still race. A refused Send redraws the
-document as it is now with the pick and reply still filled in, to check and
-send again. A poll that finds the body changed under an unsent answer says so
-instead of redrawing, and `r` reloads it; every redraw keeps unsent answers
-for entries still open. No private contents ship in
+between that final read and write can still race. A refused Send keeps the
+pick and reply on the card, to check and send again. No private contents ship in
 the build. Configuration and migration are left to the operator.
 
 **Inbox cards**, with `inbox: true` in `src/github/decisions-config.json`
@@ -301,7 +294,29 @@ merging removes it, and comments on the item since the ask say it changed.
 **Answer** and **Approve** are what the Decisions rows list: an ask on an open issue,
 dimmed once answered and gone once the issue closes, and a review request
 at an unreviewed head, gone once that head is reviewed or the PR closes or
-merges. **Send** is an open review-draft issue (when the review drafts are
+merges. A card's answers, approvals and hold comments go out only after
+GitHub names the token as cgwalters's (a fresh `GET /user`), as a proposal's
+Run does, after a confirmation where the page has one, and are never
+retried: a failure says it may have been sent, and the card keeps any
+unsent text. A review request's **Approve** card reads the PR's head when
+drawn and approves exactly that head, as the PR pane's Approve does; if the
+head moved, or the bot's review ask names another head, nothing is sent and
+the PR pane is the place to review it. A card whose write failed keeps its
+report until `r`, which reads its head again; no card is redrawn while its
+writes are going out, not even by `r`. A hold of the pass's that only you
+release has a text box that posts your text on the held item. That is only a
+comment: agent-board's holds/v1 publishes no release write, so the hold
+stays until the pass's own snapshot drops it. The maintain digest's Approve
+as a group is an **Approve** card of its own: **Approve selected** approves
+the ticked PRs as you at the heads the digest assessed, skipping and
+flagging any whose head moved since or that closed, and reports each PR's
+outcome; the card is read again once all of them are approved, and one
+reporting a skip or failure stays as it is until `r`. Merging and
+closing are proposals' `merge_pull_request` and `close_issue`, run on their
+card: a merge sends the shown head as GitHub's SHA guard, so a branch whose
+protection or merge queue refuses a direct merge reports it as failed.
+Enqueueing has no action in agent-board's contract yet, so no card offers
+it. **Send** is an open review-draft issue (when the review drafts are
 configured; Draft review follows the list), dimmed once ticked and gone once
 the tracker's workflow closes it. Failed dispatch runs are not cards:
 rerunning them is the pass's job. An operator-action proposal rides on the Decide or Answer card of the
@@ -316,12 +331,12 @@ minute, and the comments of one only once it moved.
 Cards are listed by board Priority (a card's item's, or for a question off
 the board the item it blocks), then oldest first, those you did last; the
 section's count is every card listed. The first five are drawn and the rest on Show more, so a
-card's reads (a proposal's targets, a Send card's PR) happen only once it is.
+card's reads (a proposal's targets, a Send card's PR, an Approve card's head) happen only once it is.
 The inbox adds one conditional read a
 minute (the last day's dispatch runs, at most 100), plus with review drafts
 configured their issues and comments (at most 20) and each drawn Send
-card's PR, only while the Inbox view shows; the document's `resolve` reads
-its About items as above, inbox or not. A card keeps its place across
+card's PR, and the maintain digest as the Maintain view reads it, only while
+the Inbox view shows; the document's `resolve` reads its About items as above. A card keeps its place across
 polls, and one holding an unsent pick, reply or answer, or the focus, is
 never redrawn, moved or removed: it says it changed or left, and `r`
 reloads it, dropping that text. An answer from a card kept that way goes
@@ -521,10 +536,9 @@ A **Maintain** view (`#maintain`) shows agent-board's daily maintain
 digest from cgwalters-forge/tracker#965, posted by cgwalters-bot, as
 `src/github/maintain-config.json` configures; with its `issue` empty and
 no authors the view is off. Every run posting as cgwalters-bot is trusted
-to write the digest. The newest digest there is shown in four sections, each PR opening in the PR
-pane: Approve as a group, whose ticked PRs **Approve selected** approves
-as you at the head the digest assessed, skipping and flagging any whose
-head moved since or that closed; Needs a closer look, with each concern's
+to write the digest. Its Approve as a group is an Inbox card (see Inbox
+cards), and it is also read while the Inbox shows. The rest is shown here in three sections, each PR opening in the PR
+pane: Needs a closer look, with each concern's
 file links and minutes, totalled against a 60-minute day; Waiting on the
 author, with the drafted reply to copy (the app never posts it); and
 Stale. `src/github/maintain.ts` describes the digest's format.

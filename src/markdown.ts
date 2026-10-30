@@ -79,7 +79,7 @@ function markdownIt(): MarkdownIt {
   // through the one it closes on, across blank lines, as GitHub's HTML
   // block does; text after its `-->` still shows. Elsewhere a comment
   // hides within its paragraph. Lines are consumed, not rewritten, so the
-  // token line map stays the source's (taskItemLines relies on it).
+  // token line map stays the source's.
   const closes = new WeakMap<object, Close>();
   // The last search for a comment block's closing line, per state: an
   // opener after its start and before its stop gets the same answer, so
@@ -139,19 +139,6 @@ function taskBox(tokens: Token[], i: number): RegExpExecArray | null {
   const first = token?.children?.[0];
   if (token?.type !== "inline" || tokens[i - 2]?.type !== "list_item_open" || first?.type !== "text") return null;
   return /^\[([ xX])\] /.exec(first.content);
-}
-
-const taskParser = markdownIt();
-
-/**
- * The 0-based source line of each task list item a renderer gives a glyph,
- * in the order the glyphs appear: markdown-it's own line map, so a caller
- * pairing glyphs with lines need not guess which line a list item came from.
- */
-export function taskItemLines(source: string): number[] {
-  if (source.length > MAX_SOURCE_CHARS) return [];
-  const tokens = taskParser.parse(source, {});
-  return tokens.flatMap((token, i) => (taskBox(tokens, i) && token.map ? [token.map[0]] : []));
 }
 
 export type Renderer = (source: string, repository?: string) => DocumentFragment;

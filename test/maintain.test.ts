@@ -6,7 +6,7 @@ import { GitHub } from "../src/github/api.ts";
 import {
   approveSelected, closerMinutes, DAY_MINUTES, DIGEST_SCHEMA, digestIsStale, fileUrl, loadDigest, MAINTAIN_CONFIG, maintainConfig, newestDigest, parseDigest, type MaintainConfig,
 } from "../src/github/maintain.ts";
-import { maintainView } from "../src/github/maintainview.ts";
+import { approveGroup, maintainView } from "../src/github/maintainview.ts";
 import type { RawComment, RawIssue } from "../src/github/reviewdrafts.ts";
 import { isView } from "../src/github/shell.ts";
 import { installDom, scriptedFetch } from "./helpers.ts";
@@ -104,14 +104,13 @@ test("digest date outranks text order, with newer comments and later blocks brea
 
 test("today and yesterday are current UTC days; older digests visibly warn with their date", () => {
   installDom();
-  const gh = new GitHub(async () => "t", scriptedFetch(() => undefined).fetchImpl);
   const now = Date.parse("2026-10-27T23:59:00Z");
   for (const [date, stale] of [["2026-10-27", false], ["2026-10-26", false], ["2026-10-25", true]] as const) {
     assert.equal(digestIsStale(date, now), stale);
     const found = newestDigest(issue(block({ schema: DIGEST_SCHEMA, date })), [], c)!;
     found.stale = digestIsStale(date, now);
     const el = document.createElement("div");
-    el.append(...maintainView(gh, found, undefined));
+    el.append(...maintainView(found, undefined));
     assert.match(el.textContent!, new RegExp(`Digest of ${date}`));
     assert.equal(!!el.querySelector("[role=alert]"), stale);
     if (stale) assert.match(el.textContent!, /Warning: this digest is more than a day old/);
@@ -140,8 +139,7 @@ test("loading reviews leaves only the signed-in viewer's approvals at the assess
   for (let reload = 0; reload < 2; reload++) {
     const found = await loadDigest(gh, c);
     assert.deepEqual(found!.digest!.approve.map((it) => it.approved), [true, false]);
-    const el = document.createElement("div");
-    el.append(...maintainView(gh, found, undefined));
+    const el = approveGroup(found!.digest!, (items) => approveSelected(gh, items));
     const boxes = [...el.querySelectorAll<HTMLInputElement>("input[type=checkbox]")];
     assert.deepEqual(boxes.map((b) => [b.checked, b.disabled]), [[false, true], [true, false]]);
     assert.match(el.textContent!, /Already approved at the assessed head/);
@@ -187,8 +185,7 @@ test("a successful approval stays unticked across source refreshes while GitHub'
   assert.equal((await approveSelected(gh, [first!.digest!.approve[0]!]))[0]!.status, "approved");
   const refreshed = await loadDigest(gh, c);
   assert.equal(refreshed!.digest!.approve[0]!.approved, true);
-  const el = document.createElement("div");
-  el.append(...maintainView(gh, refreshed, undefined));
+  const el = approveGroup(refreshed!.digest!, (items) => approveSelected(gh, items));
   assert.equal(el.querySelector<HTMLInputElement>("input")!.checked, false);
   const before = f.calls.length;
   const copy = { ...first!.digest!.approve[0]!, approved: false };
@@ -217,19 +214,20 @@ test("Approve selected approves at the assessed head, and skips a PR whose head 
   assert.equal(again[0]!.status, "skipped");
   assert.equal(f.calls.length, before);
   installDom();
-  const el = document.createElement("div");
-  el.append(...maintainView(new GitHub(async () => "t", f.fetchImpl), { url: "digest", digest: d }, undefined));
+  const el = approveGroup(d, (items) => approveSelected(new GitHub(async () => "t", f.fetchImpl), items));
   assert.equal(el.querySelector<HTMLInputElement>("input")!.checked, false);
   assert.match(el.textContent!, /Already approved at the assessed head/);
 });
 
-test("the view shows the four sections, links each PR into the PR pane, and totals the time", () => {
+test("the view shows three sections, leaves Approve as a group to the Inbox, links each PR into the PR pane, and totals the time", () => {
   installDom();
-  const gh = new GitHub(async () => "t", scriptedFetch(() => undefined).fetchImpl);
+  const found = newestDigest(issue(TEXT), [], c)!;
   const el = document.createElement("div");
-  el.append(...maintainView(gh, newestDigest(issue(TEXT), [], c), undefined));
-  assert.deepEqual([...el.querySelectorAll("h3")].map((x) => x.textContent), ["Approve as a group", "Needs a closer look", "Waiting on the author", "Stale"]);
-  assert.equal(el.querySelectorAll<HTMLInputElement>("input[type=checkbox]:checked").length, 2);
+  el.append(...maintainView(found, undefined));
+  assert.deepEqual([...el.querySelectorAll("h3")].map((x) => x.textContent), ["Needs a closer look", "Waiting on the author", "Stale"]);
+  assert.equal(el.querySelectorAll("input").length, 0);
+  assert.match(el.textContent!, /2 to approve as a group are on the Inbox/);
+  assert.equal(approveGroup(found.digest!, async () => []).querySelectorAll<HTMLInputElement>("input[type=checkbox]:checked").length, 2);
   assert.ok(el.querySelector("a[href='#pr/up/proj/9']"));
   assert.match(el.textContent ?? "", /65 of 60 minutes/);
   assert.ok(el.querySelector(".maintain-over"));
@@ -247,6 +245,6 @@ test("the shipped issue without a digest yet shows the empty state, not an error
   const found = await loadDigest(gh, MAINTAIN_CONFIG!);
   assert.equal(found, undefined);
   const el = document.createElement("div");
-  el.append(...maintainView(gh, found, undefined));
+  el.append(...maintainView(found, undefined));
   assert.equal(el.textContent, "No digest posted yet.");
 });

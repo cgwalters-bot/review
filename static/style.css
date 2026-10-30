@@ -93,7 +93,7 @@ label.opt { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px;
 label.opt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 label.opt input { margin-top: 4px; }
 .rec { font: var(--type-meta) var(--mono); color: var(--ok); margin-left: 6px; white-space: nowrap; }
-textarea, input[type=password], .decision-document input[type=text] { width: 100%; font: 15px/1.45 var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+textarea, input[type=password] { width: 100%; font: 15px/1.45 var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
 .target { font-size: 13px; color: var(--muted); margin: 0; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 button, .button { font: var(--type-secondary) var(--sans); font-weight: 500; border-radius: 6px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); text-decoration: none; }

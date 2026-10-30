@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createRenderer, MAX_SOURCE_CHARS, taskItemLines } from "../src/markdown.ts";
+import { createRenderer, MAX_SOURCE_CHARS } from "../src/markdown.ts";
 import { installDom } from "./helpers.ts";
 import { readFileSync } from "node:fs";
 
@@ -185,11 +185,7 @@ it("shows task list items as ☑/☐, also when the list interrupts a paragraph,
   assertSafe(root);
 });
 
-it("keeps task source lines aligned when multiline metadata hides tasks", () => {
-  const source = "<!-- metadata\n\n- [ ] hidden\n-->\n\n- [ ] visible\n- [x] done";
-  const root = dom(source);
+it("hides tasks inside multiline metadata", () => {
+  const root = dom("<!-- metadata\n\n- [ ] hidden\n-->\n\n- [ ] visible\n- [x] done");
   assert.deepEqual([...root.querySelectorAll("li")].map((li) => li.textContent), ["☐ visible", "☑ done"]);
-  assert.deepEqual(taskItemLines(source), [5, 6]);
-  const split = "> q <!--\n\n-->- [ ] a\n- [ ] b";
-  assert.equal(taskItemLines(split).length, [...dom(split).querySelectorAll("li")].filter((li) => /^[☐☑]/.test(li.textContent ?? "")).length);
 });
