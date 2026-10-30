@@ -5,8 +5,6 @@
 import type { Answer } from "../answer.ts";
 import { h } from "../dom.ts";
 import { pageState, type PageState } from "./state.ts";
-import { loadActionRuns, RUNS_POLL_MS, type RunsData } from "./runs.ts";
-import { DISPATCH_POLL_MS, type DispatchData, loadDispatch, type ResultCache } from "./dispatch.ts";
 import { readSource, type Sources } from "./freshness.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
@@ -22,10 +20,9 @@ import {
   loadAnswered,
   loadContext,
   loadDecisions,
-  loadOpenBoard,
   loadQueue,
+  loadWholeBoard,
   loadRuns,
-  type OpenBoard,
   openHead,
   postAnswer,
   postAskComment,
@@ -42,28 +39,22 @@ import {
   overlayWaiting,
   type PendingVerdict,
   pickNext,
-  queueStops,
   stillReviewed,
-  triageStops,
   writingElsewhere,
 } from "./advance.ts";
-import { loadSeen, loadUrgentOnly, saveSeen, saveUrgentOnly, type Snapshot, snapshotOf } from "./boardfeed.ts";
 import { type CacheSession, forgetCache, openCache } from "./cache.ts";
 import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from "./capture.ts";
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
-import { chatPanel, type ChatPanel } from "./chat.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, sendDocumentEdit } from "./decisiondocument.ts";
-import { inboxCards, mayAct, needCard } from "./inbox.ts";
+import { inboxCards, mayAct } from "./inbox.ts";
 import { fillInbox, type InboxHooks, passLine } from "./inboxview.ts";
 import {
   CLASSIC_SCOPES,
-  DISPATCH_WORKFLOW,
   DONE_NOTICE_MS,
   FETCH_CONCURRENCY,
   FORGE_MIN_INTERVAL_MS,
   FORGE_POLL_INTERVAL_MS,
-  NEWS_LIMIT,
   OPERATOR,
   OPS_POLL_INTERVAL_MS,
   POLL_BACKOFF_FACTOR,
@@ -75,29 +66,20 @@ import {
   TRACKER_REPO,
 } from "./config.ts";
 import { composeReviews, type ForgePr, refKey, type ReviewAction, VERDICT_LABEL } from "./forge.ts";
-import type { QueueFilter } from "./filter.ts";
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
-import { type HarnessCache, loadNews, type News } from "./news.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { DASHBOARD_CONFIG, type DashboardData, doneByDay, HISTORY_DAYS, type HistoryCache, loadDashboard, loadHistoryCache } from "./dashboard.ts";
-import { type CostData, loadCost } from "./cost.ts";
-import { USAGE_CONFIG } from "./usage.ts";
-import { type CostPick, costSection } from "./costview.ts";
-import { dashboardView } from "./dashboardview.ts";
-import { fillAgents, fillBoardStatus, fillChanges, fillDashboard, fillDispatch, fillFocus, fillStatus, fillNeeds, fillOps, fillPeople, fillPriority, fillState, fillSummary, fillThemes, fillUsage, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { fillStatus, fillNeeds, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadProposals, type Offered, PROPOSAL_LABEL, type ProposalCache } from "./actions.ts";
 import { proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
 import { draftCard, draftReviewForm, reviewDraftsPanel } from "./reviewdraftsview.ts";
 import { approveSelected, type Found as MaintainFound, loadDigest, MAINTAIN_CONFIG } from "./maintain.ts";
-import { maintainView } from "./maintainview.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { botWaitingCount, filterNeeds, type Need, needStops } from "./needs.ts";
 import { needId, type NeedsForm, type NeedsHooks, needsRedraw, needsSignature } from "./needsview.ts";
-import { activeFromOps, type BotEvent, type JobCache, loadActive, loadEvents, loadOps, type Ops } from "./ops.ts";
-import { NEWS_POLL_MS } from "./activity.ts";
-import { tickOps } from "./opsview.ts";
+import { loadHeartbeat } from "./heartbeat.ts";
+import { loadHolds } from "./holds.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -121,12 +103,12 @@ import {
   type WaitingRead,
 } from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
-import { buildEntries, type Entry, itemHref, onBot, staleItems } from "./queue.ts";
+import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
 import { isSection, loadSectionPrefs, type SectionId, type SectionPrefs, saveSectionPref, sectionOpen } from "./sections.ts";
 import { DEFAULT_VIEW, fillNav, SECTION_VIEW, showView, VIEW_ATTR, VIEW_TITLE, type ViewId, viewHash, VIEWS, visibleView } from "./shell.ts";
 import { checkedText, SourceLayer } from "./sourcelayer.ts";
-import { loadAdvance, loadFilter, loadNeedsPriority, saveAdvance, saveFilter, saveNeedsPriority } from "./store.ts";
-import { buildTriage, type Decision, decisionLabel, parseDecision, sortDecisions, triageOrder, type TriageFilter } from "./triage.ts";
+import { loadAdvance, loadNeedsPriority, saveAdvance, saveNeedsPriority } from "./store.ts";
+import { type Decision, decisionLabel, parseDecision, sortDecisions } from "./triage.ts";
 import { agoLabel, answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
@@ -138,22 +120,6 @@ interface State {
   peopleRunning?: boolean;
   peopleRevision?: number;
   peopleWrites?: number;
-  actionRuns?: RunsData;
-  runsRunning: boolean;
-  /** The tracker's dispatch runs as last read, and the finished ones' results read so far. */
-  dispatch?: DispatchData;
-  activityEvents?: BotEvent[];
-  activityEventsError?: string;
-  dispatchResults: ResultCache;
-  dispatchRunning?: boolean;
-  /** The Dashboard view's own reads as last made, and the finished days' runs kept. */
-  dashboard?: DashboardData;
-  dashboardHistory: HistoryCache;
-  dashboardRunning?: boolean;
-  /** The Usage view's daily cost as last read, and how he chose to see it. */
-  cost?: CostData;
-  costPick: CostPick;
-  costRunning?: boolean;
   /** What the views show and when each is read (see newLayer). */
   layer: SourceLayer<ViewId>;
   /** The view of the page last shown, which a bare # (e.g. "Back") returns to. */
@@ -186,8 +152,6 @@ interface State {
   forceForge: boolean;
   /** Whether a forge search has succeeded, so missing forge PRs mean gone. */
   forgeKnown: boolean;
-  /** The queue's filter: the hash's, else the last chosen (remembered if storage allows). */
-  filter: QueueFilter;
   verdictsRunning: boolean;
   waitingRunning: boolean;
   poller: Poller;
@@ -221,18 +185,9 @@ interface State {
   shownPr?: { key: string; updatedAt: string; wait: string | undefined };
   /** A note about the open item or PR, e.g. that it changed. */
   itemNote?: string;
-  /** The changes section's merged PRs, as last read, and which of them touched the harness. */
-  news?: News;
-  harness: HarnessCache;
-  /** The ops detail's last read, when it started, and the finished runs' jobs. */
-  ops?: Ops;
-  opsRunning: boolean;
-  /** What the agents, changes and usage sections show: the board, the heartbeat and the usage as last read (or the ops detail's). */
+  /** Published status and the board, heartbeat and holds used as inbox context. */
   active?: Active;
   activeRunning: boolean;
-  jobs: JobCache;
-  /** Moves the ops detail's live times while it is shown. */
-  ticker?: ReturnType<typeof setInterval>;
   /** The page's sections, while it is shown, and which of them he opened or closed. */
   home?: Home;
   prefs: SectionPrefs;
@@ -248,18 +203,13 @@ interface State {
   needsSig?: string;
   /** Keys of questions answered from the page: kept in the list, dimmed, until a reload. */
   answeredHere: Set<string>;
-  /** The verdict filter of the themes under "By priority". */
-  triageFilter: TriageFilter;
   /** The open PR's pane, which handles its own keys. */
   pane?: PrPane;
   /** The capture bar, shown to OPERATOR only. */
   capture?: CaptureBar;
-  chat?: ChatPanel | undefined;
   help: boolean;
   /** The location hash last routed to. */
   hash: string;
-  /** The section the open entry was opened from: "needs", "priority" or "themes". */
-  openedFrom: "needs" | "priority" | "themes";
   /** The list the open entry was opened from, which an action there moves on in. */
   origin?: Origin;
   /** Whether an action opens the next entry (a setting, on by default). */
@@ -272,13 +222,6 @@ interface State {
   cachedAt?: number;
   /** PR details shown from the cache, by refKey: when they were fetched. */
   prCachedAt: Map<string, number>;
-  /** The changes section shows cached merged PRs fetched at this time. */
-  newsCachedAt?: number;
-  /** The themes' last read of the open board, and when a cached copy was fetched. */
-  openBoard?: OpenBoard;
-  openBoardCachedAt?: number;
-  /** Themes whose group is open under "By priority". */
-  triageOpen: Set<string>;
   /** The open decisions, in order, and when a cached copy was fetched. */
   decisions?: Decision[];
   decisionsCachedAt?: number;
@@ -311,13 +254,6 @@ function frozenSince(state: State): number | undefined {
 
 /** Set once GitHub rejected the token: late loads mustn't draw over the sign-in page. */
 let viewClosed = false;
-
-/**
- * A chat still attached when GitHub rejected the token. It doesn't use the
- * token, and closing it would end the session run, so it stays up and the
- * next sign-in takes it over.
- */
-let keptChat: ChatPanel | undefined;
 
 function showMain(node: Node): void {
   if (viewClosed) return;
@@ -398,13 +334,6 @@ function renderChrome(state: State): void {
   fillNav(byId("views"), state.view);
   if (state.home?.el.isConnected) {
     fillState(state.home, model);
-    fillSummary(state.home, model, state.ops?.controller, Date.now());
-    const signature = JSON.stringify(model.agents);
-    if (state.home.slots.agents.dataset.signature !== signature) {
-      fillAgents(state.home, state.active, Date.now(), model.agents);
-      state.home.slots.agents.dataset.signature = signature;
-    }
-    paintDashboard(state);
   }
   const r = route().route;
   const warnings = [state.error, state.forgeError, state.tokenWarning, state.itemNote];
@@ -466,18 +395,11 @@ function markSelected(state: State, scroll: boolean): void {
 /** The page's section hooks: its default open state, what opening one starts, and what is remembered. */
 function homeHooks(state: State): HomeHooks {
   return {
-    open: (id) => sectionOpen(id, state.prefs, id === "agents" || id === "needs"),
+    open: (id) => sectionOpen(id, state.prefs, true),
     toggled: (id, open) => {
       state.prefs[id] = open;
       saveSectionPref(id, open);
       if (open) tickSources(state);
-    },
-    opsToggled: (open) => {
-      if (open) tickSources(state);
-      else clearInterval(state.ticker);
-    },
-    themesToggled: (open) => {
-      if (open) void refreshTriage(state);
     },
     peopleToggled: (open) => {
       renderChrome(state);
@@ -683,38 +605,24 @@ async function refreshDrafts(state: State): Promise<boolean> {
  * "checked N min ago" says how old it is.
  */
 async function refreshMaintain(state: State): Promise<boolean> {
-  const slot = state.home?.slots.maintain;
-  if (!slot || !MAINTAIN_CONFIG) return false;
-  let found: MaintainFound | undefined;
-  let error: string | undefined;
+  const inbox = state.inbox;
+  if (!inbox || !MAINTAIN_CONFIG) return false;
   try {
-    found = await loadDigest(state.gh, MAINTAIN_CONFIG);
+    const found = await loadDigest(state.gh, MAINTAIN_CONFIG);
+    if (state.closed) return false;
+    if (found) inbox.digest = found;
+    else delete inbox.digest;
+    inboxNote(inbox, "maintain", "");
+    paintInbox(state);
+    return true;
   } catch (e) {
-    error = message(e);
+    inboxNote(inbox, "maintain", `Couldn't refresh the digest: ${message(e)}. Any shown approval is from the last reading.`);
+    return false;
   }
-  if (state.closed || (error && slot.dataset.shown)) return false;
-  const signature = JSON.stringify([found, error]);
-  if (slot.dataset.signature !== signature) {
-    slot.dataset.signature = signature;
-    if (found?.digest) slot.dataset.shown = "1";
-    else delete slot.dataset.shown;
-    slot.replaceChildren(h("h2", {}, "Maintain"), ...maintainView(found, error));
-    if (state.inbox) {
-      if (found) state.inbox.digest = found;
-      else delete state.inbox.digest;
-      paintInbox(state);
-    }
-  }
-  return !error;
 }
 
 function renderHome(state: State): void {
-  // A filter in the hash is chosen, and remembered; a bare # shows the last one.
   const r = route();
-  if (r.route === "home" && r.filter) {
-    state.filter = r.filter;
-    saveFilter(r.filter);
-  }
   // A view in the hash is shown; a bare # shows the last one.
   if (r.route === "home" && r.view) state.view = r.view;
   // Drawn once while the page stays: a redraw of it must not take half-typed answers away.
@@ -722,15 +630,9 @@ function renderHome(state: State): void {
   const home = mountHome(state);
   showView(home.el, state.view);
   renderChrome(state);
-  if (r.route === "home" && r.filter) setSectionOpen(home, "priority", true, true, homeHooks(state));
   paintNeeds(state, fresh);
   paintPeople(state);
-  paintPriority(state);
   paintActive(state);
-  paintChanges(state);
-  paintOps(state);
-  paintThemes(state);
-  fillDispatch(home, state.dispatch, Date.now());
   markSelected(state, false);
   tickSources(state);
 }
@@ -759,60 +661,7 @@ function currentNeeds(state: State): Need[] {
 }
 
 function snapshot(state: State): PageState {
-  return pageState({ active: state.active, entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, runs: state.actionRuns, dispatch: state.dispatch, sources: state.sources });
-}
-
-/** Re-read the agent runs; false if nothing was read (see SourceDef.read). */
-async function refreshActionRuns(state: State): Promise<boolean> {
-  if (state.closed || state.runsRunning) return false;
-  state.runsRunning = true;
-  try {
-    const runs = await loadActionRuns(state.gh);
-    if (state.closed) return false;
-    state.sources.runs = { state: runs.state, checkedAt: runs.at, ...(runs.state === "ok" ? { fetchedAt: runs.at } : { error: runs.warnings.join(" ") }) };
-    // Preserve last known rows on a transient failure, while marking them stale.
-    if (runs.state === "ok" || !state.actionRuns) state.actionRuns = runs;
-    renderChrome(state);
-    return runs.state === "ok";
-  } finally {
-    state.runsRunning = false;
-  }
-}
-
-async function refreshActivityEvents(state: State): Promise<boolean> {
-  try {
-    const events = await loadEvents(state.gh);
-    if (state.closed) return false;
-    const checked = events !== state.activityEvents;
-    state.activityEvents = events;
-    delete state.activityEventsError;
-    paintChanges(state);
-    return checked;
-  } catch (e) {
-    if (state.closed) return false;
-    state.activityEventsError = `Public events unavailable: ${message(e)}`;
-    paintChanges(state);
-    return false;
-  }
-}
-
-/** Re-read the dispatch runs; false if nothing was read (see SourceDef.read). */
-async function refreshAgentDispatch(state: State): Promise<boolean> {
-  if (state.closed || state.dispatchRunning) return false;
-  state.dispatchRunning = true;
-  try {
-    const data = await loadDispatch(state.gh, state.dispatchResults);
-    if (state.closed) return false;
-    // A failed read keeps the cards last read, with why they weren't refreshed.
-    state.dispatch = data.state === "ok" || !state.dispatch ? data : { ...state.dispatch, warnings: data.warnings };
-    if (state.home) fillDispatch(state.home, state.dispatch, Date.now());
-    paintChanges(state);
-    // Its in-progress runs are agents: the summary's and the Agents header's count.
-    renderChrome(state);
-    return data.state === "ok";
-  } finally {
-    state.dispatchRunning = false;
-  }
+  return pageState({ active: state.active, entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, sources: state.sources });
 }
 
 /**
@@ -858,12 +707,6 @@ function paintNeeds(state: State, force = false): void {
   renderChrome(state);
 }
 
-function paintPriority(state: State): void {
-  if (!state.home) return;
-  fillPriority(state.home, state.entries, labelOf(state), Date.now(), state.filter, { stale: staleItems(state.items, state.entries) });
-  markSelected(state, false);
-}
-
 function paintPeople(state: State): void {
   if (!state.home || state.closed) return;
   fillPeople(state.home, state.people, Date.now(), {
@@ -900,164 +743,11 @@ async function refreshPeople(state: State): Promise<boolean> {
   }
 }
 
-/** Where the themes under "By priority" open an item in the app: only one in the queue; others open on GitHub. */
-function triageItemHref(state: State, item: Item): string | undefined {
-  return state.items.some((i) => i.nodeId === item.nodeId) ? itemHref(item) : undefined;
-}
-
-function paintThemes(state: State): void {
-  if (!state.home) return;
-  fillThemes(state.home, state.openBoard, state.triageFilter, {
-    itemHref: (item) => triageItemHref(state, item),
-    open: state.triageOpen,
-    toggled: (theme, open) => {
-      if (open) state.triageOpen.add(theme);
-      else state.triageOpen.delete(theme);
-    },
-    setFilter: (f) => {
-      state.triageFilter = f;
-      paintThemes(state);
-    },
-  });
-}
-
-/**
- * The changes feed's snapshot. The first time the board is read (not
- * from the cache), it becomes what the feed starts from.
- */
-function feedSeen(board: readonly Item[] | undefined, at: number, fromCache: boolean | undefined): Snapshot | undefined {
-  let seen = loadSeen();
-  if (!seen && board && !fromCache) {
-    seen = snapshotOf(board, at);
-    saveSeen(seen);
-  }
-  return seen;
-}
-
 function paintActive(state: State): void {
   if (!state.home) return;
   const model = snapshot(state);
-  fillAgents(state.home, state.active, Date.now(), model.agents);
-  fillBoardStatus(state.home, state.active?.board, Date.now());
   fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError, Date.now(), state.active?.board);
-  fillFocus(state.home, state.active?.board ? model.focus : undefined);
-  fillUsage(state.home, model.usage ?? undefined, state.active?.local, Date.now());
   fillState(state.home, model);
-  fillSummary(state.home, model, state.ops?.controller, Date.now());
-  paintDashboard(state);
-}
-
-/**
- * Redraw the Dashboard view while it shows, if what it says changed (the
- * chrome redraws every few seconds; a redraw would take the focus off a
- * tile). Its approvals are the Approve cards the inbox would show.
- */
-function paintDashboard(state: State): void {
-  const home = state.home;
-  if (!home || state.closed || !DASHBOARD_CONFIG.enabled || state.view !== "dashboard") return;
-  const now = Date.now();
-  const board = state.active?.board;
-  const inputs = {
-    data: state.dashboard,
-    dispatch: state.dispatch,
-    approvals: state.loaded ? currentNeeds(state).map(needCard).filter((c) => c?.kind === "approve" && !c.answered).length : undefined,
-    usage: state.active?.usage,
-    done: board ? doneByDay(board, now) : undefined,
-    now,
-  };
-  const text = dashboardView(inputs).textContent ?? "";
-  if (home.slots.dashboard.dataset.signature === text) return;
-  home.slots.dashboard.dataset.signature = text;
-  fillDashboard(home, inputs);
-}
-
-/** Re-read the Dashboard view's own sources; false if any part wasn't read (see SourceDef.read). */
-async function refreshDashboard(state: State): Promise<boolean> {
-  if (state.closed || state.dashboardRunning) return false;
-  state.dashboardRunning = true;
-  try {
-    const { data, ok } = await loadDashboard(state.gh, state.dashboardHistory, state.dashboard);
-    if (state.closed) return false;
-    state.dashboard = data;
-    paintDashboard(state);
-    return ok;
-  } finally {
-    state.dashboardRunning = false;
-  }
-}
-
-/** Redraw the daily cost: only when read or when he picks, so a poll doesn't take the focus off its selects. */
-function paintCost(state: State): void {
-  if (!state.home || state.closed) return;
-  state.home.slots.cost.replaceChildren(
-    costSection(state.cost, state.costPick, {
-      pick: (p) => {
-        state.costPick = p;
-        paintCost(state);
-      },
-    }),
-  );
-}
-
-async function refreshCost(state: State): Promise<boolean> {
-  if (state.closed || state.costRunning) return false;
-  state.costRunning = true;
-  if (!state.cost) paintCost(state);
-  try {
-    const cost = await loadCost(state.gh);
-    if (state.closed || !cost) return false;
-    const changed = JSON.stringify(cost) !== JSON.stringify(state.cost);
-    state.cost = cost;
-    if (changed) paintCost(state);
-    return true;
-  } catch (e) {
-    state.error = `Couldn't read the daily cost: ${message(e)}`;
-    renderChrome(state);
-    return false;
-  } finally {
-    state.costRunning = false;
-  }
-}
-
-function paintChanges(state: State): void {
-  if (!state.home) return;
-  const a = state.active;
-  fillChanges(
-    state.home,
-    {
-      board: a?.board,
-      seen: feedSeen(a?.board, a?.at ?? Date.now(), a?.fromCache),
-      fromCache: a?.fromCache === true,
-      news: state.news,
-      events: state.activityEvents,
-      eventsError: state.activityEventsError,
-      dispatch: state.dispatch,
-      feed: {
-        urgentOnly: loadUrgentOnly(),
-        onUrgentOnly: (on) => {
-          saveUrgentOnly(on);
-          paintChanges(state);
-        },
-        onSeen: () => {
-          if (state.active?.board) saveSeen(snapshotOf(state.active.board, state.active.at));
-          paintChanges(state);
-        },
-      },
-    },
-    render,
-    Date.now(),
-  );
-}
-
-function paintOps(state: State): void {
-  if (!state.home) return;
-  const el = fillOps(state.home, state.ops, Date.now());
-  clearInterval(state.ticker);
-  if (state.home.slots.opsBox.open) {
-    state.ticker = setInterval(() => {
-      if (!document.hidden) tickOps(el, Date.now());
-    }, 1000);
-  }
 }
 
 /**
@@ -1065,38 +755,23 @@ function paintOps(state: State): void {
  * layer), and the views that show them. The queue (board items and the
  * bot's PRs) is the poll loop's own read, on every view and behind an
  * entry too, as the header's counts and moving on after an action come
- * from it. The board, heartbeat, usage and agent runs fill the summary
- * atop Usage and the Agents header, and feed the state JSON, and the
- * decisions the header's counts, so every view reads them. The merged PRs, the ops detail, the themes and the
- * people's asks are read only for their view, while their section or
- * fold is open; dispatch runs serve Agents, the open Activity stream and
- * the summary's agent count on Usage.
+ * from it. Board context, heartbeat and holds support the inbox cards;
+ * project status supplies the published Status page. People's asks are
+ * read only while their opt-in fold is open.
  * A poll asked for early (after an action) re-reads the
  * queue only: the others wait for their cadence, which the usual poll
  * interval meets. A refresh he asked for from another view than the
  * inbox doesn't force the decisions' redraw over his unsent picks there.
  */
 function newLayer(get: () => State): SourceLayer<ViewId> {
-  const open = (box: (home: Home) => HTMLDetailsElement) => () => {
-    const home = get().home;
-    return home !== undefined && box(home).open;
-  };
   return new SourceLayer<ViewId>(
     [
       { name: "queue", path: "the Workstream board's items; search of the bot's PRs", cadence: POLL_INTERVAL_MS, views: VIEWS },
-      { name: "active", path: "the board, heartbeat, usage snapshot and project status", cadence: OPS_POLL_INTERVAL_MS, views: VIEWS, read: () => refreshActive(get()) },
-      { name: "runs", path: "agent workflow runs and their jobs", cadence: RUNS_POLL_MS, views: VIEWS, read: () => refreshActionRuns(get()) },
-      { name: "agent-dispatch", path: "the tracker's dispatch runs, their jobs and finished runs' status comments", cadence: DISPATCH_POLL_MS, views: [SECTION_VIEW.agents, SECTION_VIEW.changes, SECTION_VIEW.usage, "dashboard"], read: () => refreshAgentDispatch(get()), when: () => get().view !== SECTION_VIEW.changes || open((home) => home.sections.changes.details)() },
-      { name: "activity-events", path: "the bot's public events (GitHub's X-Poll-Interval)", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.changes], read: () => refreshActivityEvents(get()), when: open((home) => home.sections.changes.details) },
-      { name: "dashboard", path: `${HISTORY_DAYS} days of ${DISPATCH_WORKFLOW} runs (finished days read once), the harness repositories' merge queues, search of approved PRs`, cadence: POLL_INTERVAL_MS, views: ["dashboard"], read: () => refreshDashboard(get()), when: () => DASHBOARD_CONFIG.enabled },
-      { name: "cost", path: `cost/ on ${USAGE_CONFIG.cost?.repo}'s ${USAGE_CONFIG.cost?.ref} branch, and each charted day's file once`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.usage], read: () => refreshCost(get()), when: () => !!USAGE_CONFIG.cost },
-      { name: "ops", path: "devspaces, agent runs and the bot's public events", cadence: OPS_POLL_INTERVAL_MS, views: [SECTION_VIEW.agents], read: () => refreshOps(get()), when: open((home) => home.slots.opsBox) },
-      { name: "news", path: "merged PRs of the harness repositories", cadence: NEWS_POLL_MS, views: [SECTION_VIEW.changes], read: () => refreshNews(get()), when: open((home) => home.sections.changes.details) },
-      { name: "themes", path: "every open board item", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.priority], read: () => refreshTriage(get()), when: open((home) => home.slots.themesBox) },
+      { name: "active", path: "the board, heartbeat, holds and project status", cadence: OPS_POLL_INTERVAL_MS, views: VIEWS, read: () => refreshActive(get()) },
       { name: "decisions", path: "the decisions document and tracker questions", cadence: POLL_INTERVAL_MS, views: VIEWS, read: (force) => refreshDecisions(get(), force && get().view === SECTION_VIEW.needs) },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
       // The inbox's own reads, only while it is on (DECISIONS_CONFIG.inbox).
-      { name: "maintain", path: `the maintain digest issue ${MAINTAIN_CONFIG?.issue ?? ""}, its last week's comments, /user and up to 100 reviews per approval candidate`, cadence: POLL_INTERVAL_MS, views: ["maintain", SECTION_VIEW.needs], read: () => refreshMaintain(get()), when: () => MAINTAIN_CONFIG !== undefined },
+      { name: "maintain", path: `the maintain digest issue ${MAINTAIN_CONFIG?.issue ?? ""}, its last week's comments, /user and up to 100 reviews per approval candidate`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshMaintain(get()), when: () => get().inbox !== undefined && MAINTAIN_CONFIG !== undefined },
       { name: "drafts", path: "the open review-draft issues", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDrafts(get()), when: () => get().inbox !== undefined && REVIEW_DRAFT_CONFIG !== undefined },
       { name: "proposals", path: `the ${PROPOSAL_LABEL} issues in ${TRACKER_REPO} and, once changed, their comments`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshProposals(get()), when: () => get().inbox !== undefined && ACTION_CONFIG !== undefined },
     ],
@@ -1104,8 +779,23 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
   );
 }
 
+/** Read inbox context without the CLI's usage and operations telemetry. */
+async function loadInboxContext(gh: GitHub): Promise<Active> {
+  const sources: Sources = {};
+  const [board, local, holds] = await Promise.all([
+    readSource(sources, "board", (source) => loadWholeBoard(source).then((q) => q.items), gh),
+    readSource(sources, "heartbeat", (source) => loadHeartbeat(source), gh),
+    loadHolds(gh),
+  ]);
+  const active: Active = { at: Date.now(), sources, warnings: Object.entries(sources).flatMap(([name, source]) => source.error ? [`Couldn't read ${name}: ${source.error}`] : []) };
+  if (board) active.board = board;
+  if (local !== undefined) active.local = local;
+  if (holds) active.holds = holds;
+  return active;
+}
+
 /**
- * Re-read the board, heartbeat and usage, as often as the ops detail,
+ * Re-read board context, heartbeat, holds and the published status,
  * and only while the page shows. The first time, what the cache has
  * shows first. False if not all of it was read (see SourceDef.read).
  */
@@ -1115,22 +805,20 @@ async function refreshActive(state: State): Promise<boolean> {
   try {
     if (!state.active) {
       const cached = state.gh.cacheOnly();
-      const active = await loadActive(cached);
-      if (!state.active && (active.board || active.local !== undefined || active.usage)) {
+      const active = await loadInboxContext(cached);
+      if (!state.active && (active.board || active.local !== undefined)) {
         active.at = cached.oldest ?? active.at;
         active.fromCache = true;
         state.active = active;
         paintActive(state);
-        paintChanges(state);
       }
     }
-    const [active, status] = await Promise.all([loadActive(state.gh), readSource(state.sources, "status", () => loadProjectStatus(state.gh))]);
+    const [active, status] = await Promise.all([loadInboxContext(state.gh), readSource(state.sources, "status", () => loadProjectStatus(state.gh))]);
     state.active = active;
     if (status !== undefined) state.active.status = status;
     else state.active.statusError = state.sources.status?.error ?? "Status unavailable";
     paintActive(state);
     paintNeeds(state);
-    paintChanges(state);
     return status !== undefined && Object.values(active.sources ?? {}).every((s) => s.state !== "unavailable");
   } finally {
     state.activeRunning = false;
@@ -1151,12 +839,10 @@ function renderRoute(state: State): void {
   delete state.itemNote;
   state.pane?.dispose();
   delete state.pane;
-  clearInterval(state.ticker);
-  delete state.ticker;
   renderChrome(state);
   const r = route();
   // Explicit item links have their own read; a failed queue must not block it.
-  if (!state.loaded && r.route !== "item") {
+  if (!state.loaded && r.route === "home") {
     showMain(h("p", { class: "empty" }, "Loading…"));
     return;
   }
@@ -1440,12 +1126,6 @@ interface Done {
 /** "" and "#" are both the bare page. */
 const sameHash = (a: string, b: string) => a.replace(/^#$/, "") === b.replace(/^#$/, "");
 
-/** The "By priority" list, as the list an entry was opened from. */
-function queueOrigin(state: State, hash: string): Origin {
-  const filter = state.filter;
-  return { hash, stops: queueStops(state.entries, filter), live: () => queueStops(state.entries, filter) };
-}
-
 /**
  * After an action succeeded (the caller has applied what it knows of its
  * effect to the state): rebuild the queue with that effect, re-read the
@@ -1580,69 +1260,6 @@ async function refreshContext(state: State, item: Item): Promise<void> {
 }
 
 /**
- * Re-read the merged PRs (conditionally), and show them if the changes
- * section is on the page and they changed. The first time, a complete
- * cached copy shows first. False if it couldn't (see SourceDef.read).
- */
-async function refreshNews(state: State): Promise<boolean> {
-  if (!state.news) {
-    const cached = state.gh.cacheOnly();
-    const news = await loadNews(cached, state.harness, NEWS_LIMIT).catch(() => undefined);
-    // Only a complete copy: a repository missing from the cache would read as an error.
-    if (news && !news.warnings.length && !state.news) {
-      state.news = news;
-      state.newsCachedAt = cached.oldest ?? Date.now();
-      paintChanges(state);
-      renderChrome(state);
-    }
-  }
-  try {
-    const news = await loadNews(state.gh, state.harness, NEWS_LIMIT);
-    const first = !state.news;
-    delete state.newsCachedAt;
-    state.news = news;
-    if (news.changed || first) paintChanges(state);
-    renderChrome(state);
-    return !news.warnings.length;
-  } catch (e) {
-    state.error = `Couldn't read the merged PRs: ${message(e)}`;
-    renderChrome(state);
-    return false;
-  }
-}
-
-/**
- * Re-read every open board item (conditionally) for the themes under
- * "By priority", and show them if they changed. The first time, a
- * cached copy shows first. False if it couldn't (see SourceDef.read).
- */
-async function refreshTriage(state: State): Promise<boolean> {
-  if (!state.openBoard) {
-    const cached = state.gh.cacheOnly();
-    const board = await loadOpenBoard(cached).catch(() => undefined);
-    if (board && !state.openBoard) {
-      state.openBoard = board;
-      state.openBoardCachedAt = cached.oldest ?? Date.now();
-      paintThemes(state);
-      renderChrome(state);
-    }
-  }
-  try {
-    const board = await loadOpenBoard(state.gh);
-    const redraw = board.changed || state.openBoardCachedAt !== undefined || !state.openBoard;
-    delete state.openBoardCachedAt;
-    state.openBoard = board;
-    if (redraw) paintThemes(state);
-    renderChrome(state);
-    return true;
-  } catch (e) {
-    state.error = `Couldn't read the board for the themes: ${message(e)}`;
-    renderChrome(state);
-    return false;
-  }
-}
-
-/**
  * Answer a row of "Needs you" in place: post the comment as him, mark
  * the row done until the page reloads, and move on to the next row.
  */
@@ -1704,17 +1321,6 @@ function needsOrigin(state: State, hash: string): Origin {
   return { hash, stops: shown(state.needs), live: () => shown(currentNeeds(state)) };
 }
 
-/** The themes under "By priority" as a list to step through: their rows that open in the app, in their order. */
-function themesOrigin(state: State, hash: string): Origin {
-  const filter = state.triageFilter;
-  const stops = () =>
-    triageStops(state.openBoard ? triageOrder(buildTriage(state.openBoard.items, filter)) : [], state.entries, {
-      opens: (i) => triageItemHref(state, i),
-      settled: (i) => state.sent.has(i.nodeId) || state.answered.has(i.nodeId),
-    });
-  return { hash, stops: stops(), live: stops };
-}
-
 interface DecisionsRead {
   decisions: Decision[];
   answered: Set<string>;
@@ -1774,39 +1380,6 @@ async function refreshDecisions(state: State, force = false): Promise<boolean> {
   });
   await state.decisionsRefresh.refresh(force);
   return state.sources.decisions?.state !== "unavailable";
-}
-
-/**
- * Re-read the ops detail's data, and show it if its fold is open. The
- * first time, what the cache has shows first, marked as cached:
- * sections it lacks say so rather than warn.
- */
-async function refreshOps(state: State): Promise<boolean> {
-  if (state.opsRunning) return false;
-  state.opsRunning = true;
-  try {
-    if (!state.ops) {
-      const cached = state.gh.cacheOnly();
-      const ops = await loadOps(cached, state.jobs);
-      if (!state.ops && (ops.devspaces || ops.work || ops.events)) {
-        ops.at = cached.oldest ?? ops.at;
-        ops.fromCache = true;
-        state.ops = ops;
-        paintOps(state);
-      }
-    }
-    state.ops = await loadOps(state.gh, state.jobs);
-    // The same reads serve the agents, changes and usage sections, so they needn't repeat them.
-    state.active = activeFromOps(state.active, state.ops);
-    const read = Object.values(state.ops.sources ?? {}).every((s) => s.state !== "unavailable");
-    if (read) state.layer.checked("active");
-    paintOps(state);
-    paintActive(state);
-    paintChanges(state);
-    return read;
-  } finally {
-    state.opsRunning = false;
-  }
 }
 
 /** Re-search the forge when due; true if its list of PRs changed. Verdicts follow in the background. */
@@ -1986,14 +1559,14 @@ function update(state: State, boardChanged: boolean, first: boolean): void {
   if (state.closed) return;
   rebuildEntries(state);
   const r = route();
-  // An explicit item can already be open before the first queue read returns.
-  if (first && !(r.route === "item" && state.shown)) {
+  // Deep links can already hold unsent text before the first queue read returns.
+  const openEntry = (r.route === "item" && state.shown) || (r.route === "pr" && state.shownPr);
+  if (first && !openEntry) {
     renderRoute(state);
   } else if (r.route === "home") {
     // The page stays as it is; only the lists that follow the queue are redrawn.
     if (state.home?.el.isConnected) {
       paintNeeds(state);
-      paintPriority(state);
     } else renderRoute(state);
   } else if (r.route === "item") {
     const item = routedItem(state, r.id);
@@ -2082,7 +1655,7 @@ async function poll(state: State, current: () => boolean): Promise<void> {
     if (!current()) return;
     state.error = `Couldn't read the board: ${message(e)}`;
     state.sources.queue = { ...state.sources.queue, state: "unavailable", checkedAt: Date.now(), error: message(e) };
-    if (state.loaded || state.shown) renderChrome(state);
+    if (state.loaded || state.shown || state.shownPr) renderChrome(state);
     else renderRoute(state);
   }
   if ((await forge) && current() && state.loaded) update(state, false, false);
@@ -2143,7 +1716,6 @@ function run(state: State, cmd: Command, where: Route): void {
     case "open": {
       const sel = rows().find((r) => r.classList.contains("sel"));
       if (!sel) return;
-      state.openedFrom = openedFrom(sel);
       window.location.hash = sel.getAttribute("href") ?? sel.getAttribute(ROW_HREF_ATTR) ?? "#";
       return;
     }
@@ -2183,6 +1755,9 @@ function run(state: State, cmd: Command, where: Route): void {
     case "capture":
       state.capture?.focus();
       return;
+    case "status":
+      window.location.hash = viewHash("status");
+      return;
     default:
       if (cmd.startsWith("section:")) jumpTo(state, cmd.slice("section:".length));
   }
@@ -2207,20 +1782,6 @@ function jumpTo(state: State, id: string): void {
     state.selected = rowId(first);
     markSelected(state, false);
   }
-}
-
-/** The list a row belongs to, for where "next" goes after acting on what it opens. */
-function openedFrom(el: Element): State["openedFrom"] {
-  if (el.closest(".themes-fold")) return "themes";
-  return el.closest(`[${ROW_SECTION_ATTR}="priority"]`) ? "priority" : "needs";
-}
-
-/** Remember which list a link to an item or PR is in, so acting on it moves on in that list. */
-function installOpenedFrom(state: State): void {
-  byId("view").addEventListener("click", (ev) => {
-    const a = ev.target instanceof Element ? ev.target.closest("a[href^='#item/'], a[href^='#pr/']") : null;
-    if (a) state.openedFrom = openedFrom(a);
-  });
 }
 
 function installKeys(state: State): void {
@@ -2305,12 +1866,9 @@ type SignInReason = "none" | "rejected";
 function rejected(state: State): Promise<void> {
   if (!state.rejecting) {
     state.closed = true;
-    if (state.chat?.attached()) keptChat = state.chat;
-    else state.chat?.dispose();
     viewClosed = true;
     state.poller.close();
     clearInterval(state.metaTicker);
-    clearInterval(state.ticker);
     state.pane?.dispose();
     state.rejecting = Promise.allSettled([forgetCache(state.session, () => deleteCacheDatabase()), state.source.signOut()]).then(() => showSignIn("rejected"));
   }
@@ -2323,10 +1881,6 @@ async function start(source: TokenSource): Promise<void> {
   const opened = route();
   const state: State = {
     sources: {},
-    runsRunning: false,
-    dispatchResults: new Map(),
-    dashboardHistory: loadHistoryCache(),
-    costPick: { by: "kind" },
     layer: newLayer(() => state),
     view: (opened.route === "home" && opened.view) || DEFAULT_VIEW,
     poller: newPoller(() => state),
@@ -2347,7 +1901,6 @@ async function start(source: TokenSource): Promise<void> {
     lastForgePoll: 0,
     forceForge: false,
     forgeKnown: false,
-    filter: loadFilter(),
     verdictsRunning: false,
     waitingRunning: false,
     entries: [],
@@ -2365,17 +1918,11 @@ async function start(source: TokenSource): Promise<void> {
     hash: window.location.hash,
     advance: loadAdvance(),
     selected: undefined,
-    openedFrom: "needs",
     prefs: loadSectionPrefs(),
     needs: [],
     needsPriority: loadNeedsPriority(),
     answeredHere: new Set(),
-    triageFilter: "all",
-    harness: new Map(),
-    opsRunning: false,
     activeRunning: false,
-    jobs: new Map(),
-    triageOpen: new Set(),
     decisionsAnswered: new Set(),
   };
   state.gh.onUnauthorized = () => void rejected(state);
@@ -2418,7 +1965,6 @@ async function start(source: TokenSource): Promise<void> {
   if (state.login === OPERATOR) showCapture(state);
   byId("signout").onclick = () => {
     state.closed = true;
-    state.chat?.dispose();
     state.poller.close();
     clearInterval(state.metaTicker);
     forgetDraft(captureStore());
@@ -2436,8 +1982,7 @@ async function start(source: TokenSource): Promise<void> {
     const came = parseRoute(from).route;
     if (to === "item" || to === "pr") {
       if (came === "home") {
-        state.origin =
-          state.openedFrom === "themes" ? themesOrigin(state, "#") : state.openedFrom === "priority" ? queueOrigin(state, "#") : needsOrigin(state, "#");
+        state.origin = needsOrigin(state, "#inbox");
       } else if (came !== "item" && came !== "pr") delete state.origin;
     }
     // Shown before this route renders: the view switched to, unless a jump already showed it.
@@ -2448,7 +1993,6 @@ async function start(source: TokenSource): Promise<void> {
     else if (to !== "home" || (shownView && shownView !== state.view)) window.scrollTo(0, 0);
   });
   installKeys(state);
-  installOpenedFrom(state);
   installAdvance(state);
   // Mobile Safari suspends a page in the background, often without a
   // visibilitychange on return; any of these may be the first sign of it.
@@ -2512,20 +2056,6 @@ function showCapture(state: State): void {
   slot.replaceChildren(state.capture.el);
   slot.hidden = false;
   state.capture.mounted();
-  state.chat?.dispose();
-  if (keptChat?.attached()) {
-    keptChat.useGitHub(state.gh);
-    state.chat = keptChat;
-  } else {
-    keptChat?.dispose();
-    const chat = chatPanel(state.gh);
-    state.chat = chat;
-    if (chat) {
-      const chatSlot = byId("chat");
-      chat.mount(chatSlot);
-    }
-  }
-  keptChat = undefined;
 }
 
 function scopeList(): HTMLElement {

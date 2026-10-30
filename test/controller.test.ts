@@ -5,7 +5,6 @@ import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { CONTROLLER, type ControllerConfig, type ControllerData, loadController, parseControllerConfig, sessionPresent } from "../src/github/controller.ts";
 import type { Heartbeat } from "../src/github/heartbeat.ts";
-import { opsDetail, tickOps } from "../src/github/opsview.ts";
 import { installDom } from "./helpers.ts";
 
 installDom();
@@ -96,9 +95,6 @@ describe("loadController", () => {
       assert.equal(p.last?.conclusion, "failure");
       assert.equal(p.running?.status, "queued");
     }
-    const panel = opsDetail({ at: NOW, warnings: [], controller: data }, NOW);
-    assert.equal(panel.querySelectorAll(".ctl-pass-age.warn").length, 2);
-    assert.match(panel.querySelector(".ctl-list")?.textContent ?? "", /last pass 1h ago · stale/);
   });
 
   it("reads each piece's latest run and the runs in flight, and no job", async () => {
@@ -145,84 +141,16 @@ describe("loadController", () => {
   });
 });
 
-describe("the controller panel", () => {
-  it("ages passes independently of heartbeat, preserves failures, and updates stale warnings on tick", () => {
-    const piece = { ...cfg.hosted[0]!, staleAfterMinutes: 10 };
-    const last = { url: `https://github.com/${REPO}/actions/runs/1`, at: "2026-10-14T19:10:00Z", conclusion: "failure" };
-    for (const local of [undefined, null, hb("2026-10-14T19:20:00Z"), hb("2026-10-14T17:00:00Z")]) {
-      const el = opsDetail({ at: NOW, warnings: [], ...(local !== undefined ? { local } : {}), controller: { pieces: [{ piece, state: "ok", last }] } }, NOW);
-      const pass = el.querySelector(".ctl-pass-age")!;
-      assert.equal(pass.textContent, "last pass 10m ago");
-      assert.equal(pass.parentElement?.getAttribute("href"), last.url);
-      assert.equal(pass.classList.contains("warn"), false);
-      assert.equal(el.querySelector(".ctl .st")?.textContent, "failure");
-      tickOps(el, NOW + 60_000);
-      assert.equal(pass.textContent, "last pass 11m ago · stale");
-      assert.equal(pass.classList.contains("warn"), true);
-    }
-  });
-
-  it("keeps freshness opt-in and does not invent a completed pass", () => {
-    for (const at of ["bad", "2026-10-15T00:00:00Z"]) {
-      const el = opsDetail({ at: NOW, warnings: [], controller: { pieces: [{ piece: { ...cfg.hosted[0]!, staleAfterMinutes: 60 }, state: "ok", last: { at, url: "https://github.com/example-org/tracker/actions/runs/1" } }] } }, NOW);
-      assert.equal(el.querySelector(".ctl-pass-age.warn")?.textContent, "last pass time unknown · stale");
-    }
-    const el = opsDetail({ at: NOW, warnings: [], controller: { pieces: [
-      { piece: cfg.hosted[0]!, state: "ok", last: { at: "2026-10-14T00:00:00Z", url: "https://github.com/example-org/tracker/actions/runs/1" } },
-      { piece: { ...cfg.hosted[0]!, staleAfterMinutes: 60 }, state: "ok", running: { at: "2026-10-14T19:19:00Z", url: "https://github.com/example-org/tracker/actions/runs/2", status: "queued" } },
-    ] } }, NOW);
-    assert.equal(el.querySelector(".ctl-pass-age"), null);
-    assert.match(el.querySelectorAll(".ctl")[1]?.textContent ?? "", /No completed pass.*queued now/);
-  });
-
+describe("interactive session presence", () => {
   const hb = (updatedAt: string, loopState = "sleeping"): Heartbeat => ({ updatedAt, session: "abcdef0123", loopState, workers: [], skipped: 0, commentUrl: "https://github.com/example-org/tracker/issues/176#issuecomment-1" });
-
-  async function render(local: Heartbeat | null | undefined): Promise<HTMLElement> {
-    const controller: ControllerData = await loadController(new GitHub(async () => "t", script().fetchImpl), cfg);
-    return opsDetail({ at: NOW, warnings: [], controller, ...(local !== undefined ? { local } : {}) }, NOW);
-  }
-
-  it("lists each hosted piece with its run and the runs in flight", async () => {
-    const el = await render(null);
-    const rows = [...el.querySelectorAll(".ctl-list > .ctl")];
-    assert.deepEqual(rows.map((r) => r.querySelector("strong")?.textContent), ["Poll", "Usage", "Coordinator", "Dispatch"]);
-    assert.equal(rows[0]?.querySelector(".st")?.textContent, "failure");
-    assert.equal(rows[0]?.querySelector(".now a")?.getAttribute("href"), `https://github.com/${REPO}/actions/runs/2`);
-    assert.equal(rows[2]?.querySelector(".st")?.textContent, "not built");
-    const flight = [...(rows[3]?.querySelectorAll(".flight a") ?? [])];
-    assert.deepEqual(flight.map((a) => [a.textContent, a.getAttribute("href")]), [[`implement ${EVIL}#64`, `https://github.com/${REPO}/actions/runs/8`], ["triage example-org/a#2", `https://github.com/${REPO}/actions/runs/7`], ["fix example-org/b#2", `https://github.com/${REPO}/actions/runs/4`], ["implement example-org/c#9", `https://github.com/${REPO}/actions/runs/3`]]);
-    assert.equal(el.querySelectorAll("img, script").length, 0);
-  });
-
-  it("says what it couldn't read, row by row", () => {
-    const [poll, usage, coord] = cfg.hosted;
-    const last = { url: `https://github.com/${REPO}/actions/runs/1`, at: "2026-10-14T19:11:32Z", conclusion: "success" };
-    const controller: ControllerData = { pieces: [
-      { piece: poll!, state: "error", error: "HTTP 500" },
-      { piece: usage!, state: "ok", last },
-      { piece: coord!, state: "uncached" },
-      { piece: coord!, state: "absent" },
-    ] };
-    const rows = [...opsDetail({ at: NOW, warnings: [], controller, local: null }, NOW).querySelectorAll(".ctl-list > .ctl")];
-    assert.deepEqual(rows.map((r) => r.querySelector(".st")?.textContent), ["unread", "ok", "…", "not built"]);
-    assert.equal(rows[1]?.querySelector(".when a")?.getAttribute("href"), last.url);
-    assert.equal(rows[1]?.querySelector(".detail"), null);
-  });
 
   it("shows the interactive session only while its heartbeat is fresh", async () => {
     const fresh = hb("2026-10-14T19:15:00Z");
     assert.ok(sessionPresent(fresh, NOW));
-    const present = await render(fresh);
-    assert.match(present.querySelector(".ctl-session")?.textContent ?? "", /present Controller chat · heartbeat 5m ago/);
     // Asleep until a wake time it gave: still present, as Local agents has it.
     assert.ok(sessionPresent({ ...hb("2026-10-14T17:00:00Z"), nextWakeAt: "2026-10-14T19:30:00Z" }, NOW));
-    const unread = await render(undefined);
-    assert.match(unread.querySelector(".ctl-session")?.textContent ?? "", /unknown/);
-    assert.equal(unread.querySelector(".ctl-session.none"), null);
     for (const gone of [null, hb("2026-10-14T17:00:00Z"), hb("2026-10-14T19:15:00Z", "stopped")]) {
       assert.equal(sessionPresent(gone, NOW), false);
-      const el = await render(gone);
-      assert.match(el.querySelector(".ctl-session.none")?.textContent ?? "", /No interactive session: new work starts only from the board scheduler\./);
     }
   });
 });

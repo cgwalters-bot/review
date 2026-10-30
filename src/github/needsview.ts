@@ -5,7 +5,6 @@
 
 import type { Answer } from "../answer.ts";
 import { h, link } from "../dom.ts";
-import { chatButton, chatItem } from "./chatitem.ts";
 import type { Renderer } from "../markdown.ts";
 import { blockedBy, NO_PRIORITY, questionOf } from "./board.ts";
 import { OPERATOR } from "./config.ts";
@@ -253,8 +252,6 @@ export function needRow(n: Need, hooks: NeedsHooks): HTMLElement {
   const main = h("div", { class: "main" }, h("span", { class: "title" }, h("a", { href: n.href }, lead)));
   if (under) main.append(h("span", { class: "why", title: under }, under));
   main.append(sub);
-  const chat = chatButton(chatItem(whereUrl, n.title, item?.engine));
-  if (chat) main.append(chat);
   const blocked = item ? blockedBy(item) ?? item.parent : undefined;
   if (question && blocked) main.append(h("p", { class: "note blocks" }, "Blocks: ", link(`https://github.com/${blocked.owner}/${blocked.repo}/issues/${blocked.number}`, n.parent?.title ?? shortRef(`https://github.com/${blocked.owner}/${blocked.repo}/issues/${blocked.number}`))));
   if (question?.recommendation) main.append(h("p", { class: "note" }, `Recommended: ${question.recommendation}`));

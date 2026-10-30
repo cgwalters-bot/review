@@ -1,12 +1,10 @@
 // The daily cost reports agent-board publishes to tracker's data branch:
-// parsing as published, missing and unreadable days, the review share,
-// and the Usage view's section built from them.
+// parsing as published, missing and unreadable days, and review accounting.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { type CostData, type CostEntry, costDates, costSeries, loadCost, MODEL_SERIES, parseCostDay, reviewShare, seriesCell, topRuns } from "../src/github/cost.ts";
-import { costSection, groupText, shareLine } from "../src/github/costview.ts";
 import { USAGE_CONFIG } from "../src/github/usage.ts";
 import { fixture, installDom, scriptedFetch } from "./helpers.ts";
 
@@ -68,19 +66,17 @@ describe("the charted days", () => {
   it("give the review share of priced spend, counting unpriced reviews apart", () => {
     // The fixture's review is unpriced: no share, not 0%.
     assert.deepEqual(reviewShare(entries()), { days: 1, unpricedRuns: 1, unpricedTokens: 413800 });
-    assert.equal(shareLine(entries()), "Reviews: no priced spend, 1 of the last 7 days published; plus 1 run unpriced, 414k tokens.");
     const priced = { ...report(), totals: { ...report().totals as object, usd: 4 }, by_kind: { review: { runs: 1, tokens: (report().totals as { tokens: unknown }).tokens, usd: 3, unpriced_runs: 0 } }, runs: [] };
     const week = Object.fromEntries(["2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26", "2026-10-27"].map((d) => [d, priced]));
     // 6 days of $3 of $4, and the fixture's $0.96 with no priced review: 18 of 24.96.
-    assert.equal(shareLine(entries(week)), "Reviews: 72% of spend, 7 days; plus 1 run unpriced, 414k tokens.");
+    assert.deepEqual(reviewShare(entries(week)), { days: 7, share: 18 / 24.96, unpricedRuns: 1, unpricedTokens: 413800 });
   });
 
   it("say so when nothing is published or priced", () => {
     const none = costDates(NOW).map((date) => ({ date }));
     assert.deepEqual(reviewShare(none), { days: 0, unpricedRuns: 0, unpricedTokens: 0 });
-    assert.equal(shareLine(none), "Reviews: no spend published for the last 7 days.");
     const unpriced = { ...report(), totals: { ...report().totals as object, usd: null } };
-    assert.match(shareLine(entries({ "2026-10-27": unpriced }).slice(0, -1)), /^Reviews: no priced spend, 1 of the last 7 days published; plus 1 run unpriced/);
+    assert.deepEqual(reviewShare(entries({ "2026-10-27": unpriced }).slice(0, -1)), { days: 1, unpricedRuns: 1, unpricedTokens: 413800 });
   });
 
   it("stack by kind in a fixed order, or by model, costliest first", () => {
@@ -93,10 +89,10 @@ describe("the charted days", () => {
   it("show an unpriced group as tokens, never $0", () => {
     const day = parseCostDay(report(), DATE)!;
     const [review, implement] = costSeries([], "kind");
-    assert.equal(groupText(seriesCell(day, "kind", review!)), "unpriced, 414k tokens");
-    assert.equal(groupText(seriesCell(day, "kind", implement!)), "$0.87");
-    assert.equal(groupText(day.totals), "$0.96 + 1 unpriced");
-    assert.equal(groupText(seriesCell(day, "kind", costSeries([], "kind")[3]!)), "—", "a kind with no runs");
+    assert.equal(seriesCell(day, "kind", review!)?.usd, null);
+    assert.equal(seriesCell(day, "kind", review!)?.tokens, 413800);
+    assert.equal(seriesCell(day, "kind", implement!)?.usd, 0.87);
+    assert.deepEqual(seriesCell(day, "kind", costSeries([], "kind")[3]!), { runs: 0, tokens: 0, usd: null, unpricedRuns: 0 });
   });
 
   it("list the day's runs priced first, then unpriced by tokens", () => {
@@ -160,44 +156,5 @@ describe("loadCost", () => {
     const gh = new GitHub(async () => "t", fetchImpl);
     for (const s of [null, { repo: "../..", ref: "data" }, { repo: "example/tracker", ref: "../main" }]) assert.equal(await loadCost(gh, NOW, s), undefined);
     assert.equal(calls.length, 0);
-  });
-});
-
-describe("costSection", () => {
-  const picks: unknown[] = [];
-  const hooks = { pick: (p: unknown) => picks.push(p) };
-  it("says why there is no chart", () => {
-    assert.match(costSection(undefined, { by: "kind" }, hooks).textContent!, /Reading the daily cost/);
-    assert.match(costSection({ state: "none" }, { by: "kind" }, hooks).textContent!, /Nothing published to cost\/ on cgwalters-forge\/tracker's data branch yet/);
-  });
-
-  it("charts the days, a missing one as not known, and lists the latest day's runs linked", () => {
-    const sec = costSection({ state: "ok", days: entries() }, { by: "kind" }, hooks);
-    assert.match(sec.querySelector(".cost-share")!.textContent!, /^Reviews: /);
-    assert.equal(sec.querySelectorAll("svg rect.missing").length, 13);
-    assert.equal(sec.querySelectorAll("svg rect.s-k1").length, 1, "the implement bar");
-    assert.match(sec.querySelector("svg rect.s-k1 title")!.textContent!, /review unpriced, 414k tokens/);
-    const links = [...sec.querySelectorAll<HTMLAnchorElement>(".spend-runs a")].map((a) => a.href);
-    assert.ok(links.includes("https://github.com/cgwalters-forge/agent-board/actions/runs/40812885249"));
-    assert.ok(links.includes("https://github.com/cgwalters-forge/bootc/issues/12"));
-    assert.match(sec.textContent!, /Costliest runs, 2026-10-28: \$0\.96 \+ 1 unpriced in 3 runs/);
-    assert.doesNotMatch(sec.querySelector(".spend-runs")!.textContent!, /\$0\.00/);
-  });
-
-  it("marks a day of only unpriced spend with its tokens on hover, not as nothing", () => {
-    const review = report().runs[2]!;
-    const unpriced = { ...report(), totals: { ...report().totals as object, usd: null }, by_kind: { review: (report().by_kind as Record<string, unknown>).review }, runs: [review] };
-    const days = entries({ "2026-10-27": unpriced });
-    const sec = costSection({ state: "ok", days }, { by: "kind", day: "2026-10-27" }, hooks);
-    assert.match(sec.querySelector("svg rect.empty title")!.textContent!, /^2026-10-27: review unpriced, 414k tokens/);
-    assert.match(sec.textContent!, /Costliest runs, 2026-10-27: unpriced, 1\.0M tokens in 3 runs/);
-  });
-
-  it("hands back his picks", () => {
-    const sec = costSection({ state: "ok", days: entries() }, { by: "kind" }, hooks);
-    const [by] = sec.querySelectorAll("select");
-    by!.value = "model";
-    by!.dispatchEvent(new window.Event("change"));
-    assert.deepEqual(picks.at(-1), { by: "model" });
   });
 });

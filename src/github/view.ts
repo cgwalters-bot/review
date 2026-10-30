@@ -3,7 +3,6 @@
 
 import { type Answer, parseAnswer, parseBlocks, type Question, unfencedLines } from "../answer.ts";
 import { h, link } from "../dom.ts";
-import { chatButton, chatItem } from "./chatitem.ts";
 import type { Renderer } from "../markdown.ts";
 import { age, ago, time } from "../time.ts";
 export { age, ago, clock, time } from "../time.ts";
@@ -672,8 +671,6 @@ export function itemView(item: Item, data: ItemViewData, render: Renderer, handl
   for (const u of item.branch) links.append(link(u, "branch"));
   for (const u of item.gist) links.append(link(u, "gist"));
   links.append(link(BOARD_URL, "board"));
-  const chat = chatButton(chatItem(item.url, item.title, item.engine));
-  if (chat) links.append(chat);
   const bodyHeading = kind === "question" ? "Question" : kind ? "Ask" : item.kind === "draft" ? "Draft" : "Description";
 
   return h(

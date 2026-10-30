@@ -3,7 +3,7 @@
 
 import { parseFilterToken, type QueueFilter } from "./filter.ts";
 import type { SectionId } from "./sections.ts";
-import { isView, SECTION_VIEW, type ViewId } from "./shell.ts";
+import { isView, type ViewId } from "./shell.ts";
 
 /** The page of sections in one of its views, an item opened from it, or a forge PR. */
 export type Route = "home" | "item" | "pr";
@@ -18,6 +18,7 @@ export type Command =
   | "fold"
   | "compose"
   | "help"
+  | "status"
   // Switch to the view of a section of the page, open the section and scroll to it.
   | `section:${SectionId}`
   | "capture"
@@ -55,10 +56,7 @@ const BY_ROUTE: Record<Route, Record<string, Command>> = {
     o: "open",
     Enter: "open",
     q: "section:needs",
-    d: "section:agents",
-    n: "section:changes",
-    t: "section:priority",
-    s: "section:usage",
+    s: "status",
   },
   item: { u: "back", Escape: "back", c: "compose" },
   pr: {
@@ -92,7 +90,7 @@ export function keyCommand(press: KeyPress, route: Route): Command | "blur" | un
 
 export const HELP: Record<Route, string> = {
   home:
-    "j/k or ↓/↑ move · o or Enter open · q inbox · d agents · n activity · t board · s usage (switch view) · b file to the board · r refresh · ? keys",
+    "j/k or ↓/↑ move · o or Enter open · q needs you · s status · b file to the board · r refresh · ? keys",
   item: "u or Esc back · c write an answer · b file to the board · r refresh",
   pr: "n/p next/previous file · j/k next/previous hunk · v mark viewed · x fold · c comment on the focused line (or write the review) · s unified/split · [/] previous/next commit · g guided review (then n/p between hotspots, Esc leaves) · a approve · b file to the board · u or Esc back · r reload",
 };
@@ -121,6 +119,8 @@ export function parseRoute(hash: string): RouteInfo {
   }
   const token = hash.slice(1);
   if (isView(token)) return { route: "home", view: token };
+  if (["maintain", "chat"].includes(token)) return { route: "home", view: "inbox" };
+  if (["agents", "board", "activity", "usage", "ops", "dashboard"].includes(token)) return { route: "home", view: "status" };
   const filter = parseFilterToken(token);
-  return filter ? { route: "home", view: SECTION_VIEW.priority, filter } : { route: "home" };
+  return filter ? { route: "home", view: "inbox" } : { route: "home" };
 }

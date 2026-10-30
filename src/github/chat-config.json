@@ -1,4 +1,0 @@
-{
-  "tailnetDomain": "tailf2eb8.ts.net",
-  "sources": [{ "repo": "cgwalters-forge/tracker", "workflow": "session.yml", "issue": 728, "publisher": "github-actions[bot]" }]
-}

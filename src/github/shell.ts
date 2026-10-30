@@ -5,24 +5,17 @@
 // answer in one view is still there on coming back to it.
 
 import { h } from "../dom.ts";
-import config from "./dashboard-config.json" with { type: "json" };
-import { MAINTAIN_CONFIG } from "./maintain.ts";
 import type { SectionId } from "./sections.ts";
 
-export const VIEWS = ["inbox", "maintain", "agents", "dashboard", "board", "activity", "usage"] as const;
+export const VIEWS = ["inbox", "status"] as const;
 export type ViewId = (typeof VIEWS)[number];
 
 /** The views linked and routed to: the dashboard only while DASHBOARD_CONFIG has it on, Maintain while MAINTAIN_CONFIG names its issue. */
-export const SHOWN_VIEWS: readonly ViewId[] = VIEWS.filter((v) => (v !== "dashboard" || config.enabled) && (v !== "maintain" || MAINTAIN_CONFIG !== undefined));
+export const SHOWN_VIEWS: readonly ViewId[] = VIEWS;
 
 export const VIEW_TITLE: Record<ViewId, string> = {
-  inbox: "Inbox",
-  maintain: "Maintain",
-  agents: "Agents",
-  dashboard: "Dashboard",
-  board: "Board",
-  activity: "Activity",
-  usage: "Usage",
+  inbox: "Needs you",
+  status: "Status",
 };
 
 /** The view shown for a bare `#` before any other was. */
@@ -31,10 +24,6 @@ export const DEFAULT_VIEW: ViewId = "inbox";
 /** The view each section of the page is in. */
 export const SECTION_VIEW: Record<SectionId, ViewId> = {
   needs: "inbox",
-  agents: "agents",
-  changes: "activity",
-  priority: "board",
-  usage: "usage",
 };
 
 /** The attribute naming the view a part of the page is in; a part without it shows in every view. */

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { type Active, activeAgents, type ActiveAgent, isClaimed, laneOf } from "../src/github/agents.ts";
-import { AGENT_ROW_CLASS, agentsBody, agentsSummary } from "../src/github/agentsview.ts";
 import { GitHub } from "../src/github/api.ts";
 import { type Item, parseItem } from "../src/github/board.ts";
 import { DISPATCH_POLL_MS, loadDispatch } from "../src/github/dispatch.ts";
@@ -206,63 +205,6 @@ describe("activeAgents", () => {
     assert.ok(isClaimed(parsed));
     const junk = parseItem({ id: 1, node_id: "PVTI_1", content_type: "Issue", fields: [{ name: "Run", value: { raw: "javascript:alert(1)" } }] });
     assert.equal(junk.run, undefined);
-  });
-});
-
-describe("agentsBody", () => {
-  const text = (el: Element) => (el.textContent ?? "").replace(/\s+/g, " ");
-  const board = [
-    item("PVTI_wfc", "https://github.com/cgwalters-forge/gh-aw/issues/1", { lead: "wfc", org: "cgwalters-forge", priority: "P1" }),
-    item("PVTI_t", `${TRACKER}/173`, { lead: "fsck", org: "bootc-dev" }),
-  ];
-
-  it("shows the lanes, each agent, the heartbeat's age, and the count against the pass's WIP limit in the summary", () => {
-    const data: Active = { board, local: heartbeat([worker("fsck", `${TRACKER}/173`), worker("old", "https://github.com/bootc-dev/bootc/issues/9")], 3 * 60 * MIN), warnings: [], at: NOW };
-    // Not published by an older pass: said, not a number made up here.
-    assert.deepEqual(agentsSummary(data, NOW), { count: "0", title: "0 working; the pass's WIP limit is not published", under: false });
-    assert.match(text(agentsBody(data, NOW)), /^0 agents \(WIP limit not published\) · /);
-    data.holds = { at: "2026-10-26T00:00:00Z", wip: { limit: 4, inFlight: 2 }, holds: [] };
-    const el = agentsBody(data, NOW);
-    const t = text(el);
-    assert.match(t, /^0\/4 agents · /);
-    assert.match(t, /harness 0 · upstream 0/);
-    assert.match(t, /\+3 unconfirmed/);
-    assert.match(t, /heartbeat 3h ago/);
-    assert.deepEqual([...el.querySelectorAll(`.${AGENT_ROW_CLASS} strong`)].map((s) => s.textContent), ["wfc", "fsck", "old"]);
-    assert.equal(el.querySelectorAll(`.${AGENT_ROW_CLASS}.stale`).length, 3);
-    assert.deepEqual(agentsSummary(data, NOW), { count: "0/4", title: "0 working, the pass's WIP limit 4", under: true });
-  });
-
-  it("links a remote agent run to its run", () => {
-    const run = "https://github.com/bootc-dev/cgwalters-devspace-sandbox/actions/runs/123";
-    const el = agentsBody({ board: [item("PVTI_r", `${TRACKER}/9`, { lead: "remote", run })], local: heartbeat([]), warnings: [], at: NOW }, NOW);
-    const a = el.querySelector<HTMLAnchorElement>(`.${AGENT_ROW_CLASS} a[href="${run}"]`);
-    assert.equal(a?.textContent, "run ↗");
-  });
-
-  it("says what it couldn't read", () => {
-    const cases: [Parameters<typeof agentsBody>[0], RegExp][] = [
-      [undefined, /Reading…/],
-      [{ warnings: ["x"], at: NOW }, /Couldn't read the board or the heartbeat/],
-      [{ board, warnings: [], at: NOW }, /heartbeat unread/],
-      [{ board, local: null, warnings: [], at: NOW }, /no heartbeat/],
-      [{ local: heartbeat([]), warnings: [], at: NOW }, /board unread/],
-      [{ board: [], local: heartbeat([]), warnings: [], at: NOW }, /No agent is working right now/],
-      [{ board: [], local: heartbeat([], 2 * 24 * 60 * MIN, { loopState: "stopped" }), warnings: [], at: NOW }, /coordinator stopped · heartbeat 2d ago/],
-    ];
-    for (const [data, want] of cases) assert.match(text(agentsBody(data, NOW)), want);
-    const failed = agentsBody({ local: heartbeat([]), warnings: ["Couldn't read the board: 502"], at: NOW }, NOW);
-    assert.match(failed.querySelector(".as-head .warn")?.getAttribute("title") ?? "", /502/, "says why on hover");
-    assert.equal(agentsSummary(undefined, NOW).count, "…");
-    assert.equal(agentsSummary({ warnings: ["x"], at: NOW }, NOW).count, "?");
-  });
-
-  it("puts hostile board and heartbeat text on screen as text", () => {
-    const evil = '<img src=x onerror=alert(1)><script>alert(2)</script>';
-    const hostile = [item("PVTI_e", `${TRACKER}/9`, { lead: evil, title: evil, run: "https://github.com/o/r/actions/runs/1" })];
-    const el = agentsBody({ board: hostile, local: heartbeat([]), warnings: [], at: NOW }, NOW);
-    assert.equal(el.querySelector("img, script"), null);
-    assert.match(text(el), /<img src=x/);
   });
 });
 

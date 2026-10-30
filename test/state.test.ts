@@ -6,8 +6,7 @@ import { fixtureFetch, runState } from "../src/cli/statecommand.ts";
 import { GitHub } from "../src/github/api.ts";
 import { activeAgents, isClaimed } from "../src/github/agents.ts";
 import { parseItem, type RawItem } from "../src/github/board.ts";
-import { fillAgents, fillFocus, fillState, homeSkeleton } from "../src/github/homeview.ts";
-import { agentsBody, agentsSummary } from "../src/github/agentsview.ts";
+import { fillState, homeSkeleton } from "../src/github/homeview.ts";
 import { HEARTBEAT_MARKER, parseHeartbeat } from "../src/github/heartbeat.ts";
 import { loadActionRuns, parseRunTitleMetrics, runTotals, type RunsData, type RunTitleMetrics } from "../src/github/runs.ts";
 import { loadPageState, pageState } from "../src/github/state.ts";
@@ -26,7 +25,7 @@ describe("source freshness", () => {
 
   it("shows the footer's per-source line only while a source is not ok", () => {
     installDom();
-    const home = homeSkeleton({ open: () => false, toggled: () => {}, opsToggled: () => {}, themesToggled: () => {} });
+    const home = homeSkeleton({ open: () => false, toggled: () => {} });
     const ok = { state: "ok" as const, checkedAt: NOW, fetchedAt: NOW };
     const cases: [string, Parameters<typeof pageState>[0]["sources"], boolean][] = [
       ["every source ok or not read yet", { board: ok, heartbeat: ok }, true],
@@ -46,7 +45,7 @@ describe("confirmed shared agent execution", () => {
   const local = parseHeartbeat(`${HEARTBEAT_MARKER}\n\`\`\`json\n${JSON.stringify(fixture.heartbeat)}\n\`\`\``)!;
   const readRuns = () => loadActionRuns(new GitHub(async () => "fixture", fixtureFetch(FIXTURES)), NOW);
 
-  it("counts and renders Actions-only agents when board and heartbeat are unread", async () => {
+  it("counts Actions-only agents in CLI state when board and heartbeat are unread", async () => {
     const runs = await readRuns();
     // The count is against the WIP limit the pass published with its holds.
     const active = { warnings: ["board unavailable", "heartbeat unavailable"], at: NOW, holds: { at: new Date(NOW).toISOString(), wip: { limit: 4, inFlight: 1 }, holds: [] } };
@@ -54,19 +53,7 @@ describe("confirmed shared agent execution", () => {
     assert.equal(state.agents.running, 1);
     assert.deepEqual(state.agents.locations, { remote: 1, local: 0 });
     assert.equal(state.agents.agents[0]?.source, "actions");
-    assert.equal(agentsSummary(undefined, NOW, state.agents).count, "1/4");
-    assert.equal(agentsSummary(active, NOW, state.agents).count, "1/4");
-    const win = installDom();
-    try {
-      const home = homeSkeleton({ open: () => false, toggled: () => {}, opsToggled: () => {}, themesToggled: () => {} });
-      fillAgents(home, undefined, NOW, state.agents);
-      assert.match(home.slots.agents.textContent ?? "", /1\/4 agents · remote 1 · local 0/);
-      assert.match(home.slots.agents.textContent ?? "", /heartbeat unread/);
-      assert.equal(home.slots.agents.querySelectorAll(".as-agent").length, 1);
-      assert.equal(agentsBody(active, NOW, state.agents).querySelectorAll(".as-agent").length, 1);
-    } finally {
-      win.close();
-    }
+    assert.equal(state.agents.target, 4);
   });
 
   it("loads live execution despite inaccessible board and heartbeat APIs", async () => {
@@ -149,7 +136,8 @@ describe("confirmed shared agent execution", () => {
     assert.equal(pageState({ runs }, NOW - 1).agents.running, 0, "future-dated reads aren't live evidence");
     assert.equal(pageState({ active, runs }, NOW).agents.running, 3);
     const empty = pageState({ runs: { ...runs, runs: [] } }, NOW);
-    assert.equal(agentsSummary(undefined, NOW, empty.agents).count, "0", "no holds read: no limit made up");
+    assert.equal(empty.agents.running, 0);
+    assert.equal(empty.agents.target, undefined, "no holds read: no limit made up");
   });
 
   it("keeps completed status authoritative over duplicate active rows, and separates repositories", async () => {
@@ -182,15 +170,6 @@ describe("explicit run-title metrics", () => {
     const state = pageState({ runs }, NOW);
     assert.equal(state.runs?.totals.tokens, null);
     assert.equal(state.runs?.totals.cost, null);
-    const win = installDom();
-    try {
-      const home = homeSkeleton({ open: () => false, toggled: () => {}, opsToggled: () => {}, themesToggled: () => {} });
-      fillState(home, state);
-      assert.match(home.slots.runs.textContent ?? "", /tokens: unavailable \(0\/2 runs; partial\)/);
-      assert.match(home.slots.runs.textContent ?? "", /cost: unavailable \(0\/2 runs; partial\)/);
-    } finally {
-      win.close();
-    }
   });
 
   it("sums known readings independently, with exact decimal USD sums and created-window coverage", async () => {
@@ -311,43 +290,6 @@ describe("shared dashboard state", () => {
     assert.equal(isClaimed(epic), false);
     assert.equal(activeAgents([epic], null, NOW).running, 0);
     assert.equal(isClaimed({ ...epic, run: "https://github.com/o/r/actions/runs/1" }), true);
-    const win = installDom();
-    const home = homeSkeleton({ open: () => false, toggled: () => {}, opsToggled: () => {}, themesToggled: () => {} });
-    fillFocus(home, [epic]);
-    assert.equal(home.slots.focus.querySelectorAll(".focus-epic").length, 1);
-    win.close();
-  });
-
-  it("renders runs outside every disclosure and preserves open run details", async () => {
-    const win = installDom();
-    const state = await loadPageState(new GitHub(async () => "fixture", fixtureFetch(FIXTURES)), NOW);
-    const home = homeSkeleton({ open: () => false, toggled: () => {}, opsToggled: () => {}, themesToggled: () => {} });
-    fillState(home, state);
-    assert.equal(home.slots.runs.closest("details"), null);
-    const row = home.slots.runs.querySelector<HTMLDetailsElement>("details");
-    assert.ok(row);
-    row.open = true;
-    fillState(home, state);
-    assert.equal(home.slots.runs.querySelector<HTMLDetailsElement>("details")?.open, true);
-    assert.match(home.slots.runs.textContent ?? "", /fixture-runner/);
-    assert.match(home.slots.runs.textContent ?? "", /tokens: 1,200 known \(1\/2 runs; partial\)/);
-    assert.match(home.slots.runs.textContent ?? "", /cost: \$0.25 USD known \(1\/2 runs; partial\)/);
-    assert.equal(home.slots.runs.querySelectorAll(".runs-spark span").length, 24);
-    assert.match(home.slots.freshness.textContent ?? "", /board: ok/);
-    win.close();
-  });
-
-  it("updates rolling totals without another fetch and preserves expanded rows", async () => {
-    const win = installDom();
-    const state = await loadPageState(new GitHub(async () => "fixture", fixtureFetch(FIXTURES)), NOW);
-    const home = homeSkeleton({ open: () => false, toggled: () => {}, opsToggled: () => {}, themesToggled: () => {} });
-    fillState(home, state);
-    home.slots.runs.querySelector<HTMLDetailsElement>("details")!.open = true;
-    const later = pageState({ runs: state.runs!, sources: state.sources }, NOW + 24 * 3_600_000);
-    fillState(home, later);
-    assert.match(home.slots.runs.textContent ?? "", /Last 24 h: 0 runs created/);
-    assert.equal(home.slots.runs.querySelector<HTMLDetailsElement>("details")?.open, true);
-    win.close();
   });
 
   it("does not invent runner time after a failed Actions poll", async () => {
@@ -432,25 +374,5 @@ describe("Actions reads and metrics", () => {
     assert.equal(run.active, false);
     assert.equal(data.partial, true);
     assert.match(data.warnings.join(" "), /earlier attempts/);
-  });
-});
-
-describe("responsive DOM render smoke (no layout engine)", () => {
-  for (const width of [390, 820, 1280]) it(`renders at ${width}px with runs visible and usable details`, async () => {
-    const win = installDom();
-    Object.defineProperty(win, "innerWidth", { value: width });
-    const home = homeSkeleton({ open: () => false, toggled: () => {}, opsToggled: () => {}, themesToggled: () => {} });
-    const state = await loadPageState(new GitHub(async () => "fixture", fixtureFetch(FIXTURES)), NOW);
-    win.document.body.append(home.el);
-    fillState(home, state);
-    const panel = home.slots.runs.querySelector("section");
-    assert.ok(panel?.isConnected);
-    assert.equal(panel.closest("[hidden], details:not([open])"), null);
-    const details = panel.querySelector<HTMLDetailsElement>("details");
-    assert.ok(details);
-    assert.ok(details.querySelector("summary a[href]"));
-    details.open = true;
-    assert.match(details.textContent ?? "", /attempt 2/);
-    win.close();
   });
 });
