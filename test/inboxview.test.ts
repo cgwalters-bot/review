@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parseDocument } from "../src/github/decisiondocument.ts";
-import { type Card, documentCard, inboxCards, needCard } from "../src/github/inbox.ts";
-import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, fillInbox, holdsDraft, INBOX_PAGE, type InboxHooks, passLine } from "../src/github/inboxview.ts";
-import { ACTION_CONFIG, loadProposals, type Offered } from "../src/github/actions.ts";
+import { askCard, type Card, documentCard, publishedCards } from "../src/github/inbox.ts";
+import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, CARD_UNAVAILABLE_CLASS, fillInbox, holdsDraft, INBOX_PAGE, type InboxHooks, passLine } from "../src/github/inboxview.ts";
+import { ACTION_CONFIG, loadOffer } from "../src/github/actions.ts";
 import { GitHub } from "../src/github/api.ts";
 import { proposalCard } from "../src/github/actionsview.ts";
-import type { Item } from "../src/github/board.ts";
 import type { Heartbeat } from "../src/github/heartbeat.ts";
-import type { Hold } from "../src/github/holds.ts";
+import { type Ask, type Hold, parseNeedsYou } from "../src/github/holds.ts";
+import { answerForm } from "../src/github/view.ts";
 import { createRenderer } from "../src/markdown.ts";
-import { installDom } from "./helpers.ts";
+import { installDom, rawAsk, rawNeedsYou } from "./helpers.ts";
 
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
@@ -20,7 +20,8 @@ const hooks: InboxHooks = {
   now: Date.parse("2026-10-25T12:00:00Z"),
   render,
   mayAct: true,
-  sendNeed: async () => "https://github.com/o/r/issues/1#issuecomment-1",
+  // As main.ts's: the target's question read, with the form that answers it.
+  answerBody: async (a) => answerForm({ owner: "o", repo: "r", number: a.action.number }, { options: [{ letter: "A", text: "left", recommended: false }] }, false, async () => "https://github.com/o/r/issues/1#issuecomment-1", `card-${a.key}-`, 2),
   answerEntry: async (entry, letter, reply) => { sent.push(`${entry.id} ${letter} ${reply}`); },
 };
 
@@ -29,10 +30,16 @@ function entry(id: string, extra = ""): Card {
   return documentCard(parseDocument(`### ${id} Pick one\n${extra}- [ ] A) This\n- [ ] B) That\nReply:\n`)[0]!, undefined)!;
 }
 
-function question(): Card {
-  const item: Item = { id: 1, nodeId: "I_1", kind: "issue", title: "Which way?", url: "https://github.com/o/r/issues/1", ref: { owner: "o", repo: "r", number: 1 }, state: "open", body: "Q: which way?\nOptions:\nA) left\nB) right\n", why: "", branch: [], gist: [], labels: ["question"], assignees: ["cgwalters"] };
-  return needCard({ key: "item:I_1", action: "answer", title: item.title, where: "o/r#1", href: "#item/I_1", inPlace: true, entry: { key: "item:I_1", kind: "item", title: item.title, where: "o/r#1", href: "#item/I_1", item } })!;
+/** The published asks of `raw`, as parsed. */
+function asks(...raw: Record<string, unknown>[]): Ask[] {
+  const l = parseNeedsYou(rawNeedsYou(raw, "2026-10-25T11:30:00Z"));
+  assert.ok(typeof l === "object", String(l));
+  return l.items;
 }
+
+/** A hold the pass lists, answered in place. */
+const question = (n = 1): Card => askCard(asks(rawAsk(n, { ask: "Which way?" }))[0]!);
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const cardOf = (list: HTMLElement, key: string) => list.querySelector<HTMLElement>(`[data-key="${key}"]`);
 const keys = (list: HTMLElement) => [...list.children].map((c) => c.getAttribute("data-key"));
@@ -44,29 +51,23 @@ const drafts: [string, (card: HTMLElement) => void][] = [
 ];
 
 describe("fillInbox", () => {
-  it("draws three proposals on an operator-action issue as separate cards with title, why and Run", async () => {
+  it("draws three proposals the pass lists on one issue as separate cards with title, why and Run", async () => {
     const config = ACTION_CONFIG;
     assert.ok(config);
     const comments = [1, 2, 3].map((n) => ({ id: `IC_${n}`, databaseId: n, updatedAt: "2026-10-29T12:00:00Z", author: { login: "cgwalters-bot" }, editor: null, lastEditedAt: null,
       body: `\`\`\`agent-board-action\n${JSON.stringify({ schema: "agent-board/operator-action/v1", title: `Decision ${n}`, why: `Reason ${n}`, actions: [{ type: "add_label", repo: "cgwalters-forge/tracker", number: 1013, label: `choice-${n}` }] })}\n\`\`\`` }));
     const gh = new GitHub(async () => "t", async (url) => {
-      if (url.includes("labels=operator-action")) return Response.json([{ number: 1013, updated_at: "2026-10-29T12:00:00Z" }]);
       if (url.endsWith("/graphql")) return Response.json({ data: { repository: { issue: { state: "OPEN", comments: { nodes: comments, pageInfo: { hasNextPage: false } } } } } });
       if (url.endsWith("/issues/1013")) return Response.json({ title: "Epic decisions", state: "open", labels: [] });
       throw new Error(`Unexpected read: ${url}`);
     });
-    const found = await loadProposals(gh, config);
-    assert.deepEqual(found.warnings, []);
-    assert.equal(found.offers.length, 3);
-    // Even when a document links to this issue, each proposal is its own card.
-    const cards = inboxCards({ offers: found.offers, document: { entries: parseDocument("### D1 Epic decisions\nAbout: cgwalters-forge/tracker#1013\n- [ ] A) Yes\nReply:"), marks: new Map() } });
-    const bodies = new Map(await Promise.all(found.offers.map(async (o) => [o, await proposalCard(gh, config, o, () => false, () => {})] as const)));
+    const proposal = (n: number) => rawAsk(1013, { key: `cgwalters-forge/tracker#1013/comment-${n}`, source: "proposals", kind: "operator-action", ask: `Decision ${n}`, action: { type: "operator_action", repository: "cgwalters-forge/tracker", number: 1013, comment: n } });
     const list = document.createElement("div");
-    fillInbox(list, cards, { ...hooks, offerBody: async (o) => bodies.get(o)! });
-    await new Promise((resolve) => setImmediate(resolve));
+    // As main.ts's offerBody: each card reads its own proposal again.
+    fillInbox(list, publishedCards(asks(proposal(1), proposal(2), proposal(3))), { ...hooks, offerBody: async (a) => proposalCard(gh, config, await loadOffer(gh, config, a.action), () => false, () => {}) });
+    await new Promise((resolve) => setTimeout(resolve, 20));
     for (const n of [1, 2, 3]) {
-      const card = cardOf(list, `do:${n}`)!;
-      assert.equal(card.querySelector(".card-title")?.textContent ?? card.querySelector("h3")?.textContent, `Decision ${n}`);
+      const card = cardOf(list, `cgwalters-forge/tracker#1013/comment-${n}`)!;
       assert.match(card.textContent!, new RegExp(`Reason ${n}`));
       const run = [...card.querySelectorAll("button")].filter((b) => b.textContent === "Run as yourself");
       assert.equal(run.length, 1);
@@ -118,15 +119,44 @@ describe("fillInbox", () => {
     });
   }
 
-  it("keeps a half-written answer to an ask the same way", () => {
+  it("keeps a half-written answer to an ask the same way, and counts it while it is kept", async () => {
     const list = document.createElement("div");
     const q = question();
-    fillInbox(list, [q], hooks);
-    const card = cardOf(list, "item:I_1")!;
+    assert.equal(fillInbox(list, [q, question(2)], hooks), 2);
+    await settle();
+    const card = cardOf(list, "cgwalters-forge/tracker#1")!;
     card.querySelector("textarea")!.value = "Left, because";
-    fillInbox(list, [{ ...q, title: "Which way now?" }], hooks);
-    assert.equal(cardOf(list, "item:I_1"), card);
+    assert.equal(fillInbox(list, [{ ...q, title: "Which way now?" }, question(2)], hooks), 2);
+    assert.equal(cardOf(list, "cgwalters-forge/tracker#1"), card);
     assert.equal(card.querySelector("textarea")!.value, "Left, because");
+    // The pass dropped it: still on the page under his text, so still counted.
+    assert.equal(fillInbox(list, [question(2)], hooks), 2);
+    assert.equal(card.querySelector(".card-stale-note")?.textContent, CARD_GONE_NOTE);
+    assert.equal(fillInbox(list, [question(2)], hooks, true), 1, "r drops it");
+  });
+
+  it("marks a card from a list that can't be read now", () => {
+    const list = document.createElement("div");
+    fillInbox(list, publishedCards(asks(rawAsk(1)), true), hooks);
+    const card = cardOf(list, "cgwalters-forge/tracker#1")!;
+    assert.ok(card.classList.contains(CARD_UNAVAILABLE_CLASS));
+    assert.match(card.textContent!, /Unavailable: from the last list read/);
+  });
+
+  it("approves in place only at the head the pass read", async () => {
+    const head = "a".repeat(40);
+    const approval = askCard(asks(rawAsk(4, { key: "up/proj#4", item: "up/proj#4", kind: "review-approve", action: { type: "approve_pull_request", repository: "up/proj", number: 4, head } }))[0]!);
+    const draw = async (now: string) => {
+      const list = document.createElement("div");
+      fillInbox(list, [approval], { ...hooks, headOf: async () => now, approve: async () => "https://github.com/up/proj/pull/4#pullrequestreview-1" });
+      await settle();
+      return list;
+    };
+    assert.equal((await draw(head)).querySelector("button")?.textContent, "Approve aaaaaaa");
+    const moved = await draw("b".repeat(40));
+    assert.equal(moved.querySelector("button"), null);
+    assert.match(moved.textContent!, /The head moved to bbbbbbbbbbbb since the pass read aaaaaaaaaaaa/);
+    assert.equal(moved.querySelector<HTMLAnchorElement>(".warn a")?.getAttribute("href"), "#pr/up/proj/4");
   });
 
   it("doesn't redraw or move a card whose empty field has the focus", () => {
@@ -175,20 +205,18 @@ describe("fillInbox", () => {
 
   it("draws the first page of cards, reading only their proposals, and the rest on Show more", () => {
     const read: number[] = [];
-    const offerBody = async (o: Offered) => {
-      read.push(o.issue);
+    const offerBody = async (a: Ask) => {
+      read.push(a.action.comment!);
       return document.createElement("section");
     };
-    const offer = (issue: number): Offered => ({ issue, comment: { id: `IC_${issue}`, databaseId: issue, body: "", updatedAt: "2026-10-25T10:00:00Z", author: { login: "planner" }, editor: null, lastEditedAt: null }, proposal: { schema: "agent-board/operator-action/v1", title: `P${issue}`, why: "", actions: [] } });
-    const cards = Array.from({ length: INBOX_PAGE + 2 }, (_, i) => ({ ...entry(`D${i + 1}`), offers: [offer(i + 1)] }));
+    const raw = Array.from({ length: INBOX_PAGE + 2 }, (_, i) => rawAsk(9, { key: `cgwalters-forge/tracker#9/comment-${i + 1}`, kind: "operator-action", action: { type: "operator_action", repository: "cgwalters-forge/tracker", number: 9, comment: i + 1 } }));
     const box = document.createElement("div");
     const list = document.createElement("div");
     box.append(list);
-    fillInbox(list, cards, { ...hooks, offerBody });
+    assert.equal(fillInbox(list, publishedCards(asks(...raw)), { ...hooks, offerBody }), INBOX_PAGE + 2);
     assert.deepEqual([keys(list).length, read], [INBOX_PAGE, Array.from({ length: INBOX_PAGE }, (_, i) => i + 1)]);
     const more = box.querySelector<HTMLButtonElement>(".inbox-more")!;
     assert.equal(more.textContent, `Show 2 more · ${INBOX_PAGE} of ${INBOX_PAGE + 2} shown`);
-    assert.equal(cardOf(list, "document:D1")!.querySelectorAll(".card-body").length, 1, "the decision carries its proposal");
     more.click();
     assert.deepEqual([keys(list).length, read.length, box.querySelector(".inbox-more")], [INBOX_PAGE + 2, INBOX_PAGE + 2, null]);
   });
@@ -214,12 +242,12 @@ describe("passLine", () => {
 });
 
 describe("card layout at phone and desktop widths (no layout engine)", () => {
-  for (const width of [390, 1280]) it(`puts a card's actions on one row at ${width}px`, () => {
+  for (const width of [390, 1280]) it(`puts a card's actions on one row at ${width}px`, async () => {
     Object.defineProperty(win, "innerWidth", { value: width, configurable: true });
     const list = document.createElement("div");
-    const link = question();
-    assert.ok(link.kind === "answer");
-    fillInbox(list, [question(), { ...link, key: "item:I_2", need: { ...link.need, inPlace: false } }], hooks);
+    const link = askCard(asks(rawAsk(3, { key: "up/proj#3/digest", item: "up/proj#3", kind: "digest-stale", action: { type: "close_pull_request", repository: "up/proj", number: 3 } }))[0]!);
+    fillInbox(list, [question(), link], hooks);
+    await settle();
     for (const card of list.children) {
       assert.ok(card.querySelectorAll(".actions").length <= 1, "at most one action row");
       assert.equal(card.querySelector(".item-chat"), null, "no dead Chat control");

@@ -104,21 +104,15 @@ does not make an action stale.
 
 ## Reads, execution and failure
 
-Proposals are found through an index, not by reading every comment:
-agent-board sets the `operator-action` label on a tracker issue when it posts
-a proposal there, and clears it once the receipt is posted. While the Inbox
-shows, each poll makes one conditional read of the open issues with that
-label (the 20 updated last; past that, a warning says the rest are unread),
-and reads at most 100 comments of an issue only when its `updated_at` moved
-since the last read. An issue with more comments is refused rather than
-executed with unread receipts, with a warning that does not hide valid
-proposals from other issues. A proposal on an unlabelled issue is not shown.
-A proposal rides on the Inbox card of the decision or ask about its issue, or
-linking to it; one with none is a card of its own. When one issue has multiple
-proposals, each gets a separate card with its own title, why and Run button.
-A card's targets are read
-only once it is drawn (the first five cards, then on Show more), and no
-proposal is re-read while one runs. Targets and exact mutation payloads are
+The Inbox finds proposals in the scheduler pass's published needs-you list
+(agent-board's `holds.proposals`), each an `operator_action` reference to
+its issue and comment, one card per proposal. A drawn card reads at most 100
+comments of that issue and takes the proposal from the named comment only if
+it is on the configured tracker, written and last edited by the operator or
+the planner, and has no execution record; an issue with more comments is
+refused rather than executed with unread receipts. A card's targets are read
+only once it is drawn (the first five cards, then on Show more), and the
+Inbox is not redrawn while a proposal runs. Targets and exact mutation payloads are
 shown as plain text, wrapping at phone width.
 
 Execution re-reads the authenticated viewer, proposal and every target before

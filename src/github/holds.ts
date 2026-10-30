@@ -4,7 +4,10 @@
 // the usage issue, read like the usage with the viewer's token, and parsed
 // strictly: anything amiss in it, or a token that can't read it, is no holds.
 // The pass's WIP limit and what it did come with them, and are shown from
-// here rather than worked out again.
+// here rather than worked out again. So does its ranked needs-you list
+// (agent-board's docs/pass.md, `holds.needsYou`): the inbox's holds,
+// review waits, proposals and digest asks, which the inbox shows in the
+// pass's order and with its count instead of assembling its own.
 
 import type { GitHub } from "./api.ts";
 import { isBot } from "./authors.ts";
@@ -32,8 +35,58 @@ export interface Hold {
   priority: string | null;
   /** What the item's board Why asks, after its `Q:`. */
   question: string | null;
-  /** One-line advice from the newest bot comment, when present. */
-  recommendation?: string;
+}
+
+/** What an ask names to act on: typed parts the inbox makes its own link from, never an address it follows. */
+export interface AskRef {
+  /** issue, pull_request, approve_pull_request, review_pull_request, reply_pull_request, close_pull_request or operator_action. */
+  type: string;
+  /** OWNER/REPO. */
+  repository: string;
+  number: number;
+  /** The proposal's comment, for operator_action. */
+  comment?: number;
+  /** The full head an approval or review is at. */
+  head?: string;
+}
+
+/** One thing that waits on the operator, as the pass lists it. */
+export interface Ask {
+  /** The same from pass to pass: `owner/repo#n`, with `/comment-ID` or `/digest`. */
+  key: string;
+  /** OWNER/REPO#N it is on. */
+  item: string;
+  /** epics, items, pass, reviews, proposals or digest. */
+  source: string;
+  /** The hold's kind, review-…, operator-action or digest-…. */
+  kind: string;
+  priority: string | null;
+  waitingSince: string;
+  /** The one-line question, display text only. */
+  ask: string;
+  recommendation: string | null;
+  action: AskRef;
+  /** Kept from an earlier pass, as its source was not read again whole. */
+  carried: boolean;
+}
+
+/** The pass's ranked list of what waits on the operator. */
+export interface NeedsYou {
+  /** Every source read whole (or off), nothing omitted, and every item read here: only then is an empty list "nothing waits". */
+  complete: boolean;
+  /** When the pass last wrote the list, if only to confirm it: its age, whatever a 304 says of the comment. */
+  validatedAt: string;
+  /** When a pass last changed it. */
+  changedAt: string;
+  /** How much of each source the pass read: complete, partial, unread or off. */
+  sources: Record<string, string>;
+  /** Whether the bot's summaries of the held issues were all read; an ask falls back to the board's question or the hold's reason. */
+  summaries: string;
+  /** Asks past the pass's cap, left out. */
+  omitted: number;
+  items: Ask[];
+  /** Items left out here as malformed. */
+  refused: number;
 }
 
 /** The WIP limit, and the runs holding a slot (null where the pass did not count them). */
@@ -58,6 +111,8 @@ export interface Holds {
   wip?: Wip;
   pass?: PassSummary;
   holds: Hold[];
+  /** The ranked list, or why the snapshot's can't be used; absent where the snapshot has none (holds.needsYou off, an older pass, or past the comment's cap). */
+  needsYou?: NeedsYou | string;
 }
 
 const isText = (v: unknown): v is string => typeof v === "string";
@@ -91,6 +146,53 @@ function parseHold(raw: unknown): Hold | undefined {
   return { item, url, epic, kind, reason, operator, priority, question } as Hold;
 }
 
+const NEEDS_YOU_SCHEMA = "agent-board/needs-you/v2";
+const READS = ["complete", "partial", "unread", "off"];
+const KEY_RE = /^[a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9]\d{0,9}(?:\/comment-[1-9]\d{0,19}|\/digest)?$/;
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const HEAD_RE = /^[0-9a-f]{40}$/;
+/** The pass cuts every text to its first line and this many characters. */
+const TEXT_MAX = 500;
+/** The action types a published ask may have; any other is not read. */
+export const ASK_ACTIONS = ["issue", "pull_request", "approve_pull_request", "review_pull_request", "reply_pull_request", "close_pull_request", "operator_action"];
+const isPositive = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) > 0;
+const text = (v: unknown): string | undefined => (isText(v) && v.trim() ? v.split("\n")[0]!.slice(0, TEXT_MAX) : undefined);
+
+function parseRef(raw: unknown): AskRef | undefined {
+  if (!isObject(raw) || !ASK_ACTIONS.includes(raw.type as string) || !str(raw.repository, REPO_RE) || /\/\.+$/.test(raw.repository as string) || !isPositive(raw.number)) return undefined;
+  if ((raw.comment !== undefined && !isPositive(raw.comment)) || (raw.head !== undefined && raw.head !== null && !str(raw.head, HEAD_RE))) return undefined;
+  // Approving and running a proposal each need their part.
+  if ((raw.type === "approve_pull_request" && !raw.head) || (raw.type === "operator_action" && raw.comment === undefined)) return undefined;
+  return { type: raw.type as string, repository: raw.repository as string, number: raw.number, ...(raw.comment ? { comment: raw.comment as number } : {}), ...(raw.head ? { head: raw.head as string } : {}) };
+}
+
+function parseAsk(raw: unknown): Ask | undefined {
+  if (!isObject(raw)) return undefined;
+  const action = parseRef(raw.action);
+  const key = str(raw.key, KEY_RE);
+  const item = str(raw.item, ITEM_RE);
+  const waitingSince = time(raw.waiting_since);
+  const ask = text(raw.ask);
+  const recommendation = raw.recommendation === null ? null : text(raw.recommendation);
+  if (!action || !key || !item || !waitingSince || !ask || recommendation === undefined || !str(raw.source, MODE_RE) || !str(raw.kind, KIND_RE)) return undefined;
+  if ((raw.priority !== null && !str(raw.priority, PRIORITY_RE)) || (raw.carried !== undefined && typeof raw.carried !== "boolean")) return undefined;
+  return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true };
+}
+
+/** The snapshot's needs-you list; a string says why it can't be used. A malformed item is left out and makes the list incomplete, not the others unread. */
+export function parseNeedsYou(raw: unknown): NeedsYou | string {
+  if (!isObject(raw)) return "the needs-you list is not an object";
+  if (raw.schema !== NEEDS_YOU_SCHEMA) return `the needs-you list's schema ${JSON.stringify(raw.schema).slice(0, 60)} is not ${NEEDS_YOU_SCHEMA}`;
+  const validatedAt = time(raw.validated_at);
+  const changedAt = time(raw.changed_at);
+  const sources = isObject(raw.sources) ? Object.entries(raw.sources).filter(([k, v]) => str(k, MODE_RE) && READS.includes(v as string)) as [string, string][] : [];
+  if (!validatedAt || !changedAt || !Array.isArray(raw.items) || !isCount(raw.omitted) || !READS.includes(raw.summaries as string) || !sources.length) return "the needs-you list is malformed";
+  const items = raw.items.map(parseAsk).filter((a) => a !== undefined);
+  const refused = raw.items.length - items.length;
+  const complete = raw.complete === true && refused === 0 && raw.count === raw.items.length && raw.omitted === 0 && sources.every(([, v]) => v === "complete" || v === "off");
+  return { complete, validatedAt, changedAt, sources: Object.fromEntries(sources), summaries: raw.summaries as string, omitted: raw.omitted, items, refused };
+}
+
 /** The holds in a comment's body, or undefined if it isn't a well-formed snapshot. */
 export function parseHolds(body: string | null | undefined): Holds | undefined {
   const raw = fencedJson(body, HOLDS_MARKER);
@@ -104,6 +206,7 @@ export function parseHolds(body: string | null | undefined): Holds | undefined {
   if (wip) out.wip = wip;
   const pass = parsePass(raw.pass);
   if (pass) out.pass = pass;
+  if (raw.needs_you !== undefined) out.needsYou = parseNeedsYou(raw.needs_you);
   return out;
 }
 
@@ -111,14 +214,6 @@ export function parseHolds(body: string | null | undefined): Holds | undefined {
 export function findHolds(comments: readonly RawComment[]): Holds | undefined {
   const c = comments.findLast((c) => isBot(c.user?.login) && c.body?.startsWith(HOLDS_MARKER));
   return parseHolds(c?.body);
-}
-
-/** Plain or bold labels, with the colon inside or outside the bold span. */
-export function decisionLines(body: string): { question?: string; recommendation?: string } {
-  const line = (label: string) => new RegExp(`^[ \\t]*(?:${label}:|\\*\\*${label}:\\*\\*|\\*\\*${label}\\*\\*:)[ \\t]*(.+)$`, "im").exec(body)?.[1]?.trim();
-  const question = line("Decision needed");
-  const recommendation = line("Recommendation");
-  return { ...(question ? { question } : {}), ...(recommendation ? { recommendation } : {}) };
 }
 
 const DECISION_COMMENTS = `query($owner:String!,$repo:String!,$number:Int!) {
@@ -136,23 +231,20 @@ export async function readHoldAsk(gh: GitHub, owner: string, repo: string, numbe
   return nodes.findLast((c) => isBot(c.author?.login))?.body;
 }
 
-/** The published holds, read with the viewer's token; undefined on any failure or when none is published, which the inbox says as not read. */
+/** The published holds, read with the viewer's token; undefined when none is published. A failed read throws, for readSource to say. */
 export async function loadHolds(gh: GitHub): Promise<Holds | undefined> {
-  try {
-    const { data } = await gh.get<RawComment[]>(usagePath);
-    const holds = findHolds(Array.isArray(data) ? data : []);
-    // At most 20 item reads per refresh, sequentially; never walk comment
-    // history. Missing/inaccessible summaries leave the published hold intact.
-    for (const hold of holds?.holds.filter((h) => h.operator && h.item).slice(0, 20) ?? []) {
-      const [owner, repo, number] = hold.item!.split(/[/#]/);
-      try {
-        const result = await gh.graphql<{ repository: { issueOrPullRequest: { comments: { nodes: { body: string; author: { login: string } | null }[] } } | null } | null }>(DECISION_COMMENTS, { owner, repo, number: Number(number) });
-        const newest = result.repository?.issueOrPullRequest?.comments.nodes.findLast((c) => isBot(c.author?.login));
-        if (newest) Object.assign(hold, decisionLines(newest.body));
-      } catch { /* The hold reason remains the fallback. */ }
-    }
-    return holds;
-  } catch {
-    return undefined;
-  }
+  const { data } = await gh.get<RawComment[]>(usagePath);
+  return findHolds(Array.isArray(data) ? data : []);
+}
+
+/**
+ * Without a usable needs-you list, the snapshot's own operator holds on
+ * items as asks, in its order, so an older pass's holds are not dropped
+ * with the list; they ask the board's question or say the hold's reason.
+ */
+export function holdAsks(h: Holds): Ask[] {
+  return h.holds.flatMap((x) => {
+    const [, repository = "", number] = (x.operator && x.item && ITEM_RE.exec(x.item)) || [];
+    return repository ? [{ key: x.item!.toLowerCase(), item: x.item!, source: "holds", kind: x.kind, priority: x.priority, waitingSince: h.at, ask: x.question ?? x.reason, recommendation: null, action: { type: "issue", repository, number: Number(number) }, carried: false }] : [];
+  });
 }

@@ -10,7 +10,7 @@ import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
 import { missingScopes, type Persistence, savedToken, type TokenSource, useToken } from "./auth.ts";
 import { itemAction, reviewAskFor, reviewComment, type RunRef } from "./asks.ts";
-import { type IssueRef, type Item, labelNames } from "./board.ts";
+import type { IssueRef, Item } from "./board.ts";
 import { findRouteItem, loadRouteItem } from "./itemroute.ts";
 import {
   answerHold,
@@ -49,7 +49,7 @@ import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from 
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, sendDocumentEdit } from "./decisiondocument.ts";
-import { inboxCards, mayAct } from "./inbox.ts";
+import { inboxCards, mayAct, type Published, publishedNote } from "./inbox.ts";
 import { fillInbox, type InboxHooks, passLine } from "./inboxview.ts";
 import {
   CLASSIC_SCOPES,
@@ -65,22 +65,21 @@ import {
   POLL_STALL_MS,
   RATE_LOW_FRACTION,
   THEME_KEY,
-  TRACKER_REPO,
 } from "./config.ts";
 import { composeReviews, type ForgePr, refKey, type ReviewAction, VERDICT_LABEL } from "./forge.ts";
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
 import { fillStatus, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
-import { ACTION_CONFIG, loadProposals, type Offered, PROPOSAL_LABEL, type ProposalCache } from "./actions.ts";
+import { ACTION_CONFIG, loadOffer } from "./actions.ts";
 import { proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
 import { draftCard, draftReviewForm } from "./reviewdraftsview.ts";
-import { approveSelected, type Found as MaintainFound, loadDigest, MAINTAIN_CONFIG } from "./maintain.ts";
+import { approveSelected } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { botWaitingCount, filterNeeds, type Need, needStops } from "./needs.ts";
 import { loadHeartbeat } from "./heartbeat.ts";
-import { loadHolds, readHoldAsk } from "./holds.ts";
+import { type Ask, holdAsks, loadHolds, readHoldAsk } from "./holds.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -197,6 +196,8 @@ interface State {
   needs: Need[];
   /** The inbox's cards and their sources beyond the needs. */
   inbox?: Inbox;
+  /** What the pass's needs-you list said when last read. */
+  published: Published;
   /** The priority those rows are filtered by. */
   needsPriority: string;
   /** Why GitHub hasn't confirmed `login` (it is then the cache's, or unknown); retried at each poll. */
@@ -429,12 +430,6 @@ interface Inbox {
   empty: HTMLElement;
   document?: { body: string; marks: Map<string, Mark> };
   drafts?: DraftIssue[];
-  /** The open proposals, from the labelled tracker issues (loadProposals). */
-  offers?: Offered[];
-  /** Each labelled issue's proposals, re-read only once the issue moves. */
-  proposals: ProposalCache;
-  /** The maintain digest, for its Approve as a group card. */
-  digest?: MaintainFound;
   /** Document writes, one after another, each on the body the last left. */
   writes: Promise<void>;
   /** Proposal executions: one at a time, and no reload of the proposals (which would redraw its card) meanwhile. */
@@ -451,28 +446,11 @@ function mountInbox(state: State, home: Home): void {
   const status = h("p", { class: "note", role: "status" });
   const empty = h("p", { class: "empty", hidden: "" }, "All caught up: nothing needs you right now.");
   const tail = h("div", { class: "inbox-tail" });
-  const inbox: Inbox = { list, pass: h("div"), status, notes: new Map(), empty, proposals: new Map(), writes: Promise.resolve(), busy: false };
+  const inbox: Inbox = { list, pass: h("div"), status, notes: new Map(), empty, writes: Promise.resolve(), busy: false };
   state.inbox = inbox;
   if (REVIEW_DRAFT_CONFIG) tail.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => void refreshDrafts(state)));
   home.slots.needs.hidden = true;
   home.sections.needs.body.prepend(inbox.pass, status, list, empty, tail);
-}
-
-/** Re-read the proposals through their label; none while one executes, as that would redraw its card. False if nothing was read. */
-async function refreshProposals(state: State): Promise<boolean> {
-  const inbox = state.inbox;
-  if (!inbox || !ACTION_CONFIG || inbox.busy) return false;
-  try {
-    const { offers, warnings } = await loadProposals(state.gh, ACTION_CONFIG, inbox.proposals);
-    if (inbox.busy) return false;
-    inbox.offers = offers;
-    inboxNote(inbox, "proposals", warnings.map((w) => `Refused issue: ${w}`).join(" "));
-    paintInbox(state);
-    return true;
-  } catch (e) {
-    inboxNote(inbox, "proposals", `Couldn't read the proposals: ${message(e)}`);
-    return false;
-  }
 }
 
 /** Say (or, with "", stop saying) why `what` can't be shown. */
@@ -482,25 +460,28 @@ function inboxNote(inbox: Inbox, what: string, text: string): void {
   inbox.status.textContent = [...inbox.notes.values()].join(" ");
 }
 
+/** An ask's PR, as the PR pane and the review writes name it. */
+const askPr = (a: Ask): IssueRef => {
+  const [owner = "", repo = ""] = a.action.repository.split("/");
+  return { owner, repo, number: a.action.number };
+};
+
 export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHooks {
   return {
     writes: state.cardWrites ??= new Map(),
     now: Date.now(),
     render,
     mayAct: mayAct(state.login),
-    answerBody: async (n) => {
-      const item = n.decision?.item ?? n.entry?.item;
-      const target = n.hold?.item ?? (item?.ref && refKey(item.ref));
-      if (!target) throw new Error("This question has no target");
+    answerBody: async (a) => {
+      const target = `${a.action.repository}#${a.action.number}`;
       const receipts = state.cardWrites ??= new Map();
       // The last answer attempted on this target, shown beside a failed read so its outcome and comment URL stay visible.
       const lastKey = JSON.stringify(["answered", target.toLowerCase()]);
-      const [owner = "", repo = "", number] = target.split(/[/#]/);
+      const { owner, repo, number } = askPr(a);
       let shown: Awaited<ReturnType<typeof readAnswerTarget>>, ask: string | undefined;
       try {
-        shown = await readAnswerTarget(state.gh, target, !n.hold);
-        if (item && (shown.title !== item.title || (shown.body ?? "") !== item.body)) throw new Error("The ask changed; reload and read it again");
-        ask = await readHoldAsk(state.gh, owner, repo, Number(number));
+        shown = await readAnswerTarget(state.gh, target);
+        ask = await readHoldAsk(state.gh, owner, repo, number);
       } catch (e) {
         const last = receipts.get(lastKey);
         if (!last?.querySelector("[data-sent]")) throw e;
@@ -510,16 +491,17 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
       const previous = receipts.get(key);
       if (previous?.querySelector("[data-sent]")) return previous;
       const check = async () => {
-        if (await readHoldAsk(state.gh, owner, repo, Number(number)) !== ask) throw new Error("The ask changed; not releasing it. Reload and read it again.");
+        if (await readHoldAsk(state.gh, owner, repo, number) !== ask) throw new Error("The ask changed; not releasing it. Reload and read it again.");
       };
-      const release = n.hold ? n.hold.kind === "needs-human" : labelNames(shown.labels).includes("needs-human");
-      const form = answerForm({ owner, repo, number: Number(number) }, parseQuestion(shown.body ?? ""), false,
-        (a) => {
+      // Only needs-human is released, and only where the pass listed it so; other holds are the pass's.
+      const release = a.kind === "needs-human" || a.kind === "review-needs-human";
+      const form = answerForm({ owner, repo, number }, parseQuestion(shown.body ?? ""), false,
+        (answer) => {
           const attempted = receipts.get(key);
           if (attempted && attempted !== body && attempted.querySelector("[data-sent]")) return Promise.reject(new MaybeSentError(attempted.querySelector("[role=status]")?.textContent ?? "Already attempted; check GitHub"));
           receipts.set(key, body);
           receipts.set(lastKey, body);
-          return asOperator(state.gh, async () => (await answerHold(state.gh, target, formatAnswer(a), shown, release, check)).url);
+          return asOperator(state.gh, async () => (await answerHold(state.gh, target, formatAnswer(answer), shown, release, check)).url);
         }, `card-${target}-`, 2);
       form.querySelector(".target")!.textContent = release
         ? `Posts your answer, then removes only needs-human on ${target}. Other holds stay.`
@@ -528,32 +510,24 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
       return body;
     },
     answerEntry: (entry, letter, reply) => asOperator(state.gh, () => answerEntry(state, entry, letter, reply)),
-    headOf: (n) => openHead(state.gh, n.entry!.pr!.ref),
-    approve: (n, head) => asOperator(state.gh, async () => {
-      const ref = n.entry!.pr!.ref;
+    headOf: (a) => openHead(state.gh, askPr(a)),
+    approve: (a, head) => asOperator(state.gh, async () => {
+      const ref = askPr(a);
       const found = reviewAskFor(state.items, ref);
       const url = await approveAt(state.gh, ref, head, found && { ref: found.ref, head: found.target.head });
       reviewed(state, ref, head, "approve", url, found);
-      // The card leaves once the queue sees the approval; others keep their unsent text.
       rebuildEntries(state);
-      paintNeeds(state);
       return url;
     }),
-    // The hold stands until the pass's next snapshot drops it: nothing here marks it done.
-    answerHold: (n, text) => asOperator(state.gh, async () => (await answerHold(state.gh, n.hold!.item!, text)).url),
-    approveDigest: (items) => asOperator(state.gh, async () => {
-      const rs = await approveSelected(state.gh, items);
-      // A card reporting a skip or failure is kept as it is until r (KEEP_ATTR); only a clean batch is read again now.
-      if (rs.every((r) => r.status === "approved")) void refreshMaintain(state);
-      return rs;
-    }),
+    // A report stays on its card until r; the pass lists the PRs until its next digest.
+    approveDigest: (items) => asOperator(state.gh, () => approveSelected(state.gh, items)),
     ...(drafts ? { draftBody: (c) => draftCard(state.gh, drafts, render, c.draft) } : {}),
     ...(ACTION_CONFIG ? {
-      offerBody: (offer) => proposalCard(state.gh, ACTION_CONFIG!, offer, () => state.inbox?.busy === true, (v) => {
+      offerBody: async (a) => proposalCard(state.gh, ACTION_CONFIG!, await loadOffer(state.gh, ACTION_CONFIG!, a.action), () => state.inbox?.busy === true, (v) => {
         if (!state.inbox) return;
         state.inbox.busy = v;
         // The queue now shows what it closed or merged; the card, with its
-        // results, stays until the proposals' own poll reads the receipt.
+        // results, stays until the pass's list drops the proposal.
         if (!v) {
           paintInbox(state);
           refreshSoon(state);
@@ -603,16 +577,15 @@ function paintInbox(state: State, force = false): void {
   } catch (e) {
     inboxNote(inbox, "document", `The decisions document can't be read: ${message(e)}`);
   }
-  // An item's board Priority, for the order.
-  const board = [...(state.active?.board ?? []), ...state.items];
-  const priorities = new Map(board.flatMap((i) => (i.ref && i.priority ? [[refKey(i.ref).toLowerCase(), i.priority] as const] : [])));
-  const cards = inboxCards({ needs: state.needs, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}), priorityOf: (item) => priorities.get(item), ...(inbox.offers ? { offers: inbox.offers } : {}), ...(inbox.digest ? { digest: inbox.digest } : {}) });
-  fillInbox(inbox.list, cards, inboxHooks(state), force);
-  inbox.pass.replaceChildren(passLine(state.active?.holds, state.active?.local, Date.now()) ?? "");
-  // The count is the list's, as "Show more" counts it; those he answered are dimmed in it.
+  const cards = inboxCards({ published: state.published, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}) });
+  // Counted as drawn: a card kept for his unsent text after it left is still on the page.
+  const total = fillInbox(inbox.list, cards, inboxHooks(state), force);
+  const { text, settled } = publishedNote(state.published, Date.now());
+  inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text), passLine(state.active?.holds, state.active?.local, Date.now()) ?? "");
   const waiting = cards.filter((c) => !c.answered).length;
-  inbox.empty.hidden = cards.length > 0;
-  setCount(home, "needs", String(cards.length), { title: `${waiting} of ${cards.length} cards waiting on you`, hot: waiting > 0 });
+  // Empty says nothing waits only when the pass's list is complete and current.
+  inbox.empty.hidden = total > 0 || !settled;
+  setCount(home, "needs", String(total), { title: `${waiting} of ${total} cards waiting on you${settled ? "" : "; the pass's list is not complete and current, so more may wait"}`, hot: waiting > 0 });
   markSelected(state, false);
 }
 
@@ -627,29 +600,6 @@ async function refreshDrafts(state: State): Promise<boolean> {
     return true;
   } catch (e) {
     inboxNote(inbox, "drafts", `Couldn't read the review drafts: ${message(e)}`);
-    return false;
-  }
-}
-
-/**
- * Re-read the maintain digest; false if nothing was read (see SourceDef.read).
- * The view is redrawn only when the digest changed, so his unticked boxes
- * stay; a failed re-read leaves a digest shown as it is, and the view's
- * "checked N min ago" says how old it is.
- */
-async function refreshMaintain(state: State): Promise<boolean> {
-  const inbox = state.inbox;
-  if (!inbox || !MAINTAIN_CONFIG) return false;
-  try {
-    const found = await loadDigest(state.gh, MAINTAIN_CONFIG);
-    if (state.closed) return false;
-    if (found) inbox.digest = found;
-    else delete inbox.digest;
-    inboxNote(inbox, "maintain", "");
-    paintInbox(state);
-    return true;
-  } catch (e) {
-    inboxNote(inbox, "maintain", `Couldn't refresh the digest: ${message(e)}. Any shown approval is from the last reading.`);
     return false;
   }
 }
@@ -752,13 +702,11 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
   return new SourceLayer<ViewId>(
     [
       { name: "queue", path: "the Workstream board's items; search of the bot's PRs", cadence: POLL_INTERVAL_MS, views: VIEWS },
-      { name: "active", path: "the board, heartbeat, holds and project status", cadence: OPS_POLL_INTERVAL_MS, views: VIEWS, read: () => refreshActive(get()) },
+      { name: "active", path: "the board, heartbeat, the pass's holds and needs-you list, and project status", cadence: OPS_POLL_INTERVAL_MS, views: VIEWS, read: () => refreshActive(get()) },
       { name: "decisions", path: "the decisions document and tracker questions", cadence: POLL_INTERVAL_MS, views: VIEWS, read: (force) => refreshDecisions(get(), force && get().view === SECTION_VIEW.needs) },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
       // The inbox's own reads, only while it is on (DECISIONS_CONFIG.inbox).
-      { name: "maintain", path: `the maintain digest issue ${MAINTAIN_CONFIG?.issue ?? ""}, its last week's comments, /user and up to 100 reviews per approval candidate`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshMaintain(get()), when: () => get().inbox !== undefined && MAINTAIN_CONFIG !== undefined },
       { name: "drafts", path: "the open review-draft issues", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDrafts(get()), when: () => get().inbox !== undefined && REVIEW_DRAFT_CONFIG !== undefined },
-      { name: "proposals", path: `the ${PROPOSAL_LABEL} issues in ${TRACKER_REPO} and, once changed, their comments`, cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshProposals(get()), when: () => get().inbox !== undefined && ACTION_CONFIG !== undefined },
     ],
     () => (get().closed ? undefined : visibleView(document, HOME_CLASS)),
   );
@@ -770,13 +718,36 @@ async function loadInboxContext(gh: GitHub): Promise<Active> {
   const [board, local, holds] = await Promise.all([
     readSource(sources, "board", (source) => loadWholeBoard(source).then((q) => q.items), gh),
     readSource(sources, "heartbeat", (source) => loadHeartbeat(source), gh),
-    loadHolds(gh),
+    readSource(sources, "holds", (source) => loadHolds(source), gh),
   ]);
   const active: Active = { at: Date.now(), sources, warnings: Object.entries(sources).flatMap(([name, source]) => source.error ? [`Couldn't read ${name}: ${source.error}`] : []) };
   if (board) active.board = board;
   if (local !== undefined) active.local = local;
   if (holds) active.holds = holds;
   return active;
+}
+
+/**
+ * What a read of the pass's snapshot says of its needs-you list. A list
+ * read before stays, its cards marked unavailable, while a later read has
+ * none to use; with none ever read, the snapshot's own operator holds are
+ * shown, so they aren't dropped with the list.
+ */
+function readPublished(prev: Published, active: Active): Published {
+  const source = active.sources?.holds;
+  const kept: Published = prev.list
+    ? { asks: prev.list.items, list: prev.list, ...(prev.checkedAt === undefined ? {} : { checkedAt: prev.checkedAt }), unavailable: true }
+    : { asks: prev.asks, unavailable: prev.asks.length > 0 };
+  if (source?.state === "unavailable") return { ...kept, error: `Couldn't read the pass's snapshot: ${source.error ?? "no reason given"}` };
+  const holds = active.holds;
+  const list = holds?.needsYou;
+  if (typeof list === "object") return { asks: list.items, list, unavailable: false, ...(source?.state === "ok" && source.checkedAt !== undefined ? { checkedAt: source.checkedAt } : {}) };
+  const error = !holds
+    ? "The pass has published no hold snapshot"
+    : list === undefined
+      ? "The pass's snapshot has no needs-you list: holds.needsYou is off, the pass is older, or the list was over the comment's size cap"
+      : `The pass's needs-you list can't be used: ${list}`;
+  return prev.list ? { ...kept, error } : { asks: holds ? holdAsks(holds) : [], unavailable: false, error };
 }
 
 /**
@@ -795,11 +766,16 @@ async function refreshActive(state: State): Promise<boolean> {
         active.at = cached.oldest ?? active.at;
         active.fromCache = true;
         state.active = active;
+        // A cached list shows at once, said to be the cache's; a cache miss says nothing yet.
+        if (typeof active.holds?.needsYou === "object" && !state.published.list) state.published = readPublished(state.published, active);
         paintActive(state);
+        paintNeeds(state);
       }
     }
     const [active, status] = await Promise.all([loadInboxContext(state.gh), readSource(state.sources, "status", () => loadProjectStatus(state.gh))]);
+    if (state.closed) return false;
     state.active = active;
+    state.published = readPublished(state.published, active);
     if (status !== undefined) state.active.status = status;
     else state.active.statusError = state.sources.status?.error ?? "Status unavailable";
     paintActive(state);
@@ -1871,6 +1847,7 @@ async function start(source: TokenSource): Promise<void> {
     answeredHere: new Set(),
     activeRunning: false,
     decisionsAnswered: new Set(),
+    published: { asks: [], unavailable: false },
   };
   state.gh.onUnauthorized = () => void rejected(state);
   byId("meta").textContent = "Checking the token…";

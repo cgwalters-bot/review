@@ -6,7 +6,7 @@ import shared from "./fixtures/operator-actions.json" with { type: "json" };
 import vendor from "../docs/operator-actions.vendor.json" with { type: "json" };
 import schema from "../docs/operator-actions.schema.json" with { type: "json" };
 import { GitHub } from "../src/github/api.ts";
-import { ACTION_CONFIG, actionConfig, checkRulesetSource, comments, execute, loadProposals, marker, PROPOSAL_ISSUES, PROPOSAL_LABEL, type ProposalCache, normalizeRuleset, plan, proposals, rulesetDigest, RULESET_SOURCE_LIMIT, validateProposal, type Action, type Comment, type Offered, type Proposal } from "../src/github/actions.ts";
+import { ACTION_CONFIG, actionConfig, checkRulesetSource, comments, execute, loadOffer, marker, normalizeRuleset, plan, proposals, rulesetDigest, RULESET_SOURCE_LIMIT, validateProposal, type Action, type Comment, type Offered, type Proposal } from "../src/github/actions.ts";
 import { KEYWORDS, matchesActionSchema } from "../src/github/actionschema.ts";
 import { proposalCard } from "../src/github/actionsview.ts";
 import { installDom } from "./helpers.ts";
@@ -341,50 +341,17 @@ it("accepts only named writers with trusted last editors and exactly one unquote
   assert.equal(proposals([o.comment, { ...receipt, lastEditedAt: stamp, editor: null }], 9, c).length, 1);
 });
 
-it("bounds discovery and refuses truncated or closed proposal issues", async () => {
+it("reads the proposal a published ask names again, and refuses truncated or closed proposal issues", async () => {
   const m = mock();
-  assert.equal((await loadProposals(m.gh, c)).offers.length, 1);
-  assert.ok(m.calls.some((v) => v.path === `/repos/${c.tracker}/issues?state=open&labels=${PROPOSAL_LABEL}&sort=updated&direction=desc&per_page=${PROPOSAL_ISSUES}`));
+  const ask = { repository: c.tracker, number: 9, comment: 10 };
+  assert.equal((await loadOffer(m.gh, c, ask)).comment.id, "IC_proposal");
+  assert.ok(m.calls.every((v) => !v.path.includes("labels=")), "no label index is read");
+  await assert.rejects(loadOffer(m.gh, c, { ...ask, repository: "example/tasks" }), /from example\/tracker only/);
+  await assert.rejects(loadOffer(m.gh, c, { ...ask, comment: 11 }), /no longer pending/);
+  m.all.push({ ...offer().comment, id: "IC_receipt", databaseId: 20, body: `${marker(offer())}\nDone`, author: { login: c.operator } });
+  await assert.rejects(loadOffer(m.gh, c, ask), /no longer pending/, "an executed proposal");
   m.more(); await assert.rejects(comments(m.gh, c, 9), /100 comments/);
   const closed = mock(); closed.close(); await assert.rejects(comments(closed.gh, c, 9), /closed/);
-});
-
-it("reads a labelled issue's comments again only once it moved, and says when the index is full", async () => {
-  const o = offer(); const reads: number[] = [];
-  let listed: { number: number; updated_at: string }[] = [{ number: 9, updated_at: "2026-10-25T10:00:00Z" }];
-  const gh = new GitHub(async () => "token", async (url, init) => {
-    if (url.includes(`labels=${PROPOSAL_LABEL}`)) return Response.json(listed);
-    reads.push(JSON.parse(init!.body as string).variables.issue as number);
-    return Response.json({ data: { repository: { issue: { state: "OPEN", comments: { nodes: [o.comment], pageInfo: { hasNextPage: false } } } } } });
-  });
-  const cache: ProposalCache = new Map();
-  // the issues listed, then the comment reads so far, the offers and whether the full index is warned of
-  const steps: [typeof listed, number[], number, boolean][] = [
-    [listed, [9], 1, false],
-    [listed, [9], 1, false],
-    [[{ number: 9, updated_at: "2026-10-25T11:00:00Z" }], [9, 9], 1, false],
-    [[], [9, 9], 0, false],
-    [Array.from({ length: PROPOSAL_ISSUES }, (_, i) => ({ number: 100 + i, updated_at: "2026-10-25T12:00:00Z" })), [9, 9, ...Array.from({ length: PROPOSAL_ISSUES }, (_, i) => 100 + i)], PROPOSAL_ISSUES, true],
-  ];
-  for (const [issues, want, offers, full] of steps) {
-    listed = issues;
-    const result = await loadProposals(gh, c, cache);
-    assert.deepEqual([reads, result.offers.length, result.warnings.some((w) => w.includes("only the"))], [want, offers, full]);
-  }
-  assert.equal(cache.size, PROPOSAL_ISSUES, "an issue no longer labelled is forgotten");
-});
-
-it("keeps valid offers when another issue has unreadable or invalid proposals", async () => {
-  const o = offer(); const requests: number[] = [];
-  const gh = new GitHub(async () => "token", async (url, init) => {
-    if (url.includes("?state=open")) return Response.json([{ number: 8 }, { number: 9 }, { number: 10 }]);
-    const issue = JSON.parse(init!.body as string).variables.issue as number; requests.push(issue);
-    return Response.json({ data: { repository: { issue: { state: "OPEN", comments: { nodes: issue === 10 ? [{ ...o.comment, body: "```agent-board-action\ninvalid\n```" }] : [o.comment], pageInfo: { hasNextPage: issue === 8 } } } } } });
-  });
-  const result = await loadProposals(gh, c);
-  assert.deepEqual(requests, [8, 9, 10]);
-  assert.equal(result.offers.length, 1); assert.equal(result.offers[0]!.issue, 9);
-  assert.equal(result.warnings.length, 2);
 });
 
 it("executes every action type as its exact typed mutation", async () => {

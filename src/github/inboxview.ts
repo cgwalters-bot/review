@@ -4,29 +4,23 @@
 // answer) is never redrawn, moved or removed under him: it stays as it is,
 // marked as changed, until he sends or clears it, or reloads with r.
 
-import type { Answer } from "../answer.ts";
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
-import { TRACKER_REPO } from "./config.ts";
-import { DECISIONS_CONFIG } from "./decisiondocument.ts";
-import { questionOf } from "./board.ts";
 import type { DocumentEntry } from "./decisiondocument.ts";
-import type { Offered } from "./actions.ts";
 import { type Heartbeat, isStale } from "./heartbeat.ts";
-import type { Holds } from "./holds.ts";
-import { type Card, CARD_LABEL } from "./inbox.ts";
+import type { Ask, Holds } from "./holds.ts";
+import { askHref, type Card, CARD_LABEL } from "./inbox.ts";
 import type { ApproveItem, ApproveResult } from "./maintain.ts";
 import { approveGroup, KEEP_ATTR, KEEP_BUSY } from "./maintainview.ts";
-import { ACTION_LABEL, ACTION_TITLE, type Need } from "./needs.ts";
-import { age, answerForm, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
+import { age, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
 
 export const CARD_CLASS = "card";
 export const CARD_DONE_CLASS = "card-done";
 /** On a card kept for its unsent form though what it shows changed or left. */
 export const CARD_STALE_CLASS = "card-stale";
+/** On a card from a list that can't be read now. */
+export const CARD_UNAVAILABLE_CLASS = "card-unavailable";
 const SIG_ATTR = "data-sig";
-/** Rows of a card's answer box: a short note. */
-const NOTE_ROWS = 2;
 
 export const CARD_CHANGED_NOTE = "This changed since it was drawn; send or clear your text, or press r to reload it (unsent text is lost).";
 export const CARD_GONE_NOTE = "This has left the inbox; your unsent text is kept until you clear it or press r.";
@@ -34,25 +28,22 @@ export const CARD_GONE_NOTE = "This has left the inbox; your unsent text is kept
 export interface InboxHooks {
   /** Session receipts, keyed by target and ask, not visual card metadata. */
   writes?: Map<string, HTMLElement>;
-  answerBody?(n: Need): Promise<HTMLElement>;
+  /** An Answer card's body: its target and question read now, with the form that answers it. */
+  answerBody?(a: Ask): Promise<HTMLElement>;
   now: number;
   render: Renderer;
   /** Whether the signed-in token may act (the operator's, or not yet named). */
   mayAct: boolean;
-  /** Post the answer to an Answer card's question; resolves to the comment's URL. */
-  sendNeed?(n: Need, a: Answer): Promise<string>;
   /** Tick option `letter` of document entry `entry` (as the card shows it) and fill its reply. */
   answerEntry(entry: DocumentEntry, letter: string, reply: string): Promise<void>;
   /** The body of a Send card: the draft as its review will look, with Send. */
   draftBody?(card: Card & { kind: "send" }): Promise<HTMLElement>;
-  /** A proposal's body, on a Do card or the decision carrying it: its live facts and exact mutations, with Run. */
-  offerBody?(offer: Offered): Promise<HTMLElement>;
-  /** A review card's PR head now, read as the card is drawn. */
-  headOf?(n: Need): Promise<string>;
-  /** Approve a review card's PR at the `head` it showed; refuses if it moved. Resolves to the review's URL. */
-  approve?(n: Need, head: string): Promise<string>;
-  /** Post his text on a hold's item; resolves to the comment's URL. It does not release the hold. */
-  answerHold?(n: Need, text: string): Promise<string>;
+  /** A Do card's body: its proposal read again, its live facts and exact mutations, with Run. */
+  offerBody?(a: Ask): Promise<HTMLElement>;
+  /** An Approve card's PR head now, read as the card is drawn. */
+  headOf?(a: Ask): Promise<string>;
+  /** Approve an Approve card's PR at `head`; refuses if it moved. Resolves to the review's URL. */
+  approve?(a: Ask, head: string): Promise<string>;
   /** Send the digest's picked approvals (approveSelected). */
   approveDigest?(items: readonly ApproveItem[]): Promise<ApproveResult[]>;
 }
@@ -61,21 +52,25 @@ export interface InboxHooks {
 const failed = (e: unknown): string => `Not sent, or uncertain: ${e instanceof Error ? e.message : String(e)}. Check on GitHub before trying again.`;
 
 /**
- * Approve in place, at the head read as the card is drawn. He hasn't seen
- * the diff here, so the confirmation says so; the write reads the head
- * again and sends nothing if it moved.
+ * Approve in place, at the head the pass read, if it is still the head as
+ * the card is drawn. He hasn't seen the diff here, so the confirmation
+ * says so; the write reads the head again and sends nothing if it moved.
  */
-async function approveBody(n: Need, hooks: InboxHooks): Promise<HTMLElement> {
-  const head = await hooks.headOf!(n);
+async function approveBody(a: Ask, hooks: InboxHooks): Promise<HTMLElement> {
+  const head = await hooks.headOf!(a);
+  const where = `${a.action.repository}#${a.action.number}`;
+  if (head !== a.action.head) return h("p", { class: "warn" }, `The head moved to ${head.slice(0, 12)} since the pass read ${a.action.head?.slice(0, 12)}: `, h("a", { href: askHref(a.action) }, "open the PR"), " to review it.");
   const button = h("button", { type: "button", class: "primary" }, `Approve ${head.slice(0, 7)}`);
   const status = h("p", { class: "status", role: "status" });
   button.addEventListener("click", () => {
-    if (button.disabled || !window.confirm(`Approve ${n.where} at ${head.slice(0, 12)} as you, without its diff open here? If the head moved, nothing is sent.`)) return;
+    if (button.disabled || !window.confirm(`Approve ${where} at ${head.slice(0, 12)} as you, without its diff open here? If the head moved, nothing is sent.`)) return;
     button.disabled = true;
     status.textContent = "Sending…";
     status.setAttribute(KEEP_ATTR, KEEP_BUSY);
-    hooks.approve!(n, head).then((url) => {
+    hooks.approve!(a, head).then((url) => {
       status.removeAttribute(KEEP_ATTR);
+      // Sent: a redraw shows this card again rather than offer the approval twice.
+      status.setAttribute("data-sent", "");
       status.replaceChildren("Approved: ", link(url, url));
     }, (e: unknown) => {
       // Kept until r, which reads the head again: it may have moved, or the approval gone out.
@@ -94,13 +89,14 @@ const LIMIT_ATTR = "data-limit";
 
 /** What a card shows, so an unchanged card is not redrawn. Its age is left out: the ticker moves it in place. */
 export function cardSignature(c: Card): string {
-  const base = [c.kind, c.key, c.title, c.where, c.url, c.since, c.answered === true, c.note, c.priority, (c.offers ?? []).map((o) => [o.comment.databaseId, o.comment.updatedAt])];
+  const base = [c.kind, c.key, c.title, c.where, c.url, c.since, c.answered === true, c.note, c.priority, c.unavailable === true];
   switch (c.kind) {
     case "answer":
-    case "approve": return JSON.stringify([...base, c.need.action, c.need.href, c.need.inPlace, c.need.priority, c.need.decision?.item.body, c.need.entry?.item?.body]);
-    case "digest": return JSON.stringify([...base, c.digest.approve]);
+    case "approve":
+    case "open":
+    case "do": return JSON.stringify([...base, c.ask.action]);
+    case "digest": return JSON.stringify([...base, c.items]);
     case "send": return JSON.stringify([...base, c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused]);
-    case "do": return JSON.stringify([...base, c.offer.comment.databaseId, c.offer.comment.updatedAt]);
     case "document": return JSON.stringify([...base, c.entry.text, c.mark]);
   }
 }
@@ -149,29 +145,22 @@ function entryForm(c: Card & { kind: "document" }, hooks: InboxHooks): HTMLEleme
   return form;
 }
 
-const needLink = (n: Need): HTMLElement => h("a", { class: `action a-${n.action}`, href: n.href, title: ACTION_TITLE[n.action] }, ACTION_LABEL[n.action]);
+/** What a link card's action asks, by the type of its action. */
+const VERB: Record<string, string> = { review_pull_request: "Review", reply_pull_request: "Reply", close_pull_request: "Close or keep" };
 
-/** The card's one action: in place where the page can do it, else a link to where it is done. */
+/** The card's in-place action or body, read on drawing where it needs to be; else a link to where it is done. */
 function action(c: Card, hooks: InboxHooks): HTMLElement | null {
   if (c.answered) return null;
   switch (c.kind) {
-    case "answer": {
-      if (hooks.answerBody && hooks.mayAct) return bodySlot(hooks.answerBody(c.need));
-      const item = c.need.decision?.item ?? c.need.entry?.item;
-      if (c.need.inPlace && item?.ref && hooks.mayAct && hooks.sendNeed) return answerForm(item.ref, c.need.decision?.question ?? questionOf(item), false, (a) => hooks.sendNeed!(c.need, a), `card-${item.ref.owner}-${item.ref.repo}-${item.ref.number}-`, NOTE_ROWS);
-      const held = c.need.hold?.item;
-      if (!held || !hooks.answerHold || !hooks.mayAct) return needLink(c.need);
-      const [owner = "", repo = "", n] = held.split(/[/#]/);
-      const form = answerForm({ owner, repo, number: Number(n) }, { options: [] }, false, (a) => hooks.answerHold!(c.need, a.text), `hold-${owner}-${repo}-${n}-`, NOTE_ROWS);
-      form.querySelector(".target")!.textContent = `Posts a comment as you on ${held}. Only a comment: the hold stays until the pass releases it.`;
-      return form;
-    }
-    case "approve": return needLink(c.need);
+    case "answer": if (hooks.answerBody && hooks.mayAct) return bodySlot(hooks.answerBody(c.ask)); break;
+    case "approve": if (hooks.headOf && hooks.approve && hooks.mayAct) return bodySlot(approveBody(c.ask, hooks)); break;
+    case "do": if (hooks.offerBody) return bodySlot(hooks.offerBody(c.ask)); break;
+    case "open": break;
     case "document": return hooks.mayAct && c.entry.options.length ? entryForm(c, hooks) : null;
-    case "digest":
-    case "send":
-    case "do": return null;
+    case "send": return hooks.draftBody ? bodySlot(hooks.draftBody(c)) : null;
+    case "digest": return hooks.approveDigest && hooks.mayAct ? approveGroup(c.items, hooks.approveDigest) : null;
   }
+  return h("a", { class: "action", href: askHref(c.ask.action) }, VERB[c.ask.action.type] ?? "Open");
 }
 
 /**
@@ -195,7 +184,8 @@ function bodySlot(body: Promise<HTMLElement>): HTMLElement {
 }
 
 export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
-  const key = JSON.stringify(c.kind === "answer" ? [c.kind, c.key, c.need.hold?.kind, c.need.hold?.question, c.need.decision?.item.body, c.need.entry?.item?.body] : c.kind === "digest" ? [c.kind, c.digest.approve.map((a) => [a.pr, a.head])] : c.kind === "send" ? [c.kind, c.key, c.draft.issue.body, c.draft.found?.raw] : [c.kind, c.key, cardSignature(c)]);
+  // An answer keeps its own receipts (answerBody); the rest by what they write.
+  const key = JSON.stringify(c.kind === "digest" ? [c.kind, c.items.map((a) => [a.pr, a.head])] : c.kind === "send" ? [c.kind, c.key, c.draft.issue.body, c.draft.found?.raw] : c.kind === "document" ? [c.kind, c.key, cardSignature(c)] : [c.kind, c.key, c.ask.action]);
   const previous = hooks.writes?.get(key);
   if (c.kind !== "answer" && previous?.querySelector("[data-sent], [data-keep]")) return previous;
   const head = h("div", { class: "card-head" },
@@ -203,24 +193,21 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
     c.priority ? pill(c.priority) : null,
     h("span", { class: "title" }, c.url ? link(c.url, c.title) : c.title),
     h("span", { class: "age", ...(c.since ? { [SINCE_ATTR]: c.since, title: c.since } : {}) }, age(c.since, hooks.now)));
+  const ask = "ask" in c ? c.ask : undefined;
   const el = h("article", {
-    class: `${ROW_CLASS} ${CARD_CLASS} c-${c.kind}${c.answered ? ` ${CARD_DONE_CLASS}` : ""}`,
+    class: `${ROW_CLASS} ${CARD_CLASS} c-${c.kind}${c.answered ? ` ${CARD_DONE_CLASS}` : ""}${c.unavailable ? ` ${CARD_UNAVAILABLE_CLASS}` : ""}`,
     tabindex: "-1",
     [ROW_KEY_ATTR]: c.key,
     [ROW_SECTION_ATTR]: "inbox",
-    [ROW_HREF_ATTR]: c.kind === "answer" || c.kind === "approve" ? c.need.href : "#",
+    [ROW_HREF_ATTR]: ask ? askHref(ask.action) : "#",
     [SIG_ATTR]: cardSignature(c),
-  }, head, h("p", { class: "card-where" }, c.where), c.note ? h("p", { class: "card-note" }, c.note) : null);
+  }, head, h("p", { class: "card-where" }, c.where),
+  c.unavailable ? h("p", { class: "card-note warn" }, "Unavailable: from the last list read; the pass's list can't be read now.") : null,
+  c.note ? h("p", { class: "card-note" }, c.note) : null);
   if (c.kind === "document" && c.entry.text.trim()) el.append(h("details", { class: "dec-body" }, h("summary", {}, "The whole entry"), h("div", { class: "md" }, hooks.render(c.entry.text, c.entry.about?.repo))));
-  // Read on drawing (the draft's PR, the proposal's targets, the PR's head): filled in when it arrives.
-  const review = c.kind === "approve" && c.need.action === "review" && c.need.entry?.pr && !c.answered && hooks.mayAct && hooks.headOf && hooks.approve;
-  const body = c.kind === "send" ? hooks.draftBody?.(c) : c.kind === "do" ? hooks.offerBody?.(c.offer) : review ? approveBody(c.need, hooks) : undefined;
-  if (body) el.append(bodySlot(body));
-  if (c.kind === "digest" && hooks.approveDigest && hooks.mayAct) el.append(approveGroup(c.digest, hooks.approveDigest));
+  // Read on drawing (the target and its ask, the PR's head, the proposal's facts, the draft's PR): filled in when it arrives.
   const act = action(c, hooks);
   if (act) el.append(act);
-  // The operator action a decision comes down to, under its answer.
-  if (hooks.offerBody) for (const o of c.offers ?? []) el.append(bodySlot(hooks.offerBody(o)));
   if (c.kind !== "answer") hooks.writes?.set(key, el);
   return el;
 }
@@ -253,8 +240,10 @@ function moreButton(list: HTMLElement, drawn: number, total: number, more: () =>
  * it: the other cards are placed around it. Only the first INBOX_PAGE cards
  * (more after "Show more") are drawn, so the ones further down read
  * nothing; a drawn card holding a draft stays however far it moved.
+ * Returns how many cards the list holds, drawn or not: those of `cards`
+ * and those kept for a draft though they left, as the heading counts them.
  */
-export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: InboxHooks, force = false): void {
+export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: InboxHooks, force = false): number {
   const shown = new Map([...list.querySelectorAll<HTMLElement>(`:scope > .${CARD_CLASS}`)].map((el) => [el.getAttribute(ROW_KEY_ATTR)!, el]));
   // Not even r redraws writes still going out: a fresh card would offer them again.
   const keep = (el: HTMLElement): boolean => (!force && holdsDraft(el)) || el.querySelector(`[${KEEP_ATTR}="${KEEP_BUSY}"]`) !== null;
@@ -264,10 +253,10 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     const el = shown.get(c.key);
     return el !== undefined && keep(el);
   });
-  moreButton(list, drawn.length, cards.length, () => {
+  const more = () => {
     list.setAttribute(LIMIT_ATTR, String(limit + INBOX_PAGE));
     fillInbox(list, cards, hooks);
-  });
+  };
   const wanted = drawn.map((c) => {
     const el = shown.get(c.key);
     shown.delete(c.key);
@@ -282,10 +271,14 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     el?.replaceWith(fresh);
     return fresh;
   });
+  let gone = 0;
   for (const el of shown.values()) {
-    if (keep(el)) staleNote(el, CARD_GONE_NOTE);
-    else el.remove();
+    if (keep(el)) {
+      staleNote(el, CARD_GONE_NOTE);
+      gone++;
+    } else el.remove();
   }
+  moreButton(list, drawn.length + gone, cards.length + gone, more);
   let cursor: HTMLElement | undefined;
   for (const el of wanted) {
     if (!(keep(el) && el.isConnected)) {
@@ -297,4 +290,5 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     }
     cursor = el;
   }
+  return cards.length + gone;
 }
