@@ -470,6 +470,33 @@ details.sec[open] > summary { border-bottom: 1px solid var(--line); }
 .status-preview > :first-child { margin-top: 0; }
 .watching { margin-top: 1rem; }
 .watching-item { opacity: .7; }
+/* The chat drawer, opened from Needs you. It stays within the viewport,
+   including long untrusted tool output; full screen covers the page. */
+.chat-panel { min-width: 0; max-width: 100%; display: grid; gap: 6px; padding: 8px 12px; background: var(--surface); }
+#chat:not([hidden]) { position: fixed; inset: 64px 0 0 auto; width: min(540px, 100%); z-index: 19; overflow: auto; background: var(--surface); border-left: 1px solid var(--line); }
+.item-chat, .start-chat { min-height: 44px; }
+.chat-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.chat-head h2 { margin: 0; font-size: var(--type-card); overflow-wrap: anywhere; }
+.chat-state { font: var(--type-meta) var(--mono); padding: 2px 7px; border-radius: 6px; color: var(--p3); background: var(--p3-soft); }
+.chat-state[data-state=starting], .chat-state[data-state=waiting] { color: var(--p2); background: var(--p2-soft); }
+.chat-state[data-state=connected] { color: var(--ok); background: var(--ok-soft); }
+.chat-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chat-bar select { max-width: 100%; min-width: 0; }
+.chat-panel .note, .chat-context p { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.chat-context p.chat-ask { white-space: pre-wrap; max-height: 30vh; overflow: auto; }
+.chat-panel .status:empty { display: none; }
+.chat-run { font: 12px var(--mono); overflow-wrap: anywhere; }
+.chat-body, .chat-form { display: grid; gap: 6px; min-height: 0; }
+.chat-panel textarea { box-sizing: border-box; width: 100%; min-width: 0; }
+.chat-log { max-height: 50vh; overflow: auto; overflow-wrap: anywhere; }
+.chat-log:empty { display: none; }
+.chat-log p, .chat-log pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-log p.chat-user { color: var(--muted); border-left: 3px solid var(--line); padding-left: 8px; }
+.chat-panel.chat-full { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column;
+  padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+.chat-full .chat-body { flex: 1; grid-template-rows: minmax(0, 1fr) auto; }
+.chat-full .chat-log { max-height: none; display: block; }
+body:has(.chat-full) { overflow: hidden; }
 /* Proposal text and literal mutations must wrap without widening a phone. */
 .operator-proposal { min-width: 0; overflow-wrap: anywhere; }
 .operator-proposal pre { white-space: pre-wrap; overflow-wrap: anywhere; }
