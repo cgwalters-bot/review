@@ -2,31 +2,7 @@ import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import type { GitHub } from "./api.ts";
 import { asOperator } from "./backend.ts";
-import { dispatchFailed, EVENTS, loadDraftIssues, readPr, refText, sendDraft, startDraft, type DraftIssue, type Excerpt, type ReviewDraftConfig } from "./reviewdrafts.ts";
-
-/**
- * The open review drafts, each as its review will look, with Send; and
- * Draft review for a PR. Reads only while open: opening it reads the draft
- * issues again, and nothing polls.
- */
-export function reviewDraftsPanel(gh: GitHub, c: ReviewDraftConfig, render: Renderer): HTMLDetailsElement {
-  const list = h("div");
-  const status = h("p", { role: "status" });
-  let loading = false;
-  const load = (): void => {
-    if (loading) return;
-    loading = true; status.textContent = "Reading drafts…";
-    void loadDraftIssues(gh, c).then(async (issues) => {
-      list.replaceChildren(...await Promise.all(issues.map((d) => draftCard(gh, c, render, d))));
-      status.textContent = issues.length ? "" : "No open review drafts.";
-    }).catch((e: unknown) => { status.textContent = String(e); }).finally(() => { loading = false; });
-  };
-  const panel = h("details", { class: "review-drafts sec" }, h("summary", {}, "Review drafts"),
-    h("p", { class: "note" }, `Open ${c.label} issues in ${c.tracker}. Send ticks the issue's send box as you; the tracker's workflow posts the review.`),
-    draftReviewForm(gh, c, load), status, list);
-  panel.addEventListener("toggle", () => { if (panel.open) load(); });
-  return panel;
-}
+import { dispatchFailed, EVENTS, readPr, refText, sendDraft, startDraft, type DraftIssue, type Excerpt, type ReviewDraftConfig } from "./reviewdrafts.ts";
 
 /** Draft review: create a PR's draft issue and start its drafting run, then `started` (to read the drafts again). */
 export function draftReviewForm(gh: GitHub, c: ReviewDraftConfig, started: () => void): HTMLFormElement {

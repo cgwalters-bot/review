@@ -10,7 +10,6 @@ import { fillState, homeSkeleton } from "../src/github/homeview.ts";
 import { HEARTBEAT_MARKER, parseHeartbeat } from "../src/github/heartbeat.ts";
 import { loadActionRuns, parseRunTitleMetrics, runTotals, type RunsData, type RunTitleMetrics } from "../src/github/runs.ts";
 import { loadPageState, pageState } from "../src/github/state.ts";
-import { activeFromOps, loadOps } from "../src/github/ops.ts";
 import { installDom, rawBoardItem, scriptedFetch } from "./helpers.ts";
 
 const NOW = Date.parse("2026-10-02T12:00:00Z");
@@ -98,30 +97,6 @@ describe("confirmed shared agent execution", () => {
       assert.equal(state.agents.running, 1);
       assert.equal(state.agents.heartbeat?.stale, true);
     }
-  });
-
-  it("retains shared ops data but unconfirms local agents when every source fails, then recovers", async () => {
-    const previous = { board, local, warnings: [], at: NOW, sources: { heartbeat: { state: "ok" as const, fetchedAt: NOW }, status: { state: "ok" as const, fetchedAt: NOW } } };
-    assert.equal(pageState({ active: previous }, NOW).agents.locations.local, 2);
-    const failing = scriptedFetch(() => ({ status: 500, body: { message: "offline" } }));
-    const ops = await loadOps(new GitHub(async () => "fixture", failing.fetchImpl), new Map(), NOW + 1_000);
-    assert.equal(ops.board, undefined);
-    assert.equal(ops.local, undefined);
-    assert.equal(ops.usage, undefined);
-    const active = activeFromOps(previous, ops);
-    assert.equal(active.board, previous.board);
-    assert.equal(active.local, previous.local);
-    assert.equal(active.sources?.status?.state, "ok");
-    for (const name of ["board", "heartbeat", "usage"]) assert.equal(active.sources?.[name]?.state, "unavailable");
-    assert.equal(active.sources?.heartbeat?.fetchedAt, NOW);
-    assert.match(active.sources?.heartbeat?.error ?? "", /HTTP 500/);
-    assert.equal(previous.sources.heartbeat.state, "ok", "prior freshness is not mutated");
-    const failed = pageState({ active }, NOW + 1_000);
-    assert.equal(failed.agents.running, 0);
-    assert.equal(failed.agents.heartbeat?.stale, true);
-    const recovered = activeFromOps(active, { warnings: [], at: NOW + 2_000, local, sources: { heartbeat: { state: "ok", fetchedAt: NOW + 2_000 } } });
-    assert.equal(pageState({ active: recovered }, NOW + 2_000).agents.locations.local, 2);
-    assert.equal(recovered.sources?.heartbeat?.error, undefined);
   });
 
   it("excludes failed, cached or expired Actions sightings, then recovers on a live read", async () => {

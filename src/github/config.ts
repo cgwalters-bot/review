@@ -57,8 +57,7 @@ export const FIELD = {
 } as const;
 
 /**
- * Board fields the triage view reads, by name. They are optional: a
- * board without them still loads, and the view says which are missing.
+ * Optional board fields retained in parsed items and CLI state.
  */
 export const TRIAGE_FIELD = {
   theme: "Theme",
@@ -67,12 +66,11 @@ export const TRIAGE_FIELD = {
 } as const;
 
 /**
- * Board fields the changes feed (boardfeed.ts) reads, by name; optional
- * too. Lead names the topic session that owns an item; News is the one
+ * Optional board fields. Lead names the topic session that owns an item; News is the one
  * dated line the coordinator writes when something notable happens to
  * it (`bot-board set --news` in homegit). Run is the devspace agent run
- * working on it (`bot-runs dispatch` sets it), which the active agents
- * strip reads too.
+ * working on it (`bot-runs dispatch` sets it), which the CLI's active
+ * agents read too.
  */
 export const FEED_FIELD = {
   lead: "Lead",
@@ -80,24 +78,8 @@ export const FEED_FIELD = {
   run: "Run",
 } as const;
 
-/** The Status of a finished item; the triage view shows everything else. */
+/** The Status of a finished item. */
 export const DONE = "Done";
-
-/** The board's Theme options, in the order the triage view lists them; others follow. */
-export const TRIAGE_THEMES: readonly string[] = [
-  "composefs-stable",
-  "image-builder",
-  "composefs-rs",
-  "harness",
-  "devspace",
-  "review-tooling",
-  "bootc-ci",
-  "ostree-family",
-];
-
-/** The board's Verdict options: keep it, merge it into its target, park it, or close it (for its target, if any). */
-export const VERDICTS = ["keep", "merge", "park", "close"] as const;
-export type Verdict = (typeof VERDICTS)[number];
 
 /**
  * The public repository where every board item that isn't an upstream
@@ -171,41 +153,13 @@ export const PAGE_SIZE = 100;
 /** Comments shown in the item view. */
 export const RECENT_COMMENTS = 5;
 
-/** The repositories whose merged PRs the news pane shows: the bot, its runner and this app. */
-export const NEWS_REPOS: readonly string[] = [
-  "cgwalters-bot/homegit",
-  "cgwalters-forge/cgwalters-devspace-sandbox",
-  "bootc-dev/cgwalters-devspace-sandbox",
-  "cgwalters-forge/review",
-  "cgwalters-forge/agentic-job",
-  "cgwalters-forge/agent-board",
-];
-/** Closed PRs read per repository (one page). */
-export const NEWS_PER_REPO = 30;
-/** News items shown. */
-export const NEWS_LIMIT = 40;
-
-/** The ops view: where devspaces and agent runs come from (bin/bot-devspace and bin/bot-runs in homegit). */
+/** Where agent runs come from (bin/bot-runs in homegit). */
 export const DEVSPACE_REPO = "bootc-dev/cgwalters-devspace-sandbox";
-export const DEVSPACE_WORKFLOW = "devspace.yml";
 export const AGENT_WORKFLOW = "agent.yml";
-/**
- * The tracker's workflow that runs one agent job on one item, titled
- * `KIND OWNER/REPO#N (POOL)`; the Agents view shows its runs (dispatch.ts).
- */
-export const DISPATCH_WORKFLOW = "dispatch.yml";
-/** A devspace's tailnet host is this plus its run id. */
-export const DEVSPACE_HOST_PREFIX = "cgwalters-devspace-";
 /** The Status of an item the bot is working on. */
 export const IN_PROGRESS = "In Progress";
-/** Refresh the ops view this often while it is open and the tab visible. */
+/** Refresh shared active state this often while the tab is visible. */
 export const OPS_POLL_INTERVAL_MS = 60_000;
-/** The ops view's history window, in hours. */
-export const OPS_WINDOW_HOURS = 24;
-/** Workflow runs listed per read (one page, the API maximum). */
-export const OPS_RUNS_PER_PAGE = 100;
-/** Agent runs shown when finished. */
-export const OPS_AGENT_RECENT = 6;
 /**
  * The coordinator's heartbeat: the one comment by BOT_LOGIN on this
  * TRACKER_REPO issue ("Bot heartbeat", pinned and locked), which
@@ -224,10 +178,6 @@ export const USAGE_ISSUE = 1;
 export const HEARTBEAT_STALE_MS = 15 * 60_000;
 /** ... unless the coordinator said it sleeps longer, and this grace past its wake time hasn't run out. */
 export const HEARTBEAT_WAKE_GRACE_MS = 5 * 60_000;
-/** The bot's public events read (one page). */
-export const OPS_EVENTS = 50;
-/** Rows of bot activity shown. */
-export const OPS_EVENTS_SHOWN = 20;
 
 /** localStorage key for the chosen theme (auto, light, dark). */
 export const THEME_KEY = "review.theme";
