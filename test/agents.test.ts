@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { type Active, activeAgents, type ActiveAgent, isClaimed, laneOf } from "../src/github/agents.ts";
 import { GitHub } from "../src/github/api.ts";
 import { type Item, parseItem } from "../src/github/board.ts";
-import { DISPATCH_POLL_MS, loadDispatch } from "../src/github/dispatch.ts";
+import { DISPATCH_POLL_MS, type DispatchData, type DispatchRun } from "../src/github/dispatch.ts";
 import type { Heartbeat, LocalWorker } from "../src/github/heartbeat.ts";
 import { installDom } from "./helpers.ts";
 
@@ -209,27 +209,18 @@ describe("activeAgents", () => {
 });
 
 describe("activeAgents from the tracker's recorded dispatch runs", () => {
-  const RUNS = "/repos/cgwalters-forge/tracker/actions/workflows/dispatch.yml/runs?per_page=100";
-  const run = (id: number, title: string, status: string) => ({
-    id, html_url: `https://github.com/cgwalters-forge/tracker/actions/runs/${id}`, display_title: title, status, conclusion: null, created_at: ago(20 * MIN), run_started_at: ago(20 * MIN), updated_at: ago(MIN),
+  const run = (id: number, kind: string, repo: string, number: number, pool: string, status: string): DispatchRun => ({
+    id, url: `https://github.com/cgwalters-forge/tracker/actions/runs/${id}`, title: `${kind} cgwalters-forge/${repo}#${number} (${pool})`, status, startedAt: ago(20 * MIN), updatedAt: ago(MIN),
+    target: { kind, owner: "cgwalters-forge", repo, number, pool },
   });
-  const A = run(101, "implement cgwalters-forge/review#154 (claude)", "in_progress");
-  const B = run(102, "fix cgwalters-forge/agent-board#7 (openai)", "in_progress");
-  const C = run(103, "triage cgwalters-forge/tracker#90 (openai)", "in_progress");
-  const Q = run(104, "implement cgwalters-forge/review#155 (openai)", "queued");
+  const A = run(101, "implement", "review", 154, "claude", "in_progress");
+  const B = run(102, "fix", "agent-board", 7, "openai", "in_progress");
+  const C = run(103, "triage", "tracker", 90, "openai", "in_progress");
+  const Q = run(104, "implement", "review", 155, "openai", "queued");
 
-  /** The in-progress and queued lists as GitHub returned them (the unfiltered list holds the same runs); null fails the reads. */
-  async function dispatch(lists: { inProgress: ReturnType<typeof run>[]; queued: ReturnType<typeof run>[] } | null, at = NOW) {
-    const gh = new GitHub(async () => "fixture", async (url) => {
-      const path = url.replace("https://api.github.com", "");
-      if (!lists) return Response.json({ message: "Server Error" }, { status: 500 });
-      if (path === `${RUNS}&status=in_progress`) return Response.json({ total_count: lists.inProgress.length, workflow_runs: lists.inProgress });
-      if (path === `${RUNS}&status=queued`) return Response.json({ total_count: lists.queued.length, workflow_runs: lists.queued });
-      if (path === RUNS) return Response.json({ total_count: lists.inProgress.length + lists.queued.length, workflow_runs: [...lists.queued, ...lists.inProgress] });
-      if (/\/actions\/runs\/\d+\/jobs\?/.test(path)) return Response.json({ total_count: 0, jobs: [] });
-      throw new Error(`unexpected request: ${path}`);
-    });
-    return loadDispatch(gh, new Map(), at);
+  /** Recorded execution evidence, independent of the retired dispatch loader. */
+  function dispatch(lists: { inProgress: DispatchRun[]; queued: DispatchRun[] } | null, at = NOW): DispatchData {
+    return { state: lists ? "ok" : "unavailable", at, live: lists ? [...lists.inProgress, ...lists.queued] : [], finished: [], warnings: [] };
   }
 
   // name, the lists, when they were read, the board; running, the running ones' item refs, unconfirmed, queued, whether execution is known
@@ -239,7 +230,7 @@ describe("activeAgents from the tracker's recorded dispatch runs", () => {
     [
       "a board claim naming the run is that agent, not a second unconfirmed one",
       { inProgress: [A], queued: [] }, NOW,
-      [item("PVTI_a", "https://github.com/cgwalters-forge/review/issues/154", { lead: "x", run: A.html_url, org: "cgwalters-forge", priority: "P1" })],
+      [item("PVTI_a", "https://github.com/cgwalters-forge/review/issues/154", { lead: "x", run: A.url, org: "cgwalters-forge", priority: "P1" })],
       1, ["cgwalters-forge/review#154"], 0, 0, true,
     ],
     ["a reading older than two polls is unconfirmed", { inProgress: [A, B], queued: [] }, NOW - 3 * DISPATCH_POLL_MS, [], 0, [], 2, 0, true],

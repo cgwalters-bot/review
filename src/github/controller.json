@@ -1,7 +1,0 @@
-{
-  "hosted": [
-    { "label": "Usage", "what": "publishes the usage snapshot", "repo": "cgwalters-forge/tracker", "workflow": "usage.yml" },
-    { "label": "Broker probe", "what": "checks the broker answers", "repo": "cgwalters-forge/tracker", "workflow": "broker-probe.yml", "staleAfterMinutes": 60 },
-    { "label": "Dispatch", "what": "agent runs", "repo": "cgwalters-forge/tracker", "workflow": "dispatch.yml", "read": "in-flight" }
-  ]
-}

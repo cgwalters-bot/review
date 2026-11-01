@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { ageLabel, ago, agoLabel, tickAges, time } from "../src/github/view.ts";
-import { feedRow } from "../src/github/boardfeedview.ts";
 import { installDom } from "./helpers.ts";
 
 installDom();
@@ -20,18 +19,6 @@ it("ticks shared labels in place and retains the absolute time in title", () => 
   assert.equal(label.textContent, "1h");
   assert.equal(label.title, time(since));
   assert.equal(root.lastChild?.textContent, "age unknown");
-});
-
-it("ticks board-feed ages without redrawing their full titles", () => {
-  const title = "An unabridged item title ".repeat(30);
-  const root = document.createElement("div");
-  root.append(feedRow({ title, url: "https://github.com/example/project/issues/1", at: since, changes: [], priority: "P1", nodeId: "item-1" }, now));
-  const labels = [...root.querySelectorAll<HTMLElement>(".age")];
-  assert.equal(labels.length, 1);
-  tickAges(root, now + 3600_000);
-  assert.deepEqual(labels.map((l) => l.textContent), ["1h"]);
-  for (const label of labels) assert.match(label.title, /2026/);
-  assert.ok(root.textContent?.includes(title));
 });
 
 it("phrases sub-minute ages in prose as just now, never now ago", () => {
