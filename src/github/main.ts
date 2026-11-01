@@ -48,7 +48,10 @@ import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from 
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, sendDocumentEdit } from "./decisiondocument.ts";
-import { inboxCards, mayAct, type Published, publishedNote } from "./inbox.ts";
+import { type Card, inboxCards, mayAct, type Published, publishedNote } from "./inbox.ts";
+import { chatPanel, type ChatPanel } from "./chat.ts";
+import { CHAT_CONFIG } from "./chatconfig.ts";
+import { type ChatAnswer, chatItem, type ChatItem, startChatButton } from "./chatitem.ts";
 import { fillInbox, type InboxHooks, passLine } from "./inboxview.ts";
 import {
   CLASSIC_SCOPES,
@@ -206,6 +209,8 @@ interface State {
   pane?: PrPane;
   /** The capture bar, shown to OPERATOR only. */
   capture?: CaptureBar;
+  /** The chat drawer, OPERATOR's only, opened from Needs you. */
+  chat?: ChatPanel | undefined;
   help: boolean;
   /** The location hash last routed to. */
   hash: string;
@@ -253,6 +258,13 @@ function frozenSince(state: State): number | undefined {
 
 /** Set once GitHub rejected the token: late loads mustn't draw over the sign-in page. */
 let viewClosed = false;
+
+/**
+ * A chat still attached when GitHub rejected the token. It doesn't use the
+ * token, and closing it would end the session run, so it stays up and the
+ * next sign-in takes it over.
+ */
+let keptChat: ChatPanel | undefined;
 
 function showMain(node: Node): void {
   if (viewClosed) return;
@@ -431,6 +443,8 @@ interface Inbox {
   writes: Promise<void>;
   /** Proposal executions: one at a time, and no reload of the proposals (which would redraw its card) meanwhile. */
   busy: boolean;
+  /** Opens a chat about no card; shown while the chat drawer is. */
+  startChat?: HTMLElement | null;
 }
 
 /**
@@ -443,8 +457,12 @@ function mountInbox(state: State, home: Home): void {
   const status = h("p", { class: "note", role: "status" });
   const empty = h("p", { class: "empty", hidden: "" }, "All caught up: nothing needs you right now.");
   const tail = h("div", { class: "inbox-tail" });
-  const inbox: Inbox = { list, pass: h("div"), status, notes: new Map(), empty, writes: Promise.resolve(), busy: false };
+  const inbox: Inbox = { list, pass: h("div"), status, notes: new Map(), empty, writes: Promise.resolve(), busy: false, startChat: startChatButton() };
   state.inbox = inbox;
+  if (inbox.startChat) {
+    inbox.startChat.hidden = !state.chat;
+    tail.append(inbox.startChat);
+  }
   if (REVIEW_DRAFT_CONFIG) tail.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => void refreshDrafts(state)));
   home.slots.needs.hidden = true;
   home.sections.needs.body.prepend(inbox.pass, status, list, empty, tail);
@@ -463,42 +481,102 @@ const askPr = (a: Ask): IssueRef => {
   return { owner, repo, number: a.action.number };
 };
 
+/** The receipt of the last answer attempted on an ask's target, shown beside a failed read so its outcome and comment URL stay visible. */
+const answeredKey = (a: Ask): string => JSON.stringify(["answered", `${a.action.repository}#${a.action.number}`.toLowerCase()]);
+
+/**
+ * Read an Answer card's target and ask now; `post` answers only that, as
+ * the operator, releasing only an eligible needs-human hold. Its card and a
+ * chat about it share the receipts, kept by `key`, so neither offers an
+ * answer the other attempted.
+ */
+async function readAsk(state: State, a: Ask) {
+  const target = `${a.action.repository}#${a.action.number}`;
+  const receipts = state.cardWrites ??= new Map();
+  const { owner, repo, number } = askPr(a);
+  const shown = await readAnswerTarget(state.gh, target);
+  const ask = await readHoldAsk(state.gh, owner, repo, number);
+  const key = JSON.stringify([target.toLowerCase(), shown.title, shown.body, ask]);
+  const check = async () => {
+    if (await readHoldAsk(state.gh, owner, repo, number) !== ask) throw new Error("The ask changed; not releasing it. Reload and read it again.");
+  };
+  // Only needs-human is released, and only where the pass listed it so; other holds are the pass's.
+  const release = a.kind === "needs-human" || a.kind === "review-needs-human";
+  const post = (text: string) => asOperator(state.gh, async () => (await answerHold(state.gh, target, text, shown, release, check)).url);
+  return { target, shown, ask, key, release, receipts, post };
+}
+
+/** An Answer card's ask for a chat about it, answered through the card's path and receipts. */
+async function chatAnswer(state: State, a: Ask): Promise<ChatAnswer> {
+  const { target, shown, ask, key, release, receipts, post } = await readAsk(state, a);
+  return {
+    target, release,
+    ask: [shown.title, shown.body, ask].filter(Boolean).join("\n\n"),
+    send: async (text) => {
+      const attempted = receipts.get(key)?.querySelector("[data-sent]");
+      if (attempted) throw new MaybeSentError(`Already attempted: ${attempted.textContent ?? "check GitHub"}`);
+      const status = h("p", { class: "status", role: "status", "data-sent": "" });
+      const keep = () => {
+        const receipt = h("div", {}, status);
+        receipts.set(key, receipt);
+        receipts.set(answeredKey(a), receipt);
+      };
+      try {
+        const url = await post(formatAnswer({ text }));
+        status.append("Answered from chat: ", h("a", { href: url }, url));
+        keep();
+        return url;
+      } catch (e) {
+        // Only a write that may have gone out is kept: the card then offers it no more.
+        if (e instanceof MaybeSentError) {
+          status.textContent = `Not sent, or uncertain: ${e.message}`;
+          keep();
+        }
+        throw e;
+      }
+    },
+  };
+}
+
+/** A card's chat context: its item, what it asks and its public links, and an Answer card's ask to answer. */
+function cardChat(state: State, c: Card): ChatItem | undefined {
+  const item = chatItem(c.url, c.title);
+  return item && {
+    ...item,
+    ask: [c.title, c.where, c.note].filter(Boolean).join(" · "),
+    links: [c.url!],
+    ...(c.kind === "answer" && !c.answered && mayAct(state.login) ? { answer: () => chatAnswer(state, c.ask) } : {}),
+  };
+}
+
 export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHooks {
   return {
     writes: state.cardWrites ??= new Map(),
     now: Date.now(),
     render,
     mayAct: mayAct(state.login),
+    // Drawn by the same gate as the cards' own answers; the drawer, OPERATOR's, takes the request.
+    ...(CHAT_CONFIG && mayAct(state.login) ? { chatItem: (c: Card) => cardChat(state, c) } : {}),
     answerBody: async (a) => {
-      const target = `${a.action.repository}#${a.action.number}`;
-      const receipts = state.cardWrites ??= new Map();
-      // The last answer attempted on this target, shown beside a failed read so its outcome and comment URL stay visible.
-      const lastKey = JSON.stringify(["answered", target.toLowerCase()]);
-      const { owner, repo, number } = askPr(a);
-      let shown: Awaited<ReturnType<typeof readAnswerTarget>>, ask: string | undefined;
+      let read: Awaited<ReturnType<typeof readAsk>>;
       try {
-        shown = await readAnswerTarget(state.gh, target);
-        ask = await readHoldAsk(state.gh, owner, repo, number);
+        read = await readAsk(state, a);
       } catch (e) {
-        const last = receipts.get(lastKey);
+        const last = state.cardWrites?.get(answeredKey(a));
         if (!last?.querySelector("[data-sent]")) throw e;
         return h("div", {}, h("p", { class: "warn" }, String(e)), last);
       }
-      const key = JSON.stringify([target.toLowerCase(), shown.title, shown.body, ask]);
+      const { target, shown, ask, key, release, receipts } = read;
+      const { owner, repo, number } = askPr(a);
       const previous = receipts.get(key);
       if (previous?.querySelector("[data-sent]")) return previous;
-      const check = async () => {
-        if (await readHoldAsk(state.gh, owner, repo, number) !== ask) throw new Error("The ask changed; not releasing it. Reload and read it again.");
-      };
-      // Only needs-human is released, and only where the pass listed it so; other holds are the pass's.
-      const release = a.kind === "needs-human" || a.kind === "review-needs-human";
       const form = answerForm({ owner, repo, number }, parseQuestion(shown.body ?? ""), false,
         (answer) => {
           const attempted = receipts.get(key);
           if (attempted && attempted !== body && attempted.querySelector("[data-sent]")) return Promise.reject(new MaybeSentError(attempted.querySelector("[role=status]")?.textContent ?? "Already attempted; check GitHub"));
           receipts.set(key, body);
-          receipts.set(lastKey, body);
-          return asOperator(state.gh, async () => (await answerHold(state.gh, target, formatAnswer(answer), shown, release, check)).url);
+          receipts.set(answeredKey(a), body);
+          return read.post(formatAnswer(answer));
         }, `card-${target}-`, 2);
       form.querySelector(".target")!.textContent = release
         ? `Posts your answer, then removes only needs-human on ${target}. Other holds stay.`
@@ -576,6 +654,7 @@ function paintInbox(state: State, force = false): void {
   const cards = inboxCards({ published: state.published, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}) });
   // Counted as drawn: a card kept for his unsent text after it left is still on the page.
   const total = fillInbox(inbox.list, cards, inboxHooks(state), force);
+  if (inbox.startChat) inbox.startChat.hidden = !state.chat;
   const { text, settled } = publishedNote(state.published, Date.now());
   inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text), passLine(state.active?.holds, state.active?.local, Date.now()) ?? "");
   const waiting = cards.filter((c) => !c.answered).length;
@@ -1783,6 +1862,8 @@ type SignInReason = "none" | "rejected";
 function rejected(state: State): Promise<void> {
   if (!state.rejecting) {
     state.closed = true;
+    if (state.chat?.attached()) keptChat = state.chat;
+    else state.chat?.dispose();
     viewClosed = true;
     state.poller.close();
     clearInterval(state.metaTicker);
@@ -1882,6 +1963,7 @@ async function start(source: TokenSource): Promise<void> {
   if (state.login === OPERATOR) showCapture(state);
   byId("signout").onclick = () => {
     state.closed = true;
+    state.chat?.dispose();
     state.poller.close();
     clearInterval(state.metaTicker);
     forgetDraft(captureStore());
@@ -1973,6 +2055,17 @@ function showCapture(state: State): void {
   slot.replaceChildren(state.capture.el);
   slot.hidden = false;
   state.capture.mounted();
+  state.chat?.dispose();
+  if (keptChat?.attached()) {
+    keptChat.useGitHub(state.gh);
+    state.chat = keptChat;
+  } else {
+    keptChat?.dispose();
+    state.chat = chatPanel(state.gh);
+    state.chat?.mount(byId("chat"));
+  }
+  keptChat = undefined;
+  paintInbox(state, false);
 }
 
 function scopeList(): HTMLElement {

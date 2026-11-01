@@ -6,6 +6,7 @@
 
 import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
+import { chatButton, type ChatItem } from "./chatitem.ts";
 import type { DocumentEntry } from "./decisiondocument.ts";
 import { type Heartbeat, isStale } from "./heartbeat.ts";
 import type { Ask, Holds } from "./holds.ts";
@@ -44,6 +45,8 @@ export interface InboxHooks {
   approve?(a: Ask, head: string): Promise<string | undefined>;
   /** Send the digest's picked approvals (approveSelected). */
   approveDigest?(items: readonly ApproveItem[]): Promise<ApproveResult[]>;
+  /** A card's chat context, for its Chat button; none for a card about no item. */
+  chatItem?(c: Card): ChatItem | undefined;
 }
 
 /** Why the write may or may not have happened, and that nothing retries it. */
@@ -205,6 +208,9 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   // Read on drawing (the target and its ask, the PR's head, the proposal's facts, the draft's PR): filled in when it arrives.
   const act = action(c, hooks);
   if (act) el.append(act);
+  // After the card's own action: chatting never stands in for it.
+  const chat = chatButton(hooks.chatItem?.(c));
+  if (chat) el.append(h("div", { class: "actions" }, chat));
   if (c.kind !== "answer") hooks.writes?.set(key, el);
   return el;
 }
