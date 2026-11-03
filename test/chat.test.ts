@@ -9,7 +9,7 @@ import { MaybeSentError } from "../src/github/backend.ts";
 import { chatButton, chatItem, sessionInputs, startChatButton, type ChatAnswer, type ChatItem } from "../src/github/chatitem.ts";
 import { parseNeedsYou } from "../src/github/holds.ts";
 import { publishedCards } from "../src/github/inbox.ts";
-import { rawAsk, rawNeedsYou, scriptedFetch } from "./helpers.ts";
+import { rawAsk, rawNeedsYou, realNeedsYouSnapshot, scriptedFetch } from "./helpers.ts";
 
 // The app's page, so the real main.ts hooks can be imported for the chat's Answer.
 const win = new JSDOM(readFileSync(new URL("../static/index.html", import.meta.url), "utf8"), { url: "https://review.example/" }).window;
@@ -845,15 +845,24 @@ function answerCard(opts: { login?: string; askChanges?: boolean; release?: numb
   return { state, card, writes, item: () => inboxHooks(state).chatItem!(card)! };
 }
 
-it("revokes an open chat's answer authority when its ask becomes a group or is refused", async () => {
-  for (const malformed of [false, true]) {
+it("constructed publication contract cases revoke an open chat's answer authority for groups or refusals", async () => {
+  for (const [numbers, carried] of [[[50, 51], false], [[50], false], [[50, 51], true], [[50, 0], false]] as const) {
     const r = answerCard();
     const captured = await r.item().answer!();
     const a = r.state.published.asks[0]!;
-    r.state.published.asks = malformed ? [] : [{ ...a, group: { reason: "drafts", numbers: [50, 51] } }];
+    // Derived contract only: the actual publication has no observed groups.
+    // Retarget its first ask to this test's already-open chat and add membership.
+    const raw = realNeedsYouSnapshot();
+    Object.assign(raw.needs_you.items[0]!, { key: a.key, item: a.item, action: { ...a.action, type: "pull_request" }, carried, group: { reason: "Constructed drafts", numbers } });
+    raw.needs_you.requests[0]!.key = a.key;
+    const l = parseNeedsYou(raw.needs_you);
+    assert.ok(typeof l === "object");
+    assert.equal(l.refused, numbers.some((n) => n === 0) ? 1 : 0);
+    assert.equal(l.items.length, l.refused ? 11 : 12);
+    r.state.published = { asks: l.items, list: l, unavailable: false };
     await assert.rejects(captured.send("Go left"), /Ask left or grouped/);
     assert.deepEqual(r.writes(), []);
-    if (!malformed) {
+    if (!l.refused) {
       const grouped = publishedCards(r.state.published.asks)[0]!;
       const item = inboxHooks(r.state).chatItem!(grouped)!;
       assert.equal(item.ref, "cgwalters-forge/tracker#50");

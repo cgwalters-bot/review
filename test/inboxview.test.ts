@@ -9,10 +9,10 @@ import { CHAT_CONFIG } from "../src/github/chatconfig.ts";
 import { ITEM_CHAT_EVENT } from "../src/github/chatitem.ts";
 import { proposalCard } from "../src/github/actionsview.ts";
 import type { Heartbeat } from "../src/github/heartbeat.ts";
-import { type Ask, type Hold, parseNeedsYou } from "../src/github/holds.ts";
+import { type Ask, type Hold, HOLDS_MARKER, parseHolds, parseNeedsYou } from "../src/github/holds.ts";
 import { answerForm } from "../src/github/view.ts";
 import { createRenderer } from "../src/markdown.ts";
-import { fixture, installDom, rawAsk, rawNeedsYou } from "./helpers.ts";
+import { fixture, installDom, rawAsk, rawNeedsYou, REAL_NEEDS_YOU_AT, REAL_NEEDS_YOU_KEYS, realNeedsYouSnapshot } from "./helpers.ts";
 
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
@@ -53,7 +53,109 @@ const drafts: [string, (card: HTMLElement) => void][] = [
 ];
 
 describe("fillInbox", () => {
-  it("replays redacted group shapes as exact inspect-only membership, retaining chat", () => {
+  it("replays all 12 published asks unchanged at publication time, with typed links and limitations", () => {
+    const raw = realNeedsYouSnapshot();
+    const snapshot = parseHolds(`${HOLDS_MARKER}\n\n\`\`\`json\n${JSON.stringify(raw)}\n\`\`\``)!;
+    const l = snapshot.needsYou;
+    assert.ok(l && typeof l === "object", String(l));
+    const now = Date.parse(REAL_NEEDS_YOU_AT);
+    const box = document.createElement("div");
+    const list = document.createElement("div");
+    box.append(list);
+    // A non-operator can inspect, never answer/release/approve. The ordinary
+    // operator answer path remains covered by maincards.test.ts and chat.test.ts.
+    const replayHooks = { ...hooks, now, mayAct: false };
+    const cards = publishedCards(l.items);
+    assert.deepEqual(cards.map((c) => [c.key, c.kind]), REAL_NEEDS_YOU_KEYS.map((key) => [key, "answer"]));
+    assert.equal(fillInbox(list, cards, replayHooks), 12);
+    assert.deepEqual(keys(list), REAL_NEEDS_YOU_KEYS.slice(0, INBOX_PAGE));
+    for (let page = 0; page < 2; page++) box.querySelector<HTMLButtonElement>(".inbox-more")!.click();
+    assert.equal(box.querySelector(".inbox-more"), null);
+    assert.deepEqual(keys(list), REAL_NEEDS_YOU_KEYS);
+    for (const [i, card] of [...list.children].entries()) {
+      const key = REAL_NEEDS_YOU_KEYS[i]!;
+      assert.equal(card.querySelector(".title a")?.getAttribute("href"), `https://github.com/${key.replace("#", "/issues/")}`);
+      assert.equal(card.querySelector("a.action")?.getAttribute("href"), `#issue/${key.replace("#", "/")}`);
+      assert.equal(card.querySelector("form, .c-approve, .members"), null);
+      assert.equal(card.querySelector(".not-offered summary")?.textContent, "Not offered here: promote, merge or enqueue, close");
+      assert.match(card.querySelector(".not-offered")!.textContent!, /Only the poll may merge\/enqueue/);
+      assert.match(card.querySelector(".not-offered")!.textContent!, /no checked close endpoint/);
+    }
+    const note = publishedNote({ asks: l.items, list: l, unavailable: false, checkedAt: now }, now);
+    assert.equal(note.settled, false);
+    assert.match(note.text, /Incomplete \(items partial, digest partial, 85 past the pass's cap\)/);
+    assert.doesNotMatch(note.text, /may have stopped|unreadable here|All caught up/);
+  });
+
+  for (const [name, numbers, carried] of [
+    ["multi-member", [2110, 2111, 2112], false],
+    ["one-member", [2110], false],
+    ["carried", [2110, 2112], true],
+  ] as const) it(`constructed contract case derived from publication: ${name}, exact links and no representative writes`, () => {
+    const raw = realNeedsYouSnapshot();
+    Object.assign(raw.needs_you.items[0]!, {
+      target: "https://untrusted.invalid/", carried,
+      action: { type: "approve_pull_request", repository: "cgwalters-forge/agentic-job", number: 2110, head: "a".repeat(40) },
+      kind: "digest-approve", group: { reason: "Constructed drafts", numbers },
+    });
+    const l = parseNeedsYou(raw.needs_you);
+    assert.ok(typeof l === "object");
+    assert.equal(l.refused, 0);
+    let writes = 0;
+    const reads: string[] = [];
+    const list = document.createElement("div");
+    const cards = publishedCards(l.items);
+    assert.equal(cards[0]!.kind, "open", "never a representative or digest approval");
+    fillInbox(list, cards, { ...hooks, now: Date.parse(REAL_NEEDS_YOU_AT),
+      answerBody: async (a) => { reads.push(a.key); return document.createElement("div"); },
+      approve: async () => { writes++; return undefined; },
+      approveDigest: async () => { writes++; return []; },
+      chatItem: () => ({ ref: REAL_NEEDS_YOU_KEYS[0]!, title: "Constructed group" }),
+    });
+    const card = list.firstElementChild!;
+    assert.deepEqual([...card.querySelectorAll("li a")].map((a) => a.getAttribute("href")), numbers.map((n) => `#pr/cgwalters-forge/agentic-job/${n}`));
+    assert.equal(card.querySelector("form, .primary, .c-answer, .c-approve, [href*='untrusted']"), null);
+    assert.match(card.textContent!, /Inspect each member; no group writes/);
+    if (carried) assert.match(card.textContent!, /Carried over/);
+    assert.ok(card.querySelector(".item-chat"), "retain chat, not an answer control");
+    assert.deepEqual(reads, REAL_NEEDS_YOU_KEYS.slice(1, INBOX_PAGE), "only ordinary asks read an answer target");
+    assert.equal(writes, 0);
+  });
+
+  for (const malformed of [false, true]) it(`constructed ${malformed ? "malformed" : "valid"} group retires a retained form instead of answering its representative`, async () => {
+    const raw = realNeedsYouSnapshot();
+    const initial = parseNeedsYou(raw.needs_you);
+    assert.ok(typeof initial === "object");
+    const list = document.createElement("div");
+    const replayHooks = { ...hooks, now: Date.parse(REAL_NEEDS_YOU_AT) };
+    fillInbox(list, publishedCards(initial.items), replayHooks);
+    await settle();
+    const card = list.firstElementChild!;
+    const form = card.querySelector("form")!;
+    form.querySelector("textarea")!.value = "Unsent";
+    let submits = 0;
+    form.addEventListener("submit", () => { submits++; });
+    Object.assign(raw.needs_you.items[0]!, { action: { type: "pull_request", repository: "cgwalters-forge/agentic-job", number: 2110 }, group: { reason: "Constructed group", numbers: malformed ? [2110, 0] : [2110, 2111] } });
+    const l = parseNeedsYou(raw.needs_you);
+    assert.ok(typeof l === "object");
+    assert.equal(l.refused, malformed ? 1 : 0);
+    assert.deepEqual(l.items.map((a) => a.key), REAL_NEEDS_YOU_KEYS.slice(malformed ? 1 : 0));
+    assert.equal(fillInbox(list, publishedCards(l.items), replayHooks), 12);
+    if (malformed) {
+      assert.equal(form.querySelector("button")!.disabled, true);
+      assert.equal(card.querySelector("a[href]"), null);
+      form.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }));
+      assert.equal(submits, 0, "retained handlers cannot send or release");
+      assert.equal(form.querySelector("textarea")!.value, "Unsent");
+      assert.match(publishedNote({ asks: l.items, list: l, unavailable: false, checkedAt: replayHooks.now }, replayHooks.now).text, /1 unreadable here/);
+    } else {
+      assert.notEqual(list.firstElementChild, card, "valid membership replaces the old representative form");
+      assert.equal(list.firstElementChild!.querySelector("form, textarea"), null);
+      assert.deepEqual([...list.firstElementChild!.querySelectorAll("li a")].map((a) => a.getAttribute("href")), ["#pr/cgwalters-forge/agentic-job/2110", "#pr/cgwalters-forge/agentic-job/2111"]);
+    }
+  });
+
+  it("replays constructed contract group shapes as exact inspect-only membership, retaining chat", () => {
     // Contract-shaped replay, not a claim of authorized live acceptance.
     const replay = fixture<{ cases: { numbers: number[]; carried?: boolean }[] }>("needs-you-groups.json");
     for (const row of replay.cases) {
