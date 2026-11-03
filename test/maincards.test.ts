@@ -160,13 +160,116 @@ test("push after final preflight cannot change the APPROVE payload", async () =>
 
 test("fresh client recovers existing approval without writing and refuses a full review page", async () => {
   for (const count of [1, 100]) {
-    const r = setup((_method, p) => ({ body: p.endsWith("/reviews") ? Array.from({ length: count }, () => ({ user: { login: "cgwalters" }, state: "APPROVED", commit_id: count === 1 ? head : replacement })) : draft(7) }));
+    const r = setup((_method, p) => ({ body: p.endsWith("/reviews") ? Array.from({ length: count }, () => ({ user: { login: "cgwalters" }, state: "APPROVED", commit_id: head, submitted_at: "2026-11-03T00:00:00Z" })) : draft(7) }));
     r.paint(promotion());
     const d = await openMember(r);
     d.querySelector<HTMLButtonElement>("button")!.click(); await settle();
     assert.equal(r.writes().length, 0);
     assert.match(d.textContent!, count === 1 ? /Already approved:.*Waiting on promoter/ : /Reviews exceed one page/);
   }
+});
+
+for (const state of ["CHANGES_REQUESTED", "DISMISSED", "COMMENTED", "APPROVED"]) test(`promotion recovery respects the latest deciding review: ${state}`, async () => {
+  const review = (state: string, commit_id = head, login = "cgwalters") => ({ user: { login }, state, commit_id, submitted_at: "2026-11-03T00:00:00Z" });
+  const reviews = [review("APPROVED"), review(state, state === "APPROVED" ? replacement : head), review("COMMENTED"), review("APPROVED", head, "other")];
+  const r = setup((method, p) => ({ body: method === "POST" ? {} : p.endsWith("/reviews") ? reviews : draft(7) }));
+  r.paint(promotion());
+  const d = await openMember(r);
+  d.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  assert.equal(r.writes().length, state === "COMMENTED" ? 0 : 1);
+  assert.match(d.textContent!, state === "COMMENTED" ? /Already approved/ : /Approval sent/);
+});
+
+test("a late-submitted pending change request supersedes an approval created later", async () => {
+  const reviews = [
+    { user: { login: "cgwalters" }, state: "CHANGES_REQUESTED", commit_id: head, submitted_at: "2026-11-03T02:00:00Z" },
+    { user: { login: "cgwalters" }, state: "APPROVED", commit_id: head, submitted_at: "2026-11-03T01:00:00Z" },
+  ];
+  const r = setup((method, p) => ({ body: method === "POST" ? {} : p.endsWith("/reviews") ? reviews : draft(7) }));
+  r.paint(promotion());
+  const d = await openMember(r);
+  d.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  assert.deepEqual(r.writes().map((c) => c.body), [{ event: "APPROVE", commit_id: head }]);
+});
+
+for (const failure of [false, true]) for (const policy of ["foreign", "unreadable", "unsupported", "read-failed"] as const) {
+  test(`${failure ? "uncertain" : "sent"} member receipt survives ${policy} policy and reload`, async () => {
+    let down = false;
+    const r = setup((method, p) => down ? { status: 502 } : { status: method === "POST" && failure ? 502 : 200, body: method === "POST" ? { html_url: `${draft(7).html_url}#pullrequestreview-1` } : p.endsWith("/reviews") ? [] : draft(7) });
+    const c = promotion() as Card & { kind: "promote" };
+    r.paint(c);
+    const d = await openMember(r);
+    d.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+    const receipt = failure ? /Not sent, or uncertain/ : /Approval sent:.*pullrequestreview-1/s;
+    assert.match(d.textContent!, receipt);
+    const restricted = { ...c, ask: { ...c.ask,
+      ...(policy === "unreadable" ? { requestsUnreadable: true } : policy === "read-failed" ? {} : { requests: [{ forge: policy === "foreign" ? "forge.example" : "github.com", quality: "decision", actions: [{ kind: "promote", supported: false, reason: "revoked" }] }] }),
+    } };
+    down = policy === "read-failed";
+    for (const remount of [false, true]) {
+      r.paint(restricted, true, remount);
+      if (policy === "unsupported" || policy === "read-failed") await openMember(r);
+      assert.match(r.list.textContent!, receipt);
+      assert.equal(r.list.querySelector(".card-body button:not(:disabled)"), null);
+      if (policy === "foreign" || policy === "unreadable") {
+        assert.equal(r.list.querySelector("a[href]"), null);
+        assert.match(r.list.textContent!, /Prior write on cgwalters-forge\/widget#7/);
+      }
+      assert.equal(r.writes().length, 1);
+    }
+  });
+}
+
+for (const failure of [false, true]) test(`policy revocation keeps a pending member's eventual ${failure ? "uncertain" : "sent"} outcome visible`, async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const r = setup((method, p) => ({ status: method === "POST" && failure ? 502 : 200, body: method === "POST" ? { html_url: `${draft(7).html_url}#pullrequestreview-1` } : p.endsWith("/reviews") ? [] : draft(7) }));
+  r.state.gh = new GitHub(async () => "test", async (url, init) => {
+    if (init?.method === "POST") await pending;
+    return r.fetchImpl(url, init);
+  });
+  const c = promotion() as Card & { kind: "promote" };
+  r.paint(c);
+  const d = await openMember(r);
+  d.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  const restricted = { ...c, ask: { ...c.ask, requestsUnreadable: true } };
+  r.paint(restricted);
+  assert.match(r.list.textContent!, /Prior write.*Sending/s);
+  release(); await settle();
+  assert.match(r.list.textContent!, failure ? /Not sent, or uncertain/ : /Approval sent:.*pullrequestreview-1.*Waiting on promoter/s);
+  assert.equal(r.list.querySelector(".card-done"), null, "one member's completion never marks the group done");
+  assert.equal(r.list.querySelector("a[href], button"), null);
+  r.paint(restricted);
+  assert.match(r.list.textContent!, failure ? /Not sent, or uncertain/ : /Approval sent/);
+  assert.equal(r.writes().length, 1);
+});
+
+test("a pending member preflight's revoked-policy failure survives restricted reloads", async () => {
+  let release!: () => void;
+  let reads = 0;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const r = setup((_method, p) => ({ body: p.endsWith("/reviews") ? [] : draft(7) }));
+  r.state.gh = new GitHub(async () => "test", async (url, init) => {
+    if (new URL(url).pathname.endsWith("/pulls/7") && ++reads === 3) await pending;
+    return r.fetchImpl(url, init);
+  });
+  const c = promotion() as Card & { kind: "promote" };
+  r.paint(c);
+  const d = await openMember(r);
+  d.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  assert.equal(reads, 3);
+  const restricted = { ...c, ask: { ...c.ask, requestsUnreadable: true } };
+  r.paint(restricted);
+  release(); await settle();
+  for (const remount of [false, true]) {
+    r.paint(restricted, true, remount);
+    assert.match(r.list.textContent!, /Not sent, or uncertain:.*descriptors could not be read safely/);
+    assert.equal(r.list.querySelector("a[href], button"), null);
+  }
+  assert.equal(r.writes().length, 0);
+  r.paint(c, true);
+  const fresh = await openMember(r);
+  assert.equal(fresh.querySelector("button")!.disabled, false, "a valid policy allows explicit rereading after preflight refusal");
 });
 
 test("moved member recovers only after reload, rereading and a new confirmation", async () => {
