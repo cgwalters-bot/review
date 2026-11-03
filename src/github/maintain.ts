@@ -27,10 +27,12 @@ export async function approveHead(gh: GitHub, it: ApproveItem, check?: () => Pro
   const path = `/repos/${refText(it.pr).replace("#", "/pulls/")}`;
   const work = (async () => {
     const { login } = await gh.send<{ login: string }>("GET", "/user");
-    const reviews = await gh.send<{ user: { login: string }; state: string; commit_id: string }[]>("GET", `${path}/reviews?per_page=100`);
-    if (reviews.some((r) => r.user?.login.toLowerCase() === login.toLowerCase() && r.state === "APPROVED" && r.commit_id === it.head)) return undefined;
+    const reviews = await gh.send<{ user: { login: string }; state: string; commit_id: string; submitted_at?: string }[]>("GET", `${path}/reviews?per_page=100`);
     // A full page may hide an approval: refuse rather than guess from a partial read.
     if (reviews.length >= 100) throw new Error("Reviews exceed one page; check GitHub before approving");
+    // Submission order can differ from creation order (pending reviews); comments do not decide.
+    const last = reviews.filter((r) => r.user?.login.toLowerCase() === login.toLowerCase() && r.submitted_at && ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(r.state)).sort((a, b) => a.submitted_at! < b.submitted_at! ? -1 : a.submitted_at! > b.submitted_at! ? 1 : 0).at(-1);
+    if (last?.state === "APPROVED" && last.commit_id === it.head) return undefined;
     await check?.();
     try {
       return (await gh.send<{ html_url: string }>("POST", `${path}/reviews`, { event: "APPROVE", commit_id: it.head })).html_url ?? `https://github.com/${refText(it.pr).replace("#", "/pull/")}`;

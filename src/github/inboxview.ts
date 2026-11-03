@@ -65,7 +65,7 @@ const failed = (e: unknown): string => `Not sent, or uncertain: ${e instanceof E
  * so a redraw shows it rather than offer the write again, and says at once
  * what it now waits on (`done`). Its card is marked done.
  */
-function writeButton(hooks: InboxHooks, key: string, label: string, question: string, write: () => Promise<string | undefined>, done: (url: string | undefined) => (string | Node)[]): HTMLElement {
+function writeButton(hooks: InboxHooks, key: string, label: string, question: string, write: () => Promise<string | undefined>, done: (url: string | undefined) => (string | Node)[], reread = false): HTMLElement {
   const previous = hooks.writes?.get(key);
   if (previous?.querySelector(`[data-sent], [${KEEP_ATTR}="${KEEP_BUSY}"]`)) return previous;
   const button = h("button", { type: "button", class: "primary" }, label);
@@ -78,14 +78,15 @@ function writeButton(hooks: InboxHooks, key: string, label: string, question: st
     write().then((url) => {
       status.removeAttribute(KEEP_ATTR);
       status.setAttribute("data-sent", "");
-      if (!status.closest(".member")) status.closest(`.${CARD_CLASS}`)?.classList.add(CARD_DONE_CLASS);
-      status.replaceChildren(...done(url));
+      if (!reread) status.closest(`.${CARD_CLASS}`)?.classList.add(CARD_DONE_CLASS);
+      const outcome = done(url);
+      status.replaceChildren(...(status.closest("[data-receipt-only]") ? outcome.map((x) => typeof x === "string" ? x : x.textContent ?? "") : outcome));
     }, (e: unknown) => {
       // Kept until r, which reads the target again: it may have moved, or the write gone out.
       status.setAttribute(KEEP_ATTR, "");
       status.textContent = failed(e);
       if (e instanceof Error && e.name === "MaybeSentError") status.setAttribute("data-sent", "");
-      else button.disabled = label.startsWith("Promote ");
+      else button.disabled = reread;
     });
   });
   const el = h("div", { class: "card-body actions" }, button, status);
@@ -108,30 +109,41 @@ function approveBody(a: Ask, hooks: InboxHooks): HTMLElement {
     (url) => (url ? ["Approved: ", link(url, url), `. ${APPROVED_WAIT}`] : ["Skipped: already approved at HEAD."]));
 }
 
+/** A live outcome without obsolete controls or navigation, including writes still pending. */
+function receiptOnly(el: HTMLElement): HTMLElement {
+  el.setAttribute("data-receipt-only", "");
+  for (const control of el.querySelectorAll("button, input, textarea, select")) control.remove();
+  for (const a of el.querySelectorAll("a")) a.removeAttribute("href");
+  return el;
+}
+
+/** Receipts for this target only, including a write still going out. */
+function memberReceipts(ref: IssueRef, hooks: InboxHooks): [string, HTMLElement][] {
+  const prefix = JSON.stringify(["approve", refKey(ref).toLowerCase()]).slice(0, -1) + ",";
+  return [...(hooks.writes ?? [])].filter(([key, el]) => key.startsWith(prefix) && el.querySelector(`[data-sent], [${KEEP_ATTR}]`));
+}
+
 /** One member read now: its facts, and on a Promote card its own Promote or why there is none. */
 async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHooks): Promise<HTMLElement> {
-  const receipts = [...(hooks.writes ?? [])].filter(([key, el]) => key.startsWith(JSON.stringify(["approve", refKey(ref).toLowerCase()]).slice(0, -1) + ",") && el.querySelector("[data-sent]"));
+  const receipts = memberReceipts(ref, hooks);
   let m: MemberPr;
   try { m = await hooks.member!(ref); }
-  catch (e) { return h("div", {}, h("p", { class: "warn" }, String(e)), ...receipts.map(([, el]) => el)); }
+  catch (e) { return h("div", {}, h("p", { class: "warn" }, String(e)), ...receipts.map(([, el]) => receiptOnly(el))); }
   const where = refKey(m.ref);
   const facts = h("p", {}, link(m.url, m.title), ` · ${m.state} · ${m.head.slice(0, 7)} · by ${m.author} · `, h("a", { href: `#pr/${where.replace("#", "/")}` }, "Review"));
   if (c.kind !== "promote") return h("div", {}, facts);
   const no = [refusal(c.ask, "promote"), m.problem, m.state !== "open draft" ? `member is ${m.state}, not an open draft` : undefined].filter(Boolean).join("; ");
   const key = JSON.stringify(["approve", where.toLowerCase(), m.head]);
-  return h("div", {}, facts, ...receipts.filter(([k]) => k !== key || no || !hooks.mayAct).map(([, el]) => el), no ? h("p", { class: "warn" }, `Promote not offered: ${no}.`) : hooks.mayAct && hooks.promote ?
+  return h("div", {}, facts, ...receipts.filter(([k]) => k !== key || no || !hooks.mayAct).map(([, el]) => receiptOnly(el)), no ? h("p", { class: "warn" }, `Promote not offered: ${no}.`) : hooks.mayAct && hooks.promote ?
     writeButton(hooks, key, `Promote ${m.head.slice(0, 7)}`,
       `Approve ${where} at ${m.head} for promotion as you? A changed member must be reread and confirmed again.`,
       () => hooks.promote!(c.ask, ref, m.head),
-      (url) => [url ? "Approval sent: " : "Already approved: ", ...(url ? [link(url, url)] : []), " Waiting on promoter; promotion is not completed."]) : null);
+      (url) => [url ? "Approval sent: " : "Already approved: ", ...(url ? [link(url, url)] : []), " Waiting on promoter; promotion is not completed."], true) : null);
 }
 
 /** A card's PRs, each read only when he opens it: a group's members, or a Promote card's PR. */
 function memberList(c: Card & { ask: Ask }, hooks: InboxHooks): HTMLElement | null {
   const [owner = "", repo = ""] = c.ask.action.repository.split("/");
-  // Its PRs are not on github.com: reading them there would show someone else's.
-  const no = refusal(c.ask);
-  if (no) return refused(no, c.ask);
   if (!hooks.member) return h("div", { class: "card-body" }, "Inspect each member; no group writes.",
     h("ul", {}, ...members(c.ask).map((number) => h("li", {}, h("a", { href: askHref({ ...c.ask.action, number }) }, `Inspect ${c.ask.action.repository}#${number}`)))));
   return h("div", { class: "card-body members" }, ...members(c.ask).map((number) => {
@@ -219,7 +231,16 @@ function entryForm(c: Card & { kind: "document" }, hooks: InboxHooks): HTMLEleme
 function action(c: Card, hooks: InboxHooks): HTMLElement | null {
   if (c.answered) return null;
   const no = "ask" in c ? refusal(c.ask, c.kind === "approve" ? "review-at-head" : c.kind === "do" ? "check-proposal" : undefined) : undefined;
-  if (no && "ask" in c) return refused(no, c.ask);
+  if (no && "ask" in c) {
+    const body = refused(no, c.ask);
+    if (c.kind === "promote") for (const number of members(c.ask)) {
+      const [owner = "", repo = ""] = c.ask.action.repository.split("/");
+      for (const [, receipt] of memberReceipts({ owner, repo, number }, hooks)) {
+        body.append(h("div", {}, `Prior write on ${owner}/${repo}#${number}:`, receiptOnly(receipt)));
+      }
+    }
+    return body;
+  }
   if ("ask" in c && (c.ask.group || c.kind === "promote")) return memberList(c, hooks);
   switch (c.kind) {
     case "answer": if (hooks.answerBody && hooks.mayAct) return bodySlot(hooks.answerBody(c.ask)); break;
@@ -283,7 +304,7 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   // After the card's own action: chatting never stands in for it.
   const chat = chatButton(!ask || githubTarget(ask) ? hooks.chatItem?.(c) : undefined);
   if (chat) el.append(h("div", { class: "actions" }, chat));
-   if (c.kind !== "answer" && c.kind !== "promote" && c.kind !== "open") hooks.writes?.set(key, el);
+  if (c.kind !== "answer" && c.kind !== "promote" && c.kind !== "open") hooks.writes?.set(key, el);
   return el;
 }
 
@@ -366,9 +387,7 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
       if (prior) fresh.append(prior);
       else if (el?.querySelector("[data-sent], [data-keep]")) {
         // Its outcome stays visible; its controls go, so a failed write offers no retry.
-        const receipt = h("div", { class: "prior-write" }, "Prior write:", ...el.children);
-        for (const control of receipt.querySelectorAll("button, input, textarea, select")) control.remove();
-        fresh.append(receipt);
+        fresh.append(receiptOnly(h("div", { class: "prior-write" }, "Prior write:", ...el.children)));
       }
     }
     el?.replaceWith(fresh);

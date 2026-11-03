@@ -60,7 +60,7 @@ async function boot(t: TestContext, holds: Holds) {
         if (pull[2]) {
           reads.reviews.push(n);
           if (holds.reviewError) return json({ message: "reviews unavailable" }, holds.reviewError);
-          return json((holds.approvals?.[n] ?? []).map((commit_id) => ({ user: { login: "cgwalters" }, state: "APPROVED", commit_id })));
+          return json((holds.approvals?.[n] ?? []).map((commit_id) => ({ user: { login: "cgwalters" }, state: "APPROVED", commit_id, submitted_at: "2026-11-03T00:00:00Z" })));
         }
         return json({ state: "open", head: { sha: "a".repeat(40) } });
       }

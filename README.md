@@ -78,7 +78,9 @@ in the incomplete-list warning. Published URLs are not used. A new group
 replaces any old representative form, dropping its unsent text for safety.
 
 Approval checks read at most 100 reviews per PR, only when you act. If
-that page cannot rule out an existing approval, nothing is written.
+that page is full, nothing is written. Only the viewer's latest deciding
+review by submission time can count as an existing approval; later change
+requests, dismissals or approvals of another head supersede it.
 Single and digest cards share in-flight and five-minute write receipts
 (at most 100 heads per signed-in client), including uncertain failures.
 
@@ -104,6 +106,8 @@ the replacement commit. No command, ready, merge or enqueue is sent. Sent and
 uncertain receipts stay independently per member/head in this signed-in session;
 they do not mark the group done. The receipt says approval sent, waiting on promoter,
 not promotion completed. Human-text members still require Make it mine.
+If descriptors become foreign or unreadable, prior member outcomes remain
+visible without controls or navigation, even if the write was still pending.
 Reloading with `r` refreshes member readers, not a cached member-list receipt.
 A successful approve or answer marks its card done at once and
 says what it waits on; an answer that only comments says the hold stays.
