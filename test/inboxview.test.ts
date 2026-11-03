@@ -108,7 +108,7 @@ describe("fillInbox", () => {
     assert.equal(cards[0]!.kind, "open", "never a representative or digest approval");
     fillInbox(list, cards, { ...hooks, now: Date.parse(REAL_NEEDS_YOU_AT),
       answerBody: async (a) => { reads.push(a.key); return document.createElement("div"); },
-      approve: async () => { writes++; return undefined; },
+      approve: async () => { writes++; throw new Error("No group writes"); },
       approveDigest: async () => { writes++; return []; },
       chatItem: () => ({ ref: REAL_NEEDS_YOU_KEYS[0]!, title: "Constructed group" }),
     });
@@ -201,7 +201,7 @@ describe("fillInbox", () => {
     const a = asks(rawAsk(1, { action: { type: "approve_pull_request", repository: "o/r", number: 1, head: "a".repeat(40) } }))[0]!;
     const list = document.createElement("div");
     win.confirm = () => true;
-    const pending = { ...hooks, approve: () => new Promise<string>((resolve) => { finish = resolve; }) };
+    const pending = { ...hooks, approve: async () => ({ pr: { owner: "o", repo: "r", number: 1 }, status: "approved" as const, url: await new Promise<string>((resolve) => { finish = resolve; }) }) };
     fillInbox(list, [askCard(a)], pending);
     list.querySelector<HTMLButtonElement>(".primary")!.click();
     fillInbox(list, [askCard({ ...a, group: { reason: "drafts", numbers: [1, 2] } })], pending);
@@ -220,13 +220,13 @@ describe("fillInbox", () => {
     const a = asks(rawAsk(1, { action: { type: "approve_pull_request", repository: "o/r", number: 1, head: "a".repeat(40) } }))[0]!;
     const list = document.createElement("div");
     win.confirm = () => true;
-    const pending = { ...hooks, approve: () => new Promise<string>((_, reject) => { fail = reject; }) };
+    const pending = { ...hooks, approve: async () => { await new Promise<never>((_, reject) => { fail = reject; }); throw new Error("unreachable"); } };
     fillInbox(list, [askCard(a)], pending);
     list.querySelector<HTMLButtonElement>(".primary")!.click();
     fillInbox(list, [askCard({ ...a, group: { reason: "drafts", numbers: [1, 2] } })], pending);
     fail(new Error("Ask left or grouped"));
     await settle();
-    assert.match(list.textContent!, /Prior write:.*Not sent, or uncertain: Ask left or grouped/);
+    assert.match(list.textContent!, /Prior write:.*Not sent: Ask left or grouped/);
     assert.equal(list.querySelector(".prior-write button"), null);
   });
 
@@ -340,7 +340,7 @@ describe("fillInbox", () => {
     const head = "a".repeat(40);
     const approval = askCard(asks(rawAsk(4, { key: "up/proj#4", item: "up/proj#4", kind: "review-approve", action: { type: "approve_pull_request", repository: "up/proj", number: 4, head } }))[0]!);
     const list = document.createElement("div");
-    fillInbox(list, [approval], { ...hooks, approve: async () => "https://github.com/up/proj/pull/4#pullrequestreview-1" });
+    fillInbox(list, [approval], { ...hooks, approve: async () => ({ pr: { owner: "up", repo: "proj", number: 4 }, status: "approved", url: "https://github.com/up/proj/pull/4#pullrequestreview-1" }) });
     await settle();
     assert.equal(list.querySelector("button")?.textContent, "Approve aaaaaaa");
   });

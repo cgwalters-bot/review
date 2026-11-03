@@ -14,7 +14,7 @@ import type { IssueRef } from "./board.ts";
 import { refKey } from "./forge.ts";
 import type { Ask, Holds } from "./holds.ts";
 import { askHref, type Card, CARD_LABEL, githubTarget, members, refusal } from "./inbox.ts";
-import type { ApproveItem, ApproveResult } from "./maintain.ts";
+import { approvalKey, type ApproveItem, type ApproveResult } from "./maintain.ts";
 import { approveGroup, KEEP_ATTR, KEEP_BUSY } from "./maintainview.ts";
 import { age, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
 
@@ -46,8 +46,8 @@ export interface InboxHooks {
   draftBody?(card: Card & { kind: "send" }): Promise<HTMLElement>;
   /** A Do card's body: its proposal read again, its live facts and exact mutations, with Run. */
   offerBody?(a: Ask): Promise<HTMLElement>;
-  /** Approve at `head`, refusing a moved head; URL if written, undefined if already approved. */
-  approve?(a: Ask, head: string): Promise<string | undefined>;
+  /** Approve at `head`, retaining the write's structured outcome. */
+  approve?(a: Ask, head: string): Promise<ApproveResult>;
   /** Read one of a card's PRs now (readMember). */
   member?(ref: IssueRef): Promise<MemberPr>;
   promote?(a: Ask, ref: IssueRef, head: string): Promise<string | undefined>;
@@ -66,26 +66,40 @@ const failed = (e: unknown): string => `Not sent, or uncertain: ${e instanceof E
  * so a redraw shows it rather than offer the write again, and says at once
  * what it now waits on (`done`). Its card is marked done.
  */
-function writeButton(hooks: InboxHooks, key: string, label: string, question: string, write: () => Promise<string | undefined>, done: (url: string | undefined) => (string | Node)[], reread = false): HTMLElement {
+function writeButton(hooks: InboxHooks, key: string, label: string, question: string, write: () => Promise<string | undefined | ApproveResult>, done: (url: string | undefined) => (string | Node)[], reread = false): HTMLElement {
   const previous = hooks.writes?.get(key);
-  if (previous?.querySelector(`[data-sent], [${KEEP_ATTR}="${KEEP_BUSY}"]`)) return previous;
+  if (previous?.querySelector(`[data-sent], [${KEEP_ATTR}="${KEEP_BUSY}"]`)) return previous.hasAttribute("data-approval-receipt") ? previous.cloneNode(true) as HTMLElement : previous;
   const button = h("button", { type: "button", class: "primary" }, label);
   const status = h("p", { class: "status", role: "status" });
   button.addEventListener("click", () => {
+    // Another already-drawn card may have attempted this head since we drew.
+    // Its session receipt outlives approveHead's bounded five-minute cache.
+    const latest = hooks.writes?.get(key);
+    if (latest && latest !== el && latest.querySelector("[data-sent]")) {
+      el.replaceChildren(receiptOnly(latest.cloneNode(true) as HTMLElement));
+      return;
+    }
     if (button.disabled || !window.confirm(question)) return;
     button.disabled = true;
     status.textContent = "Sending…";
     status.setAttribute(KEEP_ATTR, KEEP_BUSY);
-    write().then((url) => {
+    void (async () => {
+      const result = await write();
+      if (result && typeof result !== "string" && !["approved", "already-approved"].includes(result.status)) {
+        const e = new Error(result.note ?? result.status);
+        if (result.status === "uncertain") e.name = "MaybeSentError";
+        throw e;
+      }
+      const url = typeof result === "object" ? result.url : result;
       status.removeAttribute(KEEP_ATTR);
       status.setAttribute("data-sent", "");
       if (!reread) status.closest(`.${CARD_CLASS}`)?.classList.add(CARD_DONE_CLASS);
       const outcome = done(url);
       status.replaceChildren(...(status.closest("[data-receipt-only]") ? outcome.map((x) => typeof x === "string" ? x : x.textContent ?? "") : outcome));
-    }, (e: unknown) => {
+    })().catch((e: unknown) => {
       // Kept until r, which reads the target again: it may have moved, or the write gone out.
       status.setAttribute(KEEP_ATTR, "");
-      status.textContent = failed(e);
+      status.textContent = e instanceof Error && e.name === "MaybeSentError" ? failed(e) : `Not sent: ${e instanceof Error ? e.message : String(e)}`;
       if (e instanceof Error && e.name === "MaybeSentError") status.setAttribute("data-sent", "");
       else button.disabled = reread;
     });
@@ -105,7 +119,8 @@ export const APPROVED_WAIT = "Waiting on the agent: this releases only the appro
 function approveBody(a: Ask, hooks: InboxHooks): HTMLElement {
   const head = a.action.head!;
   const where = `${a.action.repository}#${a.action.number}`;
-  return writeButton(hooks, JSON.stringify(["approve", where.toLowerCase(), head]), `Approve ${head.slice(0, 7)}`,
+  const [owner = "", repo = ""] = a.action.repository.split("/");
+  return writeButton(hooks, approvalKey({ owner, repo, number: a.action.number }, head), `Approve ${head.slice(0, 7)}`,
     `Approve ${where} at ${head.slice(0, 12)} as you, without its diff open here? If the head moved, nothing is sent.`, () => hooks.approve!(a, head),
     (url) => (url ? ["Approved: ", link(url, url), `. ${APPROVED_WAIT}`] : ["Skipped: already approved at HEAD."]));
 }
@@ -136,7 +151,7 @@ async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHoo
   const facts = h("p", {}, link(m.url, m.title), ` · ${m.state} · ${m.head.slice(0, 7)} · by ${m.author} · `, h("a", { href: `#pr/${where.replace("#", "/")}` }, "Review"));
   if (c.kind !== "promote") return h("div", {}, facts);
   const no = [refusal(c.ask, "promote"), m.problem, m.state !== "open draft" ? `member is ${m.state}, not an open draft` : undefined].filter(Boolean).join("; ");
-  const key = JSON.stringify(["approve", where.toLowerCase(), m.head]);
+  const key = approvalKey(m.ref, m.head);
   return h("div", {}, facts, ...receipts.filter(([k]) => k !== key || no || !hooks.mayAct).map(([, el]) => receiptOnly(el)), no ? h("p", { class: "warn" }, `Promote not offered: ${no}.`) : hooks.mayAct && hooks.promote ?
     writeButton(hooks, key, `Promote ${m.head.slice(0, 7)}`,
       `Approve ${where} at ${m.head} for promotion as you? A changed member must be reread and confirmed again.`,
@@ -150,7 +165,7 @@ function memberList(c: Card & { ask: Ask }, hooks: InboxHooks): HTMLElement | nu
   if (!hooks.member) return h("div", { class: "card-body" }, "Inspect each member; no group writes.",
     h("ul", {}, ...members(c.ask).map((number) => h("li", {}, h("a", { href: askHref({ ...c.ask.action, number }) }, `Inspect ${c.ask.action.repository}#${number}`)))));
   return h("div", { class: "card-body members" }, ...members(c.ask).map((number) => {
-    const d = h("details", { class: "member" }, h("summary", {}, `${c.ask.action.repository}#${number}`));
+    const d = h("details", { class: "member" }, h("summary", {}, `${c.ask.action.repository}#${number}`, " · ", h("a", { href: askHref({ ...c.ask.action, number }) }, "Inspect")));
     const current = () => d.isConnected && !retired.has(d.closest(`.${CARD_CLASS}`)!);
     d.addEventListener("toggle", () => {
       if (current() && d.open && d.children.length === 1) d.append(bodySlot(memberBody(c, { owner, repo, number }, hooks, current)));
@@ -252,7 +267,7 @@ function action(c: Card, hooks: InboxHooks): HTMLElement | null {
     case "do": if (hooks.offerBody) return bodySlot(hooks.offerBody(c.ask)); break;
     case "document": return hooks.mayAct && c.entry.options.length ? entryForm(c, hooks) : null;
     case "send": return hooks.draftBody ? bodySlot(hooks.draftBody(c)) : null;
-    case "digest": return hooks.approveDigest && hooks.mayAct ? approveGroup(c.items, hooks.approveDigest) : null;
+    case "digest": return hooks.approveDigest && hooks.mayAct ? approveGroup(c.items, hooks.approveDigest, hooks.writes) : null;
   }
   return h("a", { class: "action", href: askHref(c.ask.action) }, "Inspect");
 }

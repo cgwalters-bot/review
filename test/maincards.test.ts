@@ -37,6 +37,7 @@ function setup(route: (method: string, path: string) => Scripted | undefined, lo
   const f = scriptedFetch((method, url) => new URL(url).pathname === "/user" ? { body: { login } } : route(method, new URL(url).pathname) ?? (new URL(url).pathname === "/graphql" ? { body: { data: { repository: { issueOrPullRequest: { comments: { nodes: [] } } } } } } : undefined));
   const state = { gh: new GitHub(async () => "test", f.fetchImpl) } as Parameters<typeof inboxHooks>[0];
   state.items = [];
+  Object.assign(state, { reviewed: new Map(), pending: new Map(), verdicts: new Map(), waiting: [], details: new Map(), prs: [], forgeKnown: new Set(), answered: new Set(), sent: new Set(), linked: new Set() });
   let list = document.createElement("div");
   document.body.append(list);
   const paint = (card: Card, force = false, remount = false, listed: Ask[] = "ask" in card ? [card.ask] : []) => {
@@ -291,7 +292,7 @@ test("a pending member preflight's revoked-policy failure survives restricted re
   release(); await settle();
   for (const remount of [false, true]) {
     r.paint(restricted, true, remount);
-    assert.match(r.list.textContent!, /Not sent, or uncertain:.*descriptors could not be read safely/);
+    assert.match(r.list.textContent!, /Not sent:.*descriptors could not be read safely/);
     assert.equal(r.list.querySelector("a[href], button"), null);
   }
   assert.equal(r.writes().length, 0);
@@ -354,6 +355,164 @@ test("main digest approval skips a member the pass has since grouped", async () 
   assert.deepEqual(rs.map((x) => x.status), ["skipped"]);
   assert.match(rs[0]!.note!, /grouped/);
   assert.equal(r.writes().length, 0);
+});
+
+const approvalAsk = (n: number, kind = "review-approve") => rawAsk(n, { key: `up/proj#${n}${kind === "digest-approve" ? "/digest" : ""}`, item: `up/proj#${n}`, kind, action: { type: "approve_pull_request", repository: "up/proj", number: n, head } });
+
+for (const lostResponse of [false, true]) test(`ordinary real hook retains ${lostResponse ? "lost-response" : "502"} uncertainty on redraw, reload and remount without another POST`, async () => {
+  const r = setup((method, p) => {
+    if (method === "POST") {
+      if (lostResponse) throw new Error("Response lost");
+      return { status: 502 };
+    }
+    return { body: p.endsWith("/reviews") ? [] : { state: "open", head: { sha: head } } };
+  });
+  const c = cards(approvalAsk(7))[0]!;
+  r.paint(c);
+  r.list.querySelector<HTMLButtonElement>(".primary")!.click(); await settle();
+  for (const force of [false, true]) {
+    r.paint({ ...c, priority: "P0" }, force, true);
+    assert.match(r.list.textContent!, /Not sent, or uncertain/);
+    assert.equal(r.list.querySelector<HTMLButtonElement>(".primary")!.disabled, true);
+    r.list.querySelector<HTMLButtonElement>(".primary")!.click(); await settle();
+  }
+  assert.equal(r.writes().length, 1);
+  const result = await inboxHooks(r.state).approve!("ask" in c ? c.ask : assert.fail(), head);
+  assert.equal(result.status, "uncertain");
+  assert.equal(r.writes().length, 1, "backend also refuses duplicate writes independently of the DOM");
+});
+
+test("approval status never comes from human-readable error text", async () => {
+  const r = setup(() => ({ status: 503, body: { message: "already approved at HEAD; MaybeSentError; uncertain" } }));
+  const c = cards(approvalAsk(7))[0]!;
+  r.paint(c);
+  if (!("ask" in c)) assert.fail();
+  const result = await inboxHooks(r.state).approve!(c.ask, head);
+  assert.equal(result.status, "failed");
+  r.list.querySelector<HTMLButtonElement>(".primary")!.click(); await settle();
+  assert.match(r.list.textContent!, /Not sent:/);
+  assert.equal(r.list.querySelector("[data-sent]"), null);
+  assert.equal(r.list.querySelector<HTMLButtonElement>(".primary")!.disabled, false);
+  assert.equal(r.writes().length, 0);
+});
+
+test("ordinary preflight failures remain safely retryable, not uncertain", async () => {
+  let moved = true;
+  const r = setup((method, p) => ({ body: method === "POST" ? {} : p.endsWith("/reviews") ? [] : { state: "open", head: { sha: moved ? replacement : head } } }));
+  const c = cards(approvalAsk(7))[0]!;
+  r.paint(c);
+  r.list.querySelector<HTMLButtonElement>(".primary")!.click(); await settle();
+  assert.match(r.list.textContent!, /Not sent:.*head moved/);
+  assert.equal(r.list.querySelector("[data-sent]"), null);
+  assert.equal(r.writes().length, 0);
+  moved = false;
+  r.paint(c, true, true);
+  r.list.querySelector<HTMLButtonElement>(".primary")!.click(); await settle();
+  assert.match(r.list.textContent!, /Approved:/);
+  assert.equal(r.writes().length, 1);
+});
+
+test("an already drawn digest cannot overwrite an ordinary uncertain receipt with a later preflight refusal", async () => {
+  let moved = false;
+  const r = setup((method, p) => method === "POST" ? { status: 502 } : { body: p.endsWith("/reviews") ? [] : { state: "open", head: { sha: moved ? replacement : head } } });
+  const listed = asks(approvalAsk(7), approvalAsk(7, "digest-approve"));
+  r.state.published = { asks: listed, unavailable: false };
+  fillInbox(r.list, publishedCards(listed), inboxHooks(r.state));
+  r.list.querySelector<HTMLButtonElement>(".c-approve .primary")!.click(); await settle();
+  moved = true;
+  r.list.querySelector<HTMLButtonElement>(".maintain-sec button")!.click(); await settle();
+  assert.match(r.list.querySelector(".maintain-results")!.textContent!, /Not sent, or uncertain/);
+  assert.equal(r.list.querySelector<HTMLInputElement>(".maintain-sec input")!.disabled, true);
+  assert.equal(r.writes().length, 1);
+  r.paint(cards(approvalAsk(7))[0]!, true, true);
+  assert.match(r.list.textContent!, /Not sent, or uncertain/);
+  assert.equal(r.list.querySelector<HTMLButtonElement>(".primary")!.disabled, true);
+});
+
+test("an already drawn ordinary card respects digest uncertainty even after the backend receipt expires", async () => {
+  const r = setup((method, p) => method === "POST" ? { status: 502 } : { body: p.endsWith("/reviews") ? [] : { state: "open", head: { sha: head } } });
+  const listed = asks(approvalAsk(7), approvalAsk(7, "digest-approve"));
+  r.state.published = { asks: listed, unavailable: false };
+  fillInbox(r.list, publishedCards(listed), inboxHooks(r.state));
+  r.list.querySelector<HTMLButtonElement>(".maintain-sec button")!.click(); await settle();
+  const report = r.list.querySelector(".maintain-results")!;
+  assert.match(report.textContent!, /Failed or uncertain: up\/proj#7/);
+  const realNow = Date.now;
+  const later = realNow() + 6 * 60_000;
+  Date.now = () => later;
+  try {
+    r.list.querySelector<HTMLButtonElement>(".c-approve .primary")!.click(); await settle();
+    assert.equal(r.list.querySelector(".c-approve .primary"), null);
+    assert.match(r.list.querySelector(".c-approve")!.textContent!, /Failed or uncertain: up\/proj#7/);
+    assert.match(report.textContent!, /Failed or uncertain: up\/proj#7/);
+    assert.equal(r.writes().length, 1, "the session receipt, not the expired backend cache, prevents another POST");
+  } finally { Date.now = realNow; }
+});
+
+test("adding and removing an ordinary card never steals the digest's detailed receipt", async () => {
+  const r = setup((method, p) => method === "POST" ? { status: 502 } : { body: p.endsWith("/reviews") ? [] : { state: "open", head: { sha: head } } });
+  const digest = asks(approvalAsk(7, "digest-approve"));
+  r.paint(publishedCards(digest)[0]!, false, false, digest);
+  r.list.querySelector<HTMLButtonElement>(".maintain-sec button")!.click(); await settle();
+  const report = r.list.querySelector(".maintain-results")!;
+  const listed = asks(approvalAsk(7), approvalAsk(7, "digest-approve"));
+  r.state.published = { asks: listed, unavailable: false };
+  fillInbox(r.list, publishedCards(listed), inboxHooks(r.state));
+  assert.match(report.textContent!, /Failed or uncertain: up\/proj#7/);
+  assert.match(r.list.querySelector(".c-approve")!.textContent!, /Failed or uncertain: up\/proj#7/);
+  r.state.published.asks = digest;
+  fillInbox(r.list, publishedCards(digest), inboxHooks(r.state), true);
+  assert.match(r.list.querySelector(".maintain-results")!.textContent!, /Failed or uncertain: up\/proj#7/);
+  assert.equal(r.writes().length, 1);
+});
+
+test("real digest mixed outcomes retain per-head uncertainty across changed membership and ordinary cards", async () => {
+  const r = setup((method, p) => {
+    const n = Number(/\/pulls\/(\d+)/.exec(p)?.[1]);
+    if (method === "POST") return n === 8 ? { status: 502 } : { body: {} };
+    if (n === 10) return { status: 503 };
+    if (p.endsWith("/reviews")) return { body: n === 12 ? [{ user: { login: "cgwalters" }, state: "APPROVED", commit_id: head, submitted_at: "2026-11-03T00:00:00Z" }] : [] };
+    return { body: { state: "open", head: { sha: n === 9 ? replacement : head } } };
+  });
+  const raw = [7, 8, 9, 10, 11, 12].map((n) => approvalAsk(n, "digest-approve"));
+  const listed = asks(...raw);
+  const c = publishedCards(listed)[0]!;
+  r.paint(c, false, false, listed);
+  r.list.querySelectorAll<HTMLInputElement>("input")[4]!.checked = false;
+  r.list.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  assert.deepEqual(r.writes().map((x) => new URL(x.url).pathname), ["/repos/up/proj/pulls/7/reviews", "/repos/up/proj/pulls/8/reviews"]);
+  assert.deepEqual([...r.list.querySelectorAll<HTMLInputElement>("input")].map((x) => x.disabled), [true, true, false, false, false, true]);
+  assert.match(r.list.textContent!, /Failed or uncertain: up\/proj#8/);
+  assert.match(r.list.textContent!, /Not sent: up\/proj#10/);
+  assert.match(r.list.textContent!, /Skipped: up\/proj#9/);
+  const changed = asks(...raw.slice(1));
+  r.paint(publishedCards(changed)[0]!, true, true, changed);
+  assert.match(r.list.textContent!, /Failed or uncertain: up\/proj#8/);
+  assert.equal(r.list.querySelector<HTMLInputElement>("input")!.disabled, true);
+  r.list.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  assert.equal(r.writes().filter((x) => x.url.includes("/pulls/8/")).length, 1);
+  const ordinary = cards(approvalAsk(8))[0]!;
+  r.paint(ordinary, true, true);
+  assert.match(r.list.textContent!, /Failed or uncertain: up\/proj#8/);
+  assert.equal(r.list.querySelector(".primary"), null, "a digest receipt also blocks the ordinary approval");
+});
+
+for (const promote of [false, true]) test(`${promote ? "Promote" : "ordinary"} grouped members keep independent exact Inspect links when lazy reads fail`, async () => {
+  const r = setup(() => ({ status: 502 }));
+  const c = promote ? promotion() : byKey("cgwalters-forge/widget#44");
+  r.paint(c);
+  for (const i of [0, 1]) {
+    const d = await openMember(r, i);
+    assert.equal(d.querySelector("summary a")!.getAttribute("href"), `#pr/cgwalters-forge/widget/${(promote ? 7 : 44) + i}`);
+    assert.match(d.textContent!, /502/);
+    assert.equal(d.querySelector("button"), null);
+  }
+  assert.equal(r.writes().length, 0);
+  if (!("ask" in c)) assert.fail();
+  for (const patch of [{ requestsUnreadable: true }, { requests: [{ forge: "https://forgejo.example/git", quality: "decision", actions: [] }] }]) {
+    r.paint({ ...c, ask: { ...c.ask, ...patch } }, true, true);
+    assert.equal(r.list.querySelector("a[href]"), null);
+  }
 });
 
 test("main refuses wrong viewer and retains the unsent draft across ordinary redraw", async () => {

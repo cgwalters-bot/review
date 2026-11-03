@@ -331,7 +331,7 @@ button.linkish { border: 0; background: none; padding: 0; color: var(--accent); 
   details.file > summary, .guided-bar, nav.tree { position: static; }
 }
 
-.maintain-results .skipped, .maintain-results .failed { color: var(--danger); }
+.maintain-results .skipped, .maintain-results .failed, .maintain-results .uncertain { color: var(--danger); }
 /* Data shown from the browser's cache until GitHub confirms it. */
 .meta .cached { color: var(--ink); background: var(--p1-soft); border: 1px solid var(--p1); border-radius: 4px; padding: 0 5px; }
 

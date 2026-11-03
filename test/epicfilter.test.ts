@@ -88,7 +88,7 @@ test("compact approval row submits the published head; answer body is collapsed"
   const list = document.createElement("div");
   const calls: string[] = [];
   win.confirm = () => true;
-  fillInbox(list, cards, { ...hooks, approve: async (_a, head) => { calls.push(head); return "https://github.com/example/repo/pull/1#review"; }, answerBody: async () => document.createElement("form") });
+  fillInbox(list, cards, { ...hooks, approve: async (_a, head) => { calls.push(head); return { pr: { owner: "example", repo: "repo", number: 1 }, status: "approved", url: "https://github.com/example/repo/pull/1#review" }; }, answerBody: async () => document.createElement("form") });
   const row = list.querySelector<HTMLElement>("article.c-approve")!;
   assert.match(row.textContent!, /Controller: publish approval-only requests/);
   assert.match(row.textContent!, /\+42 −8.*CI: success.*Review agent: approved/);
