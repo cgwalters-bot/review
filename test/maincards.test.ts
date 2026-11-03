@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { GitHub } from "../src/github/api.ts";
-import { parseNeedsYou } from "../src/github/holds.ts";
+import { type Ask, parseNeedsYou } from "../src/github/holds.ts";
 import { type Card, publishedCards, refusal } from "../src/github/inbox.ts";
 import { fillInbox } from "../src/github/inboxview.ts";
 import { newestDraft, type ReviewDraftConfig } from "../src/github/reviewdrafts.ts";
@@ -21,12 +21,14 @@ const url = "https://github.com/cgwalters-forge/tracker/issues/50";
 const path = "/repos/cgwalters-forge/tracker/issues/50";
 const head = "a".repeat(40);
 const shown = () => ({ title: "Which way?", body: "Q: Which way?", state: "open", html_url: url, labels: [{ name: "needs-human" }, { name: "needs-design" }, { name: "other" }] });
-/** The pass's asks of `raw`, as cards. */
-function cards(...raw: Record<string, unknown>[]): Card[] {
+/** The pass's asks of `raw`. */
+function asks(...raw: Record<string, unknown>[]): Ask[] {
   const l = parseNeedsYou(rawNeedsYou(raw, "2026-10-30T00:00:00Z"));
   assert.ok(typeof l === "object", String(l));
-  return publishedCards(l.items);
+  return l.items;
 }
+/** The pass's asks of `raw`, as cards. */
+const cards = (...raw: Record<string, unknown>[]): Card[] => publishedCards(asks(...raw));
 /** The pass's hold on tracker#50, as its card. */
 const answerCard = (kind = "needs-human"): Card => cards(rawAsk(50, { kind, ask: "Which way?" }))[0]!;
 const questionIssue = () => ({ ...shown(), labels: [{ name: "question" }, ...shown().labels], user: { login: "cgwalters-bot" }, assignees: [{ login: "cgwalters" }] });
@@ -36,8 +38,8 @@ function setup(route: (method: string, path: string) => Scripted | undefined, lo
   state.items = [];
   let list = document.createElement("div");
   document.body.append(list);
-  const paint = (card: Card, force = false, remount = false) => {
-    state.published = { asks: "ask" in card ? [card.ask] : [], unavailable: false };
+  const paint = (card: Card, force = false, remount = false, listed: Ask[] = "ask" in card ? [card.ask] : []) => {
+    state.published = { asks: listed, unavailable: false };
     if (remount) { list.remove(); list = document.createElement("div"); document.body.append(list); }
     fillInbox(list, [card], inboxHooks(state, drafts), force);
   };
@@ -88,6 +90,16 @@ test("main refuses a retained representative answer after a malformed group is p
   form.dispatchEvent(new dom.window.Event("submit", { cancelable: true })); await settle();
   assert.equal(r.writes().length, 0);
   assert.equal(form.querySelector("textarea")!.value, "Not sent");
+});
+
+test("main digest approval skips a member the pass has since grouped", async () => {
+  const r = setup(() => undefined);
+  const digest = (group?: unknown) => rawAsk(7, { kind: "digest-approve", action: { type: "approve_pull_request", repository: "o/r", number: 7, head }, ...(group ? { group } : {}) });
+  r.state.published = { asks: asks(digest({ reason: "drafts", numbers: [7, 8] })), unavailable: false };
+  const rs = await inboxHooks(r.state).approveDigest!([{ pr: { owner: "o", repo: "r", number: 7 }, head, reason: "ok" }]);
+  assert.deepEqual(rs.map((x) => x.status), ["skipped"]);
+  assert.match(rs[0]!.note!, /grouped/);
+  assert.equal(r.writes().length, 0);
 });
 
 test("main refuses wrong viewer and retains the unsent draft across ordinary redraw", async () => {
@@ -238,12 +250,13 @@ for (const kind of ["needs-operator", "epic-unplanned"]) test(`main never releas
 
 test("main digest partial results survive forced redraw without offering approved PRs again", async () => {
   const r = setup((method, p) => method === "GET" ? { body: p.endsWith("/reviews") ? [] : { state: "open", head: { sha: p.endsWith("/8") ? "b".repeat(40) : head } } } : { body: {} });
-  const card = cards(...[7, 8].map((n) => rawAsk(n, { key: `up/proj#${n}/digest`, item: `up/proj#${n}`, source: "digest", kind: "digest-approve", recommendation: "Ready", action: { type: "approve_pull_request", repository: "up/proj", number: n, head } })))[0]!;
-  r.paint(card);
+  const listed = asks(...[7, 8].map((n) => rawAsk(n, { key: `up/proj#${n}/digest`, item: `up/proj#${n}`, source: "digest", kind: "digest-approve", recommendation: "Ready", action: { type: "approve_pull_request", repository: "up/proj", number: n, head } })));
+  const card = publishedCards(listed)[0]!;
+  r.paint(card, false, false, listed);
   r.list.querySelector("button")!.click(); await settle();
   const report = r.list.querySelector(".maintain-results");
   assert.match(report!.textContent!, /Approved up\/proj#7.*Skipped/s);
-  r.paint({ ...card, priority: "P0" }, true, true);
+  r.paint({ ...card, priority: "P0" }, true, true, listed);
   assert.equal(r.list.querySelector(".maintain-results"), report);
   assert.equal(r.list.querySelector<HTMLInputElement>("input")!.disabled, true);
   assert.equal(r.writes().length, 1);
@@ -388,7 +401,7 @@ test("digest aggregation leaves foreign and unsupported requests read-only", asy
     assert.equal(r.list.querySelector(".card-body button, input, form"), null);
     assert.match(r.list.textContent!, /Not offered here:/);
   }
-  r.paint(all[0]!, true, true);
+  r.paint(all[0]!, true, true, l.items);
   r.list.querySelector("button")!.click(); await settle();
   assert.deepEqual(r.writes().map((c) => new URL(c.url).pathname), ["/repos/up/proj/pulls/7/reviews"]);
 });

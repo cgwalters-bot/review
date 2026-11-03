@@ -76,9 +76,9 @@ import type { Active } from "./agents.ts";
 import { fillStatus, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadOffer } from "./actions.ts";
 import { proposalCard } from "./actionsview.ts";
-import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
+import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG, refText } from "./reviewdrafts.ts";
 import { draftCard, draftReviewForm } from "./reviewdraftsview.ts";
-import { approveSelected } from "./maintain.ts";
+import { type ApproveResult, approveSelected } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { botWaitingCount, type Need, needStops } from "./needs.ts";
 import { loadHeartbeat } from "./heartbeat.ts";
@@ -191,7 +191,7 @@ interface State {
   /** Published status and the board, heartbeat and holds used as inbox context. */
   active?: Active;
   activeRunning: boolean;
-  /** The page's sections, while it is shown, and which of them he opened or closed. */
+  /** The page's sections, while it is shown. */
   home?: Home;
   /** The rows of "Needs you" as last drawn, and a signature of them. */
   needs: Need[];
@@ -402,7 +402,7 @@ function markSelected(state: State, scroll: boolean): void {
   }
 }
 
-/** The page's section hooks: its default open state, what opening one starts, and what is remembered. */
+/** The page's section hooks: what opening one starts. */
 function homeHooks(state: State): HomeHooks {
   return {
     toggled: (_id, open) => {
@@ -599,7 +599,14 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
     }),
     member: (ref) => readMember(state.gh, ref),
     // A report stays on its card until r; the pass lists the PRs until its next digest.
-    approveDigest: (items) => asOperator(state.gh, () => approveSelected(state.gh, items)),
+    approveDigest: (items) => asOperator(state.gh, async () => {
+      // A kept card approves only what the pass still lists, ungrouped, in its digest.
+      const listed = new Set([...(state.published.holds ?? []), ...state.published.asks]
+        .filter((a) => !a.group && a.kind === "digest-approve").map((a) => `${a.action.repository}#${a.action.number}@${a.action.head}`.toLowerCase()));
+      const live = items.filter((it) => listed.has(`${refText(it.pr)}@${it.head}`.toLowerCase()));
+      const left = items.filter((it) => !live.includes(it)).map((it): ApproveResult => ({ pr: it.pr, status: "skipped", note: `${refText(it.pr)} left the digest or was grouped; inspect it` }));
+      return [...left, ...(live.length ? await approveSelected(state.gh, live) : [])];
+    }),
     ...(drafts ? { draftBody: (c) => draftCard(state.gh, drafts, render, c.draft) } : {}),
     ...(ACTION_CONFIG ? {
       offerBody: async (a) => proposalCard(state.gh, ACTION_CONFIG!, await loadOffer(state.gh, ACTION_CONFIG!, a.action), () => state.inbox?.busy === true, (v) => {
@@ -1742,7 +1749,7 @@ function run(state: State, cmd: Command, where: Route): void {
   }
 }
 
-/** Switch to a section's view, open the section and scroll to it, as the section keys do; remembered like any opening. */
+/** Switch to the inbox, open "Needs you" and scroll to it. */
 function jumpTo(state: State): void {
   if (!state.home) return;
   state.view = "inbox";

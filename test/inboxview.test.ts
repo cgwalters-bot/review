@@ -113,6 +113,21 @@ describe("fillInbox", () => {
     assert.deepEqual([...list.querySelectorAll("li a")].map((a) => a.getAttribute("href")), ["#pr/o/r/1", "#pr/o/r/3"]);
   });
 
+  it("keeps a rejected single approval's outcome beside new membership without a retry", async () => {
+    let fail!: (e: Error) => void;
+    const a = asks(rawAsk(1, { action: { type: "approve_pull_request", repository: "o/r", number: 1, head: "a".repeat(40) } }))[0]!;
+    const list = document.createElement("div");
+    win.confirm = () => true;
+    const pending = { ...hooks, approve: () => new Promise<string>((_, reject) => { fail = reject; }) };
+    fillInbox(list, [askCard(a)], pending);
+    list.querySelector<HTMLButtonElement>(".primary")!.click();
+    fillInbox(list, [askCard({ ...a, group: { reason: "drafts", numbers: [1, 2] } })], pending);
+    fail(new Error("Ask left or grouped"));
+    await settle();
+    assert.match(list.textContent!, /Prior write:.*Not sent, or uncertain: Ask left or grouped/);
+    assert.equal(list.querySelector(".prior-write button"), null);
+  });
+
   it("refuses a malformed group visibly instead of falling back to Answer", () => {
     const l = parseNeedsYou(rawNeedsYou([rawAsk(1, { group: { reason: "drafts", numbers: [1, 0] } })], "2026-10-25T11:30:00Z"));
     assert.ok(typeof l === "object");

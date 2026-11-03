@@ -258,7 +258,7 @@ function bodySlot(body: Promise<HTMLElement>): HTMLElement {
 }
 
 export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
-  // An answer keeps its own receipts (answerBody); the rest by what they write.
+  // An answer keeps its own receipts (answerBody), and an Open card writes nothing; the rest by what they write.
   const key = JSON.stringify(c.kind === "digest" ? [c.kind, c.items.map((a) => [a.pr, a.head])] : c.kind === "send" ? [c.kind, c.key, c.draft.issue.body, c.draft.found?.raw] : c.kind === "document" ? [c.kind, c.key, cardSignature(c)] : [c.kind, c.key, c.ask.action, members(c.ask), policySignature(c)]);
   const previous = hooks.writes?.get(key);
   if (c.kind !== "answer" && c.kind !== "promote" && c.kind !== "open" && previous?.querySelector("[data-sent], [data-keep]")) return previous;
@@ -369,7 +369,12 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     if ("ask" in c && c.ask.group) {
       const prior = el?.querySelector<HTMLElement>(":scope > .prior-write");
       if (prior) fresh.append(prior);
-      else if (el?.querySelector("[data-sent], [data-keep]")) fresh.append(h("div", { class: "prior-write" }, "Prior write:", ...el.children));
+      else if (el?.querySelector("[data-sent], [data-keep]")) {
+        // Its outcome stays visible; its controls go, so a failed write offers no retry.
+        const receipt = h("div", { class: "prior-write" }, "Prior write:", ...el.children);
+        for (const control of receipt.querySelectorAll("button, input, textarea, select")) control.remove();
+        fresh.append(receipt);
+      }
     }
     el?.replaceWith(fresh);
     return fresh;
