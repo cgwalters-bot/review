@@ -14,6 +14,9 @@ See [docs/design.md](docs/design.md) for the backend design and
 [docs/prior-prototype.md](docs/prior-prototype.md) for the earlier prototype.
 The Forgejo client remains separate.
 
+See the [operator-gap assessment against Paperclip](docs/operator-gap-assessment.md)
+for the 3 November snapshot, existing-work exclusions and ranked additional gaps.
+
 ## Needs you
 
 **Needs you** (`#inbox`) is the default. Its cards are first what the
