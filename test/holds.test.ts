@@ -120,6 +120,12 @@ describe("parseNeedsYou", () => {
     ["a group without its representative first", { group: { reason: "drafts", numbers: [3, 2] } }],
     ["a group of no PRs", { group: { reason: "drafts", numbers: [] } }],
     ["a group without a reason", { group: { numbers: [2, 3] } }],
+    ...[null, {}, { reason: "drafts", numbers: [] }, { reason: "", numbers: [2] },
+      ...[0, -1, 1.5, "3", Number.MAX_SAFE_INTEGER + 1].map((n) => ({ reason: "drafts", numbers: [2, n] })),
+      { reason: "drafts", numbers: [2, 2] }, { reason: "drafts", numbers: [3] },
+      { reason: "drafts", numbers: Array.from({ length: 101 }, (_, i) => i + 1) },
+    ].map((group): [string, Record<string, unknown>] => [`malformed group ${JSON.stringify(group)}`, { group, action: { type: "pull_request", repository: "o/r", number: 2 } }]),
+    ["an issue group", { group: { reason: "drafts", numbers: [2] } }],
   ];
   for (const [name, edit] of refused) it(`leaves out ${name}`, () => {
     const l = parseNeedsYou(rawNeedsYou([rawAsk(1), rawAsk(2, edit)], "2026-10-30T09:30:00Z"));

@@ -37,10 +37,11 @@ function setup(route: (method: string, path: string) => Scripted | undefined, lo
   let list = document.createElement("div");
   document.body.append(list);
   const paint = (card: Card, force = false, remount = false) => {
+    state.published = { asks: "ask" in card ? [card.ask] : [], unavailable: false };
     if (remount) { list.remove(); list = document.createElement("div"); document.body.append(list); }
     fillInbox(list, [card], inboxHooks(state, drafts), force);
   };
-  return { ...f, paint, get list() { return list; }, writes: () => f.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/graphql")) };
+  return { ...f, state, paint, get list() { return list; }, writes: () => f.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/graphql")) };
 }
 async function answer(opts: { login?: string; after?: boolean; fail?: "comment" | "release"; kind?: string } = {}) {
   let posted = false;
@@ -72,6 +73,21 @@ test("main answer posts, then removes exactly needs-human; sent receipt survives
   form.dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
   await settle();
   assert.equal(r.writes().length, 2);
+});
+
+test("main refuses a retained representative answer after a malformed group is published", async () => {
+  const r = setup((_method, p) => p === path ? { body: shown() } : undefined);
+  r.paint(answerCard()); await settle();
+  const form = r.list.querySelector("form")!;
+  form.querySelector("textarea")!.value = "Not sent";
+  const l = parseNeedsYou(rawNeedsYou([rawAsk(50, { group: { reason: "drafts", numbers: [50, 0] } })], "2026-10-30T00:00:00Z"));
+  assert.ok(typeof l === "object");
+  r.state.published = { asks: l.items, list: l, unavailable: false };
+  fillInbox(r.list, publishedCards(l.items), inboxHooks(r.state));
+  assert.equal(form.querySelector("button")!.disabled, true);
+  form.dispatchEvent(new dom.window.Event("submit", { cancelable: true })); await settle();
+  assert.equal(r.writes().length, 0);
+  assert.equal(form.querySelector("textarea")!.value, "Not sent");
 });
 
 test("main refuses wrong viewer and retains the unsent draft across ordinary redraw", async () => {

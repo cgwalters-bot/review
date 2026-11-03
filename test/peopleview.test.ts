@@ -22,7 +22,7 @@ describe("header people count", () => {
 
 describe("From people UI", () => {
   it("sits after Decisions, closed by default, and previews five rows with View all and safe text", () => {
-    const home = homeSkeleton({ open: () => true, toggled: () => {} });
+    const home = homeSkeleton({ toggled: () => {} });
     const people: People = { rows: Array.from({ length: 7 }, (_, i) => row(i + 1)), warnings: [] };
     fillPeople(home, people, Date.now(), { done: async () => {}, changed: () => {} });
     assert.equal(home.el.children[0]?.id, "sec-needs");

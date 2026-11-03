@@ -839,10 +839,28 @@ function answerCard(opts: { login?: string; askChanges?: boolean; release?: numb
   const state = { gh: new GitHub(async () => "test", f.fetchImpl) } as Parameters<typeof inboxHooks>[0];
   const list = parseNeedsYou(rawNeedsYou([rawAsk(50, { kind: opts.kind ?? "needs-human", ask: "Which way?" })], "2026-10-30T00:00:00Z"));
   assert.ok(typeof list === "object");
+  state.published = { asks: list.items, unavailable: false };
   const card = publishedCards(list.items)[0]!;
   const writes = () => f.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/graphql")).map((c) => [c.method, new URL(c.url).pathname]);
   return { state, card, writes, item: () => inboxHooks(state).chatItem!(card)! };
 }
+
+it("revokes an open chat's answer authority when its ask becomes a group or is refused", async () => {
+  for (const malformed of [false, true]) {
+    const r = answerCard();
+    const captured = await r.item().answer!();
+    const a = r.state.published.asks[0]!;
+    r.state.published.asks = malformed ? [] : [{ ...a, group: { reason: "drafts", numbers: [50, 51] } }];
+    await assert.rejects(captured.send("Go left"), /Ask left or grouped/);
+    assert.deepEqual(r.writes(), []);
+    if (!malformed) {
+      const grouped = publishedCards(r.state.published.asks)[0]!;
+      const item = inboxHooks(r.state).chatItem!(grouped)!;
+      assert.equal(item.ref, "cgwalters-forge/tracker#50");
+      assert.equal(item.answer, undefined);
+    }
+  }
+});
 
 it("answers a card from its chat through the cards' guarded answer-and-release path", async () => {
   const ok = answerCard();

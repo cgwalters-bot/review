@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parseDocument } from "../src/github/decisiondocument.ts";
-import { askCard, type Card, documentCard, publishedCards } from "../src/github/inbox.ts";
+import { askCard, type Card, documentCard, publishedCards, publishedNote } from "../src/github/inbox.ts";
 import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, CARD_UNAVAILABLE_CLASS, fillInbox, holdsDraft, INBOX_PAGE, type InboxHooks, passLine } from "../src/github/inboxview.ts";
 import { ACTION_CONFIG, loadOffer } from "../src/github/actions.ts";
 import { GitHub } from "../src/github/api.ts";
+import { CHAT_CONFIG } from "../src/github/chatconfig.ts";
+import { ITEM_CHAT_EVENT } from "../src/github/chatitem.ts";
 import { proposalCard } from "../src/github/actionsview.ts";
 import type { Heartbeat } from "../src/github/heartbeat.ts";
 import { type Ask, type Hold, parseNeedsYou } from "../src/github/holds.ts";
 import { answerForm } from "../src/github/view.ts";
 import { createRenderer } from "../src/markdown.ts";
-import { installDom, rawAsk, rawNeedsYou } from "./helpers.ts";
+import { fixture, installDom, rawAsk, rawNeedsYou } from "./helpers.ts";
 
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
@@ -51,6 +53,80 @@ const drafts: [string, (card: HTMLElement) => void][] = [
 ];
 
 describe("fillInbox", () => {
+  it("replays redacted group shapes as exact inspect-only membership, retaining chat", () => {
+    // Contract-shaped replay, not a claim of authorized live acceptance.
+    const replay = fixture<{ cases: { numbers: number[]; carried?: boolean }[] }>("needs-you-groups.json");
+    for (const row of replay.cases) {
+      const [a] = asks(rawAsk(row.numbers[0]!, { carried: row.carried ?? false, target: "https://untrusted.invalid/", action: { type: "pull_request", repository: "example/project", number: row.numbers[0]! }, group: { reason: "drafts to inspect/promote", numbers: row.numbers } }));
+      let reads = 0;
+      const list = document.createElement("div");
+      fillInbox(list, publishedCards([a!]), { ...hooks,
+        answerBody: async () => { reads++; throw new Error("No representative answer"); },
+        chatItem: () => ({ ref: `example/project#${row.numbers[0]}`, title: "Redacted" }),
+      });
+      assert.equal(reads, 0);
+      assert.deepEqual([...list.querySelectorAll("li a")].map((a) => a.getAttribute("href")), row.numbers.map((n) => `#pr/example/project/${n}`));
+      assert.match(list.textContent!, /Inspect each member/);
+      assert.equal(list.querySelector("form, .c-answer, .c-approve"), null);
+      assert.equal(list.querySelector("[href*='untrusted']"), null);
+      if (CHAT_CONFIG) {
+        let ref = "";
+        list.addEventListener(ITEM_CHAT_EVENT, (ev) => { ref = (ev as CustomEvent).detail.ref; });
+        list.querySelector<HTMLButtonElement>(".item-chat")!.click();
+        assert.equal(ref, `example/project#${row.numbers[0]}`);
+      }
+      if (row.carried) assert.match(list.textContent!, /Carried over/);
+    }
+  });
+
+  it("redraws changed membership and revokes a representative's unsent answer", async () => {
+    const list = document.createElement("div");
+    const q = question();
+    fillInbox(list, [q], hooks);
+    await settle();
+    list.querySelector("textarea")!.value = "not sent";
+    const grouped = (numbers: number[]) => askCard({ ...(q as Card & { kind: "answer" }).ask, action: { type: "pull_request", repository: "o/r", number: 1 }, group: { reason: "drafts", numbers } });
+    fillInbox(list, [grouped([1, 2])], hooks);
+    assert.equal(list.querySelector("form"), null);
+    assert.equal(list.querySelectorAll("li").length, 2);
+    fillInbox(list, [grouped([1, 3, 4])], hooks);
+    assert.equal(list.querySelectorAll("li").length, 3);
+    assert.equal(list.querySelector("[href='#pr/o/r/2']"), null);
+  });
+
+  it("keeps an in-flight single approval's eventual outcome visible beside new membership", async () => {
+    let finish!: (url: string) => void;
+    const a = asks(rawAsk(1, { action: { type: "approve_pull_request", repository: "o/r", number: 1, head: "a".repeat(40) } }))[0]!;
+    const list = document.createElement("div");
+    win.confirm = () => true;
+    const pending = { ...hooks, approve: () => new Promise<string>((resolve) => { finish = resolve; }) };
+    fillInbox(list, [askCard(a)], pending);
+    list.querySelector<HTMLButtonElement>(".primary")!.click();
+    fillInbox(list, [askCard({ ...a, group: { reason: "drafts", numbers: [1, 2] } })], pending);
+    assert.match(list.textContent!, /Prior write:.*Sending/);
+    finish("https://github.com/o/r/pull/1#pullrequestreview-1");
+    await settle();
+    assert.match(list.textContent!, /Approved:/);
+    assert.equal(list.querySelectorAll("li a").length, 2);
+    fillInbox(list, [askCard({ ...a, group: { reason: "drafts", numbers: [1, 3] } })], pending);
+    assert.match(list.textContent!, /Approved:/);
+    assert.deepEqual([...list.querySelectorAll("li a")].map((a) => a.getAttribute("href")), ["#pr/o/r/1", "#pr/o/r/3"]);
+  });
+
+  it("refuses a malformed group visibly instead of falling back to Answer", () => {
+    const l = parseNeedsYou(rawNeedsYou([rawAsk(1, { group: { reason: "drafts", numbers: [1, 0] } })], "2026-10-25T11:30:00Z"));
+    assert.ok(typeof l === "object");
+    assert.deepEqual(publishedCards(l.items), []);
+    const note = publishedNote({ asks: l.items, list: l, unavailable: false, checkedAt: hooks.now }, hooks.now);
+    assert.equal(note.settled, false);
+    assert.match(note.text, /Incomplete.*1 unreadable here/);
+  });
+
+  it("does not fold published groups into digest approvals even when tagged digest-approve", () => {
+    const a = asks(rawAsk(1, { kind: "digest-approve", action: { type: "approve_pull_request", repository: "o/r", number: 1, head: "a".repeat(40) }, group: { reason: "drafts", numbers: [1, 2] } }))[0]!;
+    assert.equal(publishedCards([a])[0]!.kind, "open");
+  });
+
   it("draws three proposals the pass lists on one issue as separate cards with title, why and Run", async () => {
     const config = ACTION_CONFIG;
     assert.ok(config);

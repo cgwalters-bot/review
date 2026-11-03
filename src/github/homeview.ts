@@ -6,7 +6,7 @@ import type { Item } from "./board.ts";
 import { TRACKER_REPO } from "./config.ts";
 import type { People } from "./people.ts";
 import { peopleView } from "./peopleview.ts";
-import { PREVIEW_ROWS, SECTION_HINT, SECTION_TITLE, type SectionId } from "./sections.ts";
+import { PREVIEW_ROWS, SECTION_TITLE, type SectionId } from "./sections.ts";
 import { VIEW_ATTR } from "./shell.ts";
 import type { PageState } from "./state.ts";
 import { agoLabel, ROW_CLASS } from "./view.ts";
@@ -26,11 +26,9 @@ export interface Home {
   el: HTMLElement;
   sections: Record<SectionId, SectionEls>;
   slots: { people: HTMLElement; peopleCount: HTMLElement; freshness: HTMLElement; statusNote: HTMLElement };
-  expected: Map<SectionId, boolean>;
 }
 
 export interface HomeHooks {
-  open(id: SectionId): boolean;
   toggled(id: SectionId, open: boolean): void;
   peopleToggled?(open: boolean): void;
 }
@@ -39,14 +37,9 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const count = h("span", { class: COUNT_CLASS }, "…");
   const body = h("div", { class: "sec-body" });
   const details = h("details", { class: `${SECTION_CLASS} sec-needs`, id: "sec-needs", [VIEW_ATTR]: "inbox" },
-    h("summary", {}, h("span", { class: "sec-title" }, SECTION_TITLE.needs), count, h("span", { class: "sec-hint" }, SECTION_HINT.needs)), body);
+    h("summary", {}, h("span", { class: "sec-title" }, SECTION_TITLE.needs), count), body);
   details.open = true;
-  const expected = new Map<SectionId, boolean>([["needs", true]]);
-  details.addEventListener("toggle", () => {
-    if (details.open === expected.get("needs")) return;
-    expected.set("needs", details.open);
-    hooks.toggled("needs", details.open);
-  });
+  details.addEventListener("toggle", () => hooks.toggled("needs", details.open));
   const people = h("div", { class: "people-slot sec-body" });
   const peopleCount = h("span", { class: COUNT_CLASS }, "…");
   const peopleSection = h("details", { class: `${SECTION_CLASS} sec-people`, id: "sec-people", [VIEW_ATTR]: "inbox" },
@@ -55,7 +48,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const statusNote = h("section", { class: "status-note", [VIEW_ATTR]: "status", "aria-label": "Published status" });
   const freshness = h("p", { class: "source-freshness note", "aria-label": "Source freshness" });
   const el = h("div", { class: HOME_CLASS }, details, peopleSection, statusNote, freshness);
-  return { el, sections: { needs: { details, count, body } }, slots: { people, peopleCount, statusNote, freshness }, expected };
+  return { el, sections: { needs: { details, count, body } }, slots: { people, peopleCount, statusNote, freshness } };
 }
 
 export function fillState(home: Home, state: PageState): void {
@@ -70,51 +63,27 @@ export function fillState(home: Home, state: PageState): void {
   ]));
 }
 
-export function setSectionOpen(home: Home, id: SectionId, open: boolean, remember: boolean, hooks: Pick<HomeHooks, "toggled">): void {
-  const { details } = home.sections[id];
-  if (details.open === open) return;
-  if (remember) hooks.toggled(id, open);
-  home.expected.set(id, open);
-  details.open = open;
-}
-
-export function setCount(home: Home, id: SectionId, text: string, opts: { title?: string; hot?: boolean } = {}): void {
-  const el = home.sections[id].count;
-  el.textContent = text;
-  el.title = opts.title ?? "";
-  el.classList.toggle("hot", opts.hot === true);
-}
-
 export function fillPeople(home: Home, people: People | undefined, now: number, hooks: Parameters<typeof peopleView>[2]): void {
   home.slots.peopleCount.textContent = people ? String(people.rows.length) : "…";
   home.slots.people.replaceChildren(peopleView(people, now, hooks));
-  applyLimit(home.slots.people, "people", ".people-row");
+  applyLimit(home.slots.people);
 }
 
-const expanded = new Set<string>();
+let expanded = false;
 
 export function resetExpanded(): void {
-  expanded.clear();
+  expanded = false;
 }
 
-export function applyLimit(slot: HTMLElement, id: string, rowSelector: string, limit: number = PREVIEW_ROWS): void {
+export function applyLimit(slot: HTMLElement): void {
   slot.querySelector(`:scope > .${VIEW_ALL_CLASS}`)?.remove();
-  const rows = [...slot.querySelectorAll<HTMLElement>(rowSelector)];
-  const all = expanded.has(id);
-  rows.forEach((r, i) => { r.hidden = !all && i >= limit; });
-  for (const box of slot.querySelectorAll<HTMLElement>("section.group, ul")) {
-    const inside = rows.filter((r) => box.contains(r));
-    const empty = inside.length > 0 && inside.every((r) => r.hidden);
-    box.hidden = empty;
-    const before = box.previousElementSibling;
-    if (before?.tagName === "H3") (before as HTMLElement).hidden = empty;
-  }
-  if (rows.length <= limit) return;
-  const button = h("button", { type: "button", class: `small ${VIEW_ALL_CLASS}`, "aria-expanded": String(all) }, all ? "Show fewer" : `View all ${rows.length}`);
+  const rows = [...slot.querySelectorAll<HTMLElement>(".people-row")];
+  rows.forEach((r, i) => { r.hidden = !expanded && i >= PREVIEW_ROWS; });
+  if (rows.length <= PREVIEW_ROWS) return;
+  const button = h("button", { type: "button", class: `small ${VIEW_ALL_CLASS}`, "aria-expanded": String(expanded) }, expanded ? "Show fewer" : `View all ${rows.length}`);
   button.addEventListener("click", () => {
-    if (expanded.has(id)) expanded.delete(id);
-    else expanded.add(id);
-    applyLimit(slot, id, rowSelector, limit);
+    expanded = !expanded;
+    applyLimit(slot);
   });
   slot.append(button);
 }

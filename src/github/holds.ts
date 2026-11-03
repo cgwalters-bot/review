@@ -68,7 +68,7 @@ export interface Ask {
   action: AskRef;
   /** Kept from an earlier pass, as its source was not read again whole. */
   carried: boolean;
-  /** Stranded PRs of one repository the pass lists as this one ask; `action` is only the lowest numbered. */
+  /** PR membership, not permission to act on its representative. */
   group?: { reason: string; numbers: number[] };
   /** The pass's descriptors of the decisions this card stands for (needs_you.requests): data, never write authority. */
   requests?: Request[];
@@ -179,6 +179,8 @@ const TEXT_MAX = 500;
 export const ASK_ACTIONS = ["issue", "pull_request", "approve_pull_request", "review_pull_request", "reply_pull_request", "close_pull_request", "operator_action"];
 const isPositive = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) > 0;
 const text = (v: unknown): string | undefined => (isText(v) && v.trim() ? v.split("\n")[0]!.slice(0, TEXT_MAX) : undefined);
+/** Bound member rendering; refuse rather than silently truncate membership. */
+const MAX_GROUP_MEMBERS = 100;
 
 function parseRef(raw: unknown): AskRef | undefined {
   if (!isObject(raw) || !ASK_ACTIONS.includes(raw.type as string) || !str(raw.repository, REPO_RE) || /\/\.+$/.test(raw.repository as string) || !isPositive(raw.number)) return undefined;
@@ -199,19 +201,16 @@ function parseAsk(raw: unknown): Ask | undefined {
   if (!action || !key || !item || !waitingSince || !ask || recommendation === undefined || !str(raw.source, MODE_RE) || !str(raw.kind, KIND_RE)) return undefined;
   if ((raw.priority !== null && !str(raw.priority, PRIORITY_RE)) || (raw.carried !== undefined && typeof raw.carried !== "boolean")) return undefined;
   // A group read as its representative alone would answer for the others: a malformed one is no ask.
-  const group = raw.group === undefined || raw.group === null ? undefined : parseGroup(raw.group, action.number);
+  const group = raw.group === undefined ? undefined : parseGroup(raw.group, action);
   if (group === null) return undefined;
   return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true, ...(group ? { group } : {}) };
 }
 
-/** The pass caps nothing here, so a reader does: past this many members a group is not read. */
-const GROUP_MAX = 50;
-
-function parseGroup(raw: unknown, representative: number): Ask["group"] | null {
+function parseGroup(raw: unknown, action: AskRef): Ask["group"] | null {
   const reason = isObject(raw) ? text(raw.reason) : undefined;
   const numbers = isObject(raw) ? raw.numbers : undefined;
-  if (!reason || !Array.isArray(numbers) || !numbers.length || numbers.length > GROUP_MAX || !numbers.every(isPositive) || numbers[0] !== representative) return null;
-  return { reason, numbers: [...new Set(numbers)] };
+  if (!reason || !Array.isArray(numbers) || !numbers.length || numbers.length > MAX_GROUP_MEMBERS || !numbers.every(isPositive) || new Set(numbers).size !== numbers.length || numbers[0] !== action.number || !action.type.endsWith("pull_request")) return null;
+  return { reason, numbers };
 }
 
 const QUALITIES = ["decision", "missing-concrete-decision", "unknown-request", "unverified-carried"];

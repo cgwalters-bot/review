@@ -108,7 +108,7 @@ export function refusal(a: Ask, step?: string): string | undefined {
 export function askCard(a: Ask, unavailable = false): Card {
   const type = a.action.type;
   // A group's answer would land on its representative alone: its members are read and opened one by one.
-  const kind = a.kind === "review-promote" ? "promote" : type === "operator_action" ? "do" : type === "approve_pull_request" || (a.kind === "digest-approve" && a.action.head) ? "approve" : !a.group && (type === "issue" || type === "pull_request") ? "answer" : "open";
+  const kind = a.kind === "review-promote" ? "promote" : a.group ? "open" : type === "operator_action" ? "do" : type === "approve_pull_request" || (a.kind === "digest-approve" && a.action.head) ? "approve" : type === "issue" || type === "pull_request" ? "answer" : "open";
   const diagnostic = a.requests?.find((r) => r.quality !== "decision")?.quality;
   const note = [
     a.group && `${a.group.numbers.length} PRs: ${a.group.reason}`,
@@ -117,14 +117,14 @@ export function askCard(a: Ask, unavailable = false): Card {
     diagnostic && `The pass marks this request ${diagnostic}.`,
   ].filter(Boolean).join(" ");
   return {
-    kind, ask: a, key: a.key, title: a.ask, where: `${a.item} · ${a.kind}`, ...(githubTarget(a) ? { url: askUrl(a.action) } : {}), since: a.waitingSince,
+    kind, ask: a, key: a.key, title: a.ask, where: a.group ? `${a.action.repository} · ${a.group.reason}` : `${a.item} · ${a.kind}`, ...(githubTarget(a) ? { url: askUrl(a.action) } : {}), since: a.waitingSince,
     ...(a.priority ? { priority: a.priority } : {}), ...(note ? { note } : {}), ...(unavailable ? { unavailable } : {}),
   };
 }
 
 /** The asks as cards in the pass's order, the digest's approvals one group where the first of them ranks. */
 export function publishedCards(asks: readonly Ask[], unavailable = false): Card[] {
-  const digest = asks.filter((a) => a.kind === "digest-approve" && a.action.head && !refusal(a, "review-at-head"));
+  const digest = asks.filter((a) => !a.group && a.kind === "digest-approve" && a.action.head && !refusal(a, "review-at-head"));
   const items = digest.map((a): ApproveItem => {
     const [owner = "", repo = ""] = a.action.repository.split("/");
     return { pr: { owner, repo, number: a.action.number }, head: a.action.head!, reason: a.recommendation ?? a.ask };
