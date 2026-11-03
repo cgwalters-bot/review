@@ -4,7 +4,7 @@ import { GitHub } from "../src/github/api.ts";
 import type { RawComment } from "../src/github/heartbeat.ts";
 import { findHolds, holdAsks, HOLDS_MARKER, loadHolds, parseHolds, parseNeedsYou } from "../src/github/holds.ts";
 import { usagePath } from "../src/github/usage.ts";
-import { fixture, holdsComment, rawAsk, rawNeedsYou, scriptedFetch } from "./helpers.ts";
+import { fixture, holdsComment, rawAsk, rawNeedsYou, REAL_NEEDS_YOU_AT, REAL_NEEDS_YOU_KEYS, realNeedsYouSnapshot, scriptedFetch } from "./helpers.ts";
 
 const AT = "2026-10-26T00:00:00Z";
 /** As agent-board's pass renders it (pass/holds.rs). */
@@ -51,6 +51,33 @@ describe("parseHolds", () => {
 });
 
 describe("the recorded comments", () => {
+  it("replays the approved 3 Nov publication unchanged: 12 ordered asks, no observed groups", () => {
+    const raw = realNeedsYouSnapshot();
+    assert.equal(raw.at, REAL_NEEDS_YOU_AT);
+    assert.equal(raw.needs_you.count, 12);
+    assert.equal(raw.needs_you.items.length, 12);
+    assert.equal(raw.needs_you.requests.length, 12);
+    assert.ok(raw.needs_you.items.every((a) => !("group" in a)));
+    const replay = findHolds([comment(raw)]);
+    assert.ok(replay);
+    const l = replay.needsYou;
+    assert.ok(l && typeof l === "object", String(l));
+    assert.deepEqual(l.items.map((a) => a.key), REAL_NEEDS_YOU_KEYS);
+    assert.deepEqual([l.validatedAt, l.changedAt, l.complete, l.omitted, l.refused], [REAL_NEEDS_YOU_AT, REAL_NEEDS_YOU_AT, false, 85, 0]);
+    assert.deepEqual(l.sources, { epics: "complete", items: "partial", reviews: "complete", proposals: "complete", digest: "partial" });
+    for (const [i, a] of l.items.entries()) {
+      const [repository, number] = REAL_NEEDS_YOU_KEYS[i]!.split("#");
+      assert.deepEqual(a.action, { type: "issue", repository, number: Number(number) });
+      assert.equal(a.group, undefined);
+      assert.equal(a.carried, false);
+      assert.equal("target" in a, false);
+      assert.equal(a.requestsUnreadable, undefined);
+      assert.equal(a.requests?.length, 1);
+      assert.equal(a.requests![0]!.forge, "github.com");
+      assert.deepEqual(a.requests![0]!.actions.map((x) => [x.kind, x.supported]), [["promote", false], ["merge-or-enqueue", false], ["reply", false], ["close", false]]);
+    }
+  });
+
   // As agent-board's pass/holds.rs renders them: compact, one entry a line; the older without wip and pass.
   const [older, newer] = fixture<RawComment[]>("holds-comments.json");
   it("reads a comment from before wip and pass without them", () => {

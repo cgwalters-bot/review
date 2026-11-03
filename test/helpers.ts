@@ -9,6 +9,26 @@ export function fixture<T>(name: string): T {
   return JSON.parse(readFileSync(new URL(`fixtures/${name}`, import.meta.url), "utf8")) as T;
 }
 
+// Approved redacted 3 Nov publication, review#226, merged as
+// 64a206d02a081e69af8697a7fb244a2992a0fff4. Spend/overhead and one
+// security-sensitive item were removed by the publisher. No private reads.
+// The published 12 asks have no groups; variants are constructed contracts.
+export const REAL_NEEDS_YOU_AT = "2026-11-03T17:41:35.039037224Z";
+
+export const REAL_NEEDS_YOU_KEYS = [
+  "cgwalters-forge/agentic-job#2110", "cgwalters-forge/composefs-rs#33",
+  "cgwalters-forge/agentic-job#2811", "cgwalters-forge/agent-board#308",
+  "cgwalters-forge/composefs-rs#32", "cgwalters-forge/tracker#430",
+  "cgwalters-forge/agentic-job#2026", "cgwalters-forge/tracker#12",
+  "cgwalters-forge/tracker#163", "cgwalters-forge/tracker#24",
+  "cgwalters-forge/tracker#308", "cgwalters-forge/tracker#7",
+];
+
+export const realNeedsYouSnapshot = () => fixture<{
+  at: string;
+  needs_you: { count: number; items: Record<string, unknown>[]; requests: Record<string, unknown>[] };
+}>("needs-you-real-2026-11-03.json");
+
 export const fields = (): RawField[] => fixture<RawField[]>("fields.json");
 export const rawItems = (): RawItem[] => fixture<RawItem[]>("items.json");
 
