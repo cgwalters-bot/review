@@ -42,6 +42,12 @@ function pr(owner: string, repo: string, number: number): ForgePr {
 const rows = (needs: readonly Need[]) => needs.map((n) => [n.key, n.action]);
 const entriesOf = (items: Item[], answered: string[] = []) => buildEntries(items, [], new Map(), true, new Set(answered));
 
+it("orders needs as auto-next steps through them: P0 first, then newest within a priority", () => {
+  const q = (n: number, priority?: string) => tracked(`PVTI_q${n}`, n, { labels: ["question"], body: `Blocks: ${TRACKER}/9\n${QUESTION}`, createdAt: `2026-01-${10 + n}T00:00:00Z`, ...(priority ? { priority } : {}) });
+  const needs = buildNeeds({ entries: entriesOf([q(1, "P2"), q(2, "P0"), q(3, "P2"), q(4), q(5, "P1")]) });
+  assert.deepEqual(needs.map((n) => `${n.priority ?? "-"} ${n.where.split("#")[1]}`), ["P0 2", "P1 5", "P2 3", "P2 1", "- 4"]);
+});
+
 describe("representative operator asks", () => {
   const forkBody = "<!-- bot-meta -->\n- Upstream: `upstream/widget`\n- Contribution policy: `human-text`\n<!-- /bot-meta -->";
   const reviewPr = { ...pr("upstream", "widget", 1), draft: false };

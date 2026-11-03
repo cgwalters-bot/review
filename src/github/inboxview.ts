@@ -9,8 +9,11 @@ import type { Renderer } from "../markdown.ts";
 import { chatButton, type ChatItem } from "./chatitem.ts";
 import type { DocumentEntry } from "./decisiondocument.ts";
 import { type Heartbeat, isStale } from "./heartbeat.ts";
+import type { MemberPr } from "./backend.ts";
+import type { IssueRef } from "./board.ts";
+import { refKey } from "./forge.ts";
 import type { Ask, Holds } from "./holds.ts";
-import { askHref, type Card, CARD_LABEL } from "./inbox.ts";
+import { askHref, type Card, CARD_LABEL, githubTarget, members, refusal } from "./inbox.ts";
 import type { ApproveItem, ApproveResult } from "./maintain.ts";
 import { approveGroup, KEEP_ATTR, KEEP_BUSY } from "./maintainview.ts";
 import { age, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
@@ -22,6 +25,7 @@ export const CARD_STALE_CLASS = "card-stale";
 /** On a card from a list that can't be read now. */
 export const CARD_UNAVAILABLE_CLASS = "card-unavailable";
 const SIG_ATTR = "data-sig";
+const POLICY_ATTR = "data-policy";
 
 export const CARD_CHANGED_NOTE = "This changed since it was drawn; send or clear your text, or press r to reload it (unsent text is lost).";
 export const CARD_GONE_NOTE = "This has left the inbox; your unsent text is kept until you clear it or press r.";
@@ -43,6 +47,8 @@ export interface InboxHooks {
   offerBody?(a: Ask): Promise<HTMLElement>;
   /** Approve at `head`, refusing a moved head; URL if written, undefined if already approved. */
   approve?(a: Ask, head: string): Promise<string | undefined>;
+  /** Read one of a card's PRs now (readMember). */
+  member?(ref: IssueRef): Promise<MemberPr>;
   /** Send the digest's picked approvals (approveSelected). */
   approveDigest?(items: readonly ApproveItem[]): Promise<ApproveResult[]>;
   /** A card's chat context, for its Chat button; none for a card about no item. */
@@ -53,34 +59,98 @@ export interface InboxHooks {
 const failed = (e: unknown): string => `Not sent, or uncertain: ${e instanceof Error ? e.message : String(e)}. Check on GitHub before trying again.`;
 
 /**
+ * One confirmed write in place, as the viewer. Nothing retries it. Its
+ * receipt, sent or uncertain, is kept under `key` in the session's writes,
+ * so a redraw shows it rather than offer the write again, and says at once
+ * what it now waits on (`done`). Its card is marked done.
+ */
+function writeButton(hooks: InboxHooks, key: string, label: string, question: string, write: () => Promise<string | undefined>, done: (url: string | undefined) => (string | Node)[]): HTMLElement {
+  const previous = hooks.writes?.get(key);
+  if (previous?.querySelector("[data-sent]")) return previous;
+  const button = h("button", { type: "button", class: "primary" }, label);
+  const status = h("p", { class: "status", role: "status" });
+  button.addEventListener("click", () => {
+    if (button.disabled || !window.confirm(question)) return;
+    button.disabled = true;
+    status.textContent = "Sending…";
+    status.setAttribute(KEEP_ATTR, KEEP_BUSY);
+    write().then((url) => {
+      status.removeAttribute(KEEP_ATTR);
+      status.setAttribute("data-sent", "");
+      status.closest(`.${CARD_CLASS}`)?.classList.add(CARD_DONE_CLASS);
+      status.replaceChildren(...done(url));
+    }, (e: unknown) => {
+      // Kept until r, which reads the target again: it may have moved, or the write gone out.
+      status.setAttribute(KEEP_ATTR, "");
+      status.textContent = failed(e);
+      if (e instanceof Error && e.name === "MaybeSentError") status.setAttribute("data-sent", "");
+      else button.disabled = false;
+    });
+  });
+  const el = h("div", { class: "card-body actions" }, button, status);
+  hooks.writes?.set(key, el);
+  return el;
+}
+
+/** What an approval releases, and what it doesn't. */
+export const APPROVED_WAIT = "Waiting on the agent: this releases only the approval wait; checks and merge policy still decide.";
+
+/**
  * Approve in place at the pass's head. The write checks the live head and
  * viewer's approvals, not every card on every poll.
  */
 function approveBody(a: Ask, hooks: InboxHooks): HTMLElement {
   const head = a.action.head!;
   const where = `${a.action.repository}#${a.action.number}`;
-  const button = h("button", { type: "button", class: "primary" }, `Approve ${head.slice(0, 7)}`);
-  const status = h("p", { class: "status", role: "status" });
-  button.addEventListener("click", () => {
-    if (button.disabled || !window.confirm(`Approve ${where} at ${head.slice(0, 12)} as you, without its diff open here? If the head moved, nothing is sent.`)) return;
-    button.disabled = true;
-    status.textContent = "Sending…";
-    status.setAttribute(KEEP_ATTR, KEEP_BUSY);
-    hooks.approve!(a, head).then((url) => {
-      status.removeAttribute(KEEP_ATTR);
-      // Sent: a redraw shows this card again rather than offer the approval twice.
-      status.setAttribute("data-sent", "");
-      status.closest(`.${CARD_CLASS}`)?.classList.add(CARD_DONE_CLASS);
-      status.replaceChildren(...(url ? ["Approved: ", link(url, url)] : ["Skipped: already approved at HEAD."]));
-    }, (e: unknown) => {
-      // Kept until r, which reads the head again: it may have moved, or the approval gone out.
-      status.setAttribute(KEEP_ATTR, "");
-      status.textContent = failed(e);
-      button.disabled = false;
-    });
-  });
-  return h("div", { class: "card-body actions" }, button, status);
+  return writeButton(hooks, JSON.stringify(["approve", where.toLowerCase(), head]), `Approve ${head.slice(0, 7)}`,
+    `Approve ${where} at ${head.slice(0, 12)} as you, without its diff open here? If the head moved, nothing is sent.`, () => hooks.approve!(a, head),
+    (url) => (url ? ["Approved: ", link(url, url), `. ${APPROVED_WAIT}`] : ["Skipped: already approved at HEAD."]));
 }
+
+/** A preflight read cannot bind bot-pr's bare /promote command to a commit. */
+export const PROMOTION_REFUSAL = "bot-pr's /promote command cannot be bound to the displayed head; promotion is read-only here";
+
+/** One member read now: its facts, and on a Promote card its own Promote or why there is none. */
+async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHooks): Promise<HTMLElement> {
+  const m = await hooks.member!(ref);
+  const where = refKey(m.ref);
+  const facts = h("p", {}, link(m.url, m.title), ` · ${m.state} · ${m.head.slice(0, 7)} · by ${m.author} · `, h("a", { href: `#pr/${where.replace("#", "/")}` }, "Review"));
+  if (c.kind !== "promote") return h("div", {}, facts);
+  const no = refusal(c.ask) ?? m.problem ?? PROMOTION_REFUSAL;
+  return h("div", {}, facts, h("p", { class: "warn" }, `Promote not offered: ${no}.`));
+}
+
+/** A card's PRs, each read only when he opens it: a group's members, or a Promote card's PR. */
+function memberList(c: Card & { ask: Ask }, hooks: InboxHooks): HTMLElement | null {
+  const [owner = "", repo = ""] = c.ask.action.repository.split("/");
+  if (!hooks.member) return null;
+  // Its PRs are not on github.com: reading them there would show someone else's.
+  const no = refusal(c.ask);
+  if (no) return refused(no, c.ask);
+  return h("div", { class: "card-body members" }, ...members(c.ask).map((number) => {
+    const d = h("details", { class: "member" }, h("summary", {}, `${c.ask.action.repository}#${number}`));
+    d.addEventListener("toggle", () => {
+      if (d.open && d.children.length === 1) d.append(bodySlot(memberBody(c, { owner, repo, number }, hooks)));
+    });
+    return d;
+  }));
+}
+
+const STEP: Record<string, string> = { promote: "promote", "merge-or-enqueue": "merge or enqueue", reply: "reply", close: "close", "review-at-head": "approve at the head", "check-proposal": "run the proposal" };
+
+/** The steps a card's own path takes, through its own checks, whatever the pass supplies. */
+const OWN: Partial<Record<Card["kind"], string>> = { promote: "promote", answer: "reply" };
+
+/** The steps the pass says are not supported from its request, each with its reason, less the card's own. */
+function notOffered(c: Card & { ask: Ask }): HTMLElement | null {
+  const off = (c.ask.requests ?? []).flatMap((r) => r.actions).filter((x) => !x.supported && OWN[c.kind] !== x.kind).filter((x, i, all) => all.findIndex((y) => y.kind === x.kind) === i);
+  if (!off.length) return null;
+  return h("details", { class: "not-offered" }, h("summary", {}, `Not offered here: ${off.map((x) => STEP[x.kind] ?? x.kind).join(", ")}`),
+    h("ul", {}, ...off.map((x) => h("li", {}, `${STEP[x.kind] ?? x.kind}: ${x.reason}`))));
+}
+
+/** In place of a write the pass or the forge rules out: why, and where to look. */
+const refused = (why: string, a: Ask): HTMLElement => h("div", { class: "card-body" }, h("p", { class: "warn" }, `Not offered here: ${why}`), githubTarget(a) ? h("a", { class: "action", href: askHref(a.action) }, "Inspect") : null);
 
 /** Cards drawn at first, about a phone's screen; "Show more" draws as many again. */
 export const INBOX_PAGE = 5;
@@ -93,8 +163,9 @@ export function cardSignature(c: Card): string {
   switch (c.kind) {
     case "answer":
     case "approve":
+    case "promote":
     case "open":
-    case "do": return JSON.stringify([...base, c.ask.action]);
+    case "do": return JSON.stringify([...base, c.ask.action, c.ask.group, c.ask.requests, c.ask.requestsUnreadable]);
     case "digest": return JSON.stringify([...base, c.items]);
     case "send": return JSON.stringify([...base, c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused]);
     case "document": return JSON.stringify([...base, c.entry.text, c.mark]);
@@ -151,11 +222,14 @@ const VERB: Record<string, string> = { review_pull_request: "Review", reply_pull
 /** The card's in-place action or body, read on drawing where it needs to be; else a link to where it is done. */
 function action(c: Card, hooks: InboxHooks): HTMLElement | null {
   if (c.answered) return null;
+  const no = "ask" in c ? refusal(c.ask, c.kind === "approve" ? "review-at-head" : c.kind === "do" ? "check-proposal" : undefined) : undefined;
+  if (no && "ask" in c) return refused(no, c.ask);
   switch (c.kind) {
     case "answer": if (hooks.answerBody && hooks.mayAct) return bodySlot(hooks.answerBody(c.ask)); break;
     case "approve": if (hooks.approve && hooks.mayAct) return approveBody(c.ask, hooks); break;
     case "do": if (hooks.offerBody) return bodySlot(hooks.offerBody(c.ask)); break;
-    case "open": break;
+    case "promote": return memberList(c, hooks);
+    case "open": if (c.ask.group) return memberList(c, hooks); break;
     case "document": return hooks.mayAct && c.entry.options.length ? entryForm(c, hooks) : null;
     case "send": return hooks.draftBody ? bodySlot(hooks.draftBody(c)) : null;
     case "digest": return hooks.approveDigest && hooks.mayAct ? approveGroup(c.items, hooks.approveDigest) : null;
@@ -185,9 +259,9 @@ function bodySlot(body: Promise<HTMLElement>): HTMLElement {
 
 export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   // An answer keeps its own receipts (answerBody); the rest by what they write.
-  const key = JSON.stringify(c.kind === "digest" ? [c.kind, c.items.map((a) => [a.pr, a.head])] : c.kind === "send" ? [c.kind, c.key, c.draft.issue.body, c.draft.found?.raw] : c.kind === "document" ? [c.kind, c.key, cardSignature(c)] : [c.kind, c.key, c.ask.action]);
+  const key = JSON.stringify(c.kind === "digest" ? [c.kind, c.items.map((a) => [a.pr, a.head])] : c.kind === "send" ? [c.kind, c.key, c.draft.issue.body, c.draft.found?.raw] : c.kind === "document" ? [c.kind, c.key, cardSignature(c)] : [c.kind, c.key, c.ask.action, members(c.ask), policySignature(c)]);
   const previous = hooks.writes?.get(key);
-  if (c.kind !== "answer" && previous?.querySelector("[data-sent], [data-keep]")) return previous;
+  if (c.kind !== "answer" && c.kind !== "promote" && previous?.querySelector("[data-sent], [data-keep]")) return previous;
   const head = h("div", { class: "card-head" },
     h("span", { class: `kind c-${c.kind}` }, CARD_LABEL[c.kind]),
     c.priority ? pill(c.priority) : null,
@@ -199,8 +273,9 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
     tabindex: "-1",
     [ROW_KEY_ATTR]: c.key,
     [ROW_SECTION_ATTR]: "inbox",
-    [ROW_HREF_ATTR]: ask ? askHref(ask.action) : "#",
+    [ROW_HREF_ATTR]: ask && githubTarget(ask) ? askHref(ask.action) : "#",
     [SIG_ATTR]: cardSignature(c),
+    [POLICY_ATTR]: policySignature(c),
   }, head, h("p", { class: "card-where" }, c.where),
   c.unavailable ? h("p", { class: "card-note warn" }, "Unavailable: from the last list read; the pass's list can't be read now.") : null,
   c.note ? h("p", { class: "card-note" }, c.note) : null);
@@ -208,11 +283,29 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   // Read on drawing (the target and its ask, the PR's head, the proposal's facts, the draft's PR): filled in when it arrives.
   const act = action(c, hooks);
   if (act) el.append(act);
+  const off = ask && !c.answered ? notOffered({ ...c, ask }) : null;
+  if (off) el.append(off);
   // After the card's own action: chatting never stands in for it.
-  const chat = chatButton(hooks.chatItem?.(c));
+  const chat = chatButton(!ask || githubTarget(ask) ? hooks.chatItem?.(c) : undefined);
   if (chat) el.append(h("div", { class: "actions" }, chat));
   if (c.kind !== "answer") hooks.writes?.set(key, el);
   return el;
+}
+
+/** A retained draft or receipt must not retain authority a newer list removed. */
+function policySignature(c: Card): string {
+  return JSON.stringify("ask" in c ? [c.ask.requests, c.ask.requestsUnreadable] : c.kind === "digest" ? c.items.map((a) => [a.pr, a.head]) : null);
+}
+
+/** Keep typed text and receipts, but retire their old handlers until an explicit reload. */
+function retireActions(el: HTMLElement): void {
+  for (const button of el.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input[type=submit]")) button.disabled = true;
+  for (const a of el.querySelectorAll("a")) a.removeAttribute("href");
+  el.setAttribute(ROW_HREF_ATTR, "#");
+  for (const type of ["click", "submit"]) el.addEventListener(type, (ev) => {
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
 }
 
 function staleNote(el: Element, text: string): void {
@@ -265,8 +358,9 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     shown.delete(c.key);
     // r clears a write's kept report too, reading the card's state again.
     const report = force && el?.querySelector(`[${KEEP_ATTR}=""]`);
-    if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS) && !report) return el;
+    if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS) && !report && !(force && "ask" in c && (c.kind === "promote" || c.ask.group))) return el;
     if (el && keep(el)) {
+      if (el.getAttribute(POLICY_ATTR) !== policySignature(c)) retireActions(el);
       staleNote(el, CARD_CHANGED_NOTE);
       return el;
     }
@@ -277,6 +371,9 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
   let gone = 0;
   for (const el of shown.values()) {
     if (keep(el)) {
+      // A filtered-out digest has no replacement key to compare policies
+      // with. Keep its report/text, never its obsolete approval handlers.
+      retireActions(el);
       staleNote(el, CARD_GONE_NOTE);
       gone++;
     } else el.remove();

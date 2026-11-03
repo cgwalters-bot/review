@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { Item } from "../src/github/board.ts";
-import { applyLimit, DECISION_LIMIT, fillNeeds, fillStatus, homeSkeleton, resetExpanded, reveal, stepRow, walkRows } from "../src/github/homeview.ts";
-import { buildNeeds } from "../src/github/needs.ts";
-import { buildEntries } from "../src/github/queue.ts";
+import { applyLimit, fillStatus, homeSkeleton, resetExpanded, stepRow, walkRows } from "../src/github/homeview.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { fixture, installDom } from "./helpers.ts";
 
@@ -11,7 +9,6 @@ const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
 const TRACKER = "https://github.com/cgwalters-forge/tracker/issues";
 const hooks = { open: () => true, toggled: () => {} };
-const needsHooks = { login: "cgwalters", now: Date.now(), render, labelOf: () => undefined, send: async () => "https://github.com/o/r/issues/1#issuecomment-1", changed: () => {} };
 const text = (el: Element | null) => el?.textContent?.replace(/\s+/g, " ").trim() ?? "";
 afterEach(resetExpanded);
 
@@ -73,30 +70,10 @@ describe("Needs you and published Status", () => {
     assert.equal(slot.querySelector(`a[href="${TRACKER}/540"]`)?.textContent, full);
     assert.equal(slot.querySelector(`a[href="${TRACKER}/405"]`)?.textContent, "Epic: Clean up the harness:…");
   });
-
-  it("keeps every open question visible, even beyond the normal decision limit", () => {
-    const home = homeSkeleton(hooks);
-    const entries = buildEntries(Array.from({ length: DECISION_LIMIT + 3 }, (_, i) => tracked(100 + i)), [], new Map());
-    fillNeeds(home, buildNeeds({ entries }), needsHooks, entries);
-    document.body.replaceChildren(home.el);
-    assert.equal(walkRows(home.el).length, DECISION_LIMIT + 3);
-    assert.match(text(home.slots.needs), /Blocks: tracker#9/);
-    assert.equal(home.slots.needs.querySelector(".watching .need"), null);
-    assert.ok(home.slots.needs.querySelector("form"));
-    assert.equal(home.sections.needs.count.classList.contains("hot"), true);
-  });
-
-  it("counts and deduplicates Watching context apart from actionable questions", () => {
-    const home = homeSkeleton(hooks);
-    const entries = buildEntries([tracked(100), tracked(101)], [], new Map());
-    entries[1]!.wait = { onBot: true, reasons: [] };
-    fillNeeds(home, buildNeeds({ entries }), needsHooks, [...entries, entries[1]!]);
-    assert.equal(text(home.slots.needs.querySelector(".watching summary")), "Watching (1)");
-  });
 });
 
 describe("row limits and keyboard walking", () => {
-  it("previews rows, reveals overflow and remembers expansion across redraws", () => {
+  it("previews rows, shows all on request and remembers expansion across redraws", () => {
     const list = () => {
       const slot = document.createElement("div");
       slot.append(...Array.from({ length: 8 }, () => Object.assign(document.createElement("p"), { className: "row" })));
@@ -105,9 +82,8 @@ describe("row limits and keyboard walking", () => {
     };
     const slot = list();
     assert.equal(slot.querySelectorAll(".row:not([hidden])").length, 5);
-    const last = slot.querySelectorAll<HTMLElement>(".row")[7]!;
-    reveal(last, slot, "people", ".row");
-    assert.equal(last.hidden, false);
+    slot.querySelector<HTMLButtonElement>(".view-all")!.click();
+    assert.equal(slot.querySelectorAll<HTMLElement>(".row")[7]!.hidden, false);
     assert.equal(list().querySelectorAll(".row:not([hidden])").length, 8);
     slot.querySelector<HTMLButtonElement>(".view-all")!.click();
     assert.equal(slot.querySelectorAll(".row:not([hidden])").length, 5);
@@ -118,7 +94,7 @@ describe("row limits and keyboard walking", () => {
     const row = () => Object.assign(document.createElement("a"), { className: "row" });
     const first = row(), last = row(), hidden = row(), people = row();
     hidden.hidden = true;
-    home.slots.needs.append(first, hidden, last);
+    home.sections.needs.body.append(first, hidden, last);
     home.slots.people.append(people);
     assert.deepEqual(walkRows(home.el), [first, last]);
     assert.equal(stepRow([first, last], first, -1), first);

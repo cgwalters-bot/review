@@ -25,6 +25,7 @@ import {
   loadWholeBoard,
   loadRuns,
   MaybeSentError,
+  readMember,
   postAnswer,
   postAskComment,
   rerunFailedJobs,
@@ -48,11 +49,11 @@ import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from 
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, sendDocumentEdit } from "./decisiondocument.ts";
-import { type Card, inboxCards, mayAct, type Published, publishedNote } from "./inbox.ts";
+import { type Card, inboxCards, mayAct, type Published, publishedNote, refusal } from "./inbox.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { CHAT_CONFIG } from "./chatconfig.ts";
 import { type ChatAnswer, chatItem, type ChatItem, startChatButton } from "./chatitem.ts";
-import { fillInbox, type InboxHooks, passLine } from "./inboxview.ts";
+import { CARD_CLASS, CARD_DONE_CLASS, fillInbox, type InboxHooks, passLine } from "./inboxview.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
@@ -72,7 +73,7 @@ import { composeReviews, type ForgePr, refKey, type ReviewAction, VERDICT_LABEL 
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillStatus, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, LIMIT_ID, NEED_ROW_SELECTOR, reveal, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { fillStatus, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadOffer } from "./actions.ts";
 import { proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
@@ -464,7 +465,6 @@ function mountInbox(state: State, home: Home): void {
     tail.append(inbox.startChat);
   }
   if (REVIEW_DRAFT_CONFIG) tail.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => void refreshDrafts(state)));
-  home.slots.needs.hidden = true;
   home.sections.needs.body.prepend(inbox.pass, status, list, empty, tail);
 }
 
@@ -502,35 +502,43 @@ async function readAsk(state: State, a: Ask) {
   };
   // Only needs-human is released, and only where the pass listed it so; other holds are the pass's.
   const release = a.kind === "needs-human" || a.kind === "review-needs-human";
-  const post = (text: string) => asOperator(state.gh, async () => (await answerHold(state.gh, target, text, shown, release, check)).url);
-  return { target, shown, ask, key, release, receipts, post };
+  /**
+   * Answer once, from the card or a chat: refused where the other sent or
+   * may have (`receipt` holds [data-sent] then), kept as both's receipt,
+   * and saying at once what it released; a comment alone releases nothing.
+   */
+  const send = async (text: string, receipt: HTMLElement): Promise<string> => {
+    const attempted = receipts.get(key);
+    if (attempted && attempted !== receipt && attempted.querySelector("[data-sent]")) throw new MaybeSentError(`Already attempted: ${attempted.querySelector("[role=status]")?.textContent ?? "check GitHub"}`);
+    receipts.set(key, receipt);
+    receipts.set(answeredKey(a), receipt);
+    const url = await asOperator(state.gh, async () => (await answerHold(state.gh, target, text, shown, release, check)).url);
+    receipt.closest(`.${CARD_CLASS}`)?.classList.add(CARD_DONE_CLASS);
+    receipt.append(h("p", { class: "note", "data-sent": "" }, release
+      ? `Released: needs-human on ${target}, the ${a.kind} hold. Other holds stay. Waiting on the agent.`
+      : `Commented only: the ${a.kind} hold on ${target} stays until the pass sees it change.`));
+    return url;
+  };
+  return { target, shown, ask, key, release, receipts, send };
 }
 
 /** An Answer card's ask for a chat about it, answered through the card's path and receipts. */
 async function chatAnswer(state: State, a: Ask): Promise<ChatAnswer> {
-  const { target, shown, ask, key, release, receipts, post } = await readAsk(state, a);
+  const { target, shown, ask, release, send } = await readAsk(state, a);
   return {
     target, release,
     ask: [shown.title, shown.body, ask].filter(Boolean).join("\n\n"),
     send: async (text) => {
-      const attempted = receipts.get(key)?.querySelector("[data-sent]");
-      if (attempted) throw new MaybeSentError(`Already attempted: ${attempted.textContent ?? "check GitHub"}`);
-      const status = h("p", { class: "status", role: "status", "data-sent": "" });
-      const keep = () => {
-        const receipt = h("div", {}, status);
-        receipts.set(key, receipt);
-        receipts.set(answeredKey(a), receipt);
-      };
+      const status = h("p", { class: "status", role: "status" });
       try {
-        const url = await post(formatAnswer({ text }));
+        const url = await send(formatAnswer({ text }), h("div", {}, status));
         status.append("Answered from chat: ", h("a", { href: url }, url));
-        keep();
         return url;
       } catch (e) {
         // Only a write that may have gone out is kept: the card then offers it no more.
         if (e instanceof MaybeSentError) {
           status.textContent = `Not sent, or uncertain: ${e.message}`;
-          keep();
+          status.setAttribute("data-sent", "");
         }
         throw e;
       }
@@ -545,7 +553,7 @@ function cardChat(state: State, c: Card): ChatItem | undefined {
     ...item,
     ask: [c.title, c.where, c.note].filter(Boolean).join(" · "),
     links: [c.url!],
-    ...(c.kind === "answer" && !c.answered && mayAct(state.login) ? { answer: () => chatAnswer(state, c.ask) } : {}),
+    ...(c.kind === "answer" && !c.answered && mayAct(state.login) && !refusal(c.ask) ? { answer: () => chatAnswer(state, c.ask) } : {}),
   };
 }
 
@@ -570,14 +578,7 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
       const { owner, repo, number } = askPr(a);
       const previous = receipts.get(key);
       if (previous?.querySelector("[data-sent]")) return previous;
-      const form = answerForm({ owner, repo, number }, parseQuestion(shown.body ?? ""), false,
-        (answer) => {
-          const attempted = receipts.get(key);
-          if (attempted && attempted !== body && attempted.querySelector("[data-sent]")) return Promise.reject(new MaybeSentError(attempted.querySelector("[role=status]")?.textContent ?? "Already attempted; check GitHub"));
-          receipts.set(key, body);
-          receipts.set(answeredKey(a), body);
-          return read.post(formatAnswer(answer));
-        }, `card-${target}-`, 2);
+      const form = answerForm({ owner, repo, number }, parseQuestion(shown.body ?? ""), false, (answer) => read.send(formatAnswer(answer), body), `card-${target}-`, 2);
       form.querySelector(".target")!.textContent = release
         ? `Posts your answer, then removes only needs-human on ${target}. Other holds stay.`
         : `Only a comment on ${target}: this hold cannot be released by an answer.`;
@@ -593,6 +594,7 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
       rebuildEntries(state);
       return url;
     }),
+    member: (ref) => readMember(state.gh, ref),
     // A report stays on its card until r; the pass lists the PRs until its next digest.
     approveDigest: (items) => asOperator(state.gh, () => approveSelected(state.gh, items)),
     ...(drafts ? { draftBody: (c) => draftCard(state.gh, drafts, render, c.draft) } : {}),
@@ -1153,10 +1155,6 @@ interface Done {
   from: Element | null;
   /** The entry still waits on him whatever the queue says, e.g. a chore with runs left to rerun. */
   stillWaiting?: boolean;
-  /** The list to step through, when not the one the entry was opened from (a view acting in place). */
-  origin?: Origin;
-  /** Move on to a next stop that is answered in place by focusing it, by key, instead of changing the hash. */
-  focus?: (key: string) => void;
 }
 
 /** "" and "#" are both the bare page. */
@@ -1177,7 +1175,7 @@ function acted(state: State, done: Done): void {
   // Its own effect isn't news to the page it was done on.
   if (state.shownPr && done.key === `pr:${state.shownPr.key}`) state.shownPr.wait = JSON.stringify(prEntry(state, state.shownPr.key)?.wait);
   refreshSoon(state);
-  const origin = done.origin ?? state.origin ?? needsOrigin(state, "#");
+  const origin = state.origin ?? needsOrigin(state, "#");
   const live = origin.live();
   const next = pickNext(origin.stops, done.key, live);
   const decision = decideAdvance(
@@ -1192,14 +1190,10 @@ function acted(state: State, done: Done): void {
   );
   switch (decision.kind) {
     case "go":
-      if (done.focus && decision.to.inPlace) {
-        showDone(state, `Done: ${done.title} → ${decision.to.title}`);
-        done.focus(decision.to.key);
-      } else moveOn(state, decision.to.href, `Done: ${done.title} → ${decision.to.title}`, done.hash);
+      moveOn(state, decision.to.href, `Done: ${done.title} → ${decision.to.title}`, done.hash);
       return;
     case "caught-up":
-      if (done.focus) showDone(state, `Done: ${done.title}. All caught up.`);
-      else moveOn(state, origin.hash, `Done: ${done.title}. All caught up.`, done.hash);
+      moveOn(state, origin.hash, `Done: ${done.title}. All caught up.`, done.hash);
       return;
     case "stay":
       showDone(state, decision.why === "writing" ? `Done: ${done.title}. Staying here: you have unsent text on this page.` : `Done: ${done.title}.`);
@@ -1293,23 +1287,6 @@ async function refreshContext(state: State, item: Item): Promise<void> {
   if (routeItemId(state) !== item.nodeId) return;
   const container = byId("view").querySelector(`.${CONTEXT_CLASS}`);
   container?.replaceChildren(contextView(item, ctx, render, contextHooks(state, item)));
-}
-
-/** Move to the row of `section` with stop key `key`, opening "View all" if it is hidden. */
-function focusRow(state: State, section: string, key: string): void {
-  const row = allRows().find((r) => r.getAttribute(ROW_SECTION_ATTR) === section && r.getAttribute(ROW_KEY_ATTR) === key);
-  if (!row || !state.home) return;
-  reveal(row, state.home.slots.needs, LIMIT_ID.needs, NEED_ROW_SELECTOR);
-  row.scrollIntoView?.({ block: "start" });
-  // The row, not a field in it: the single-key shortcuts keep working.
-  row.focus({ preventScroll: true });
-  state.selected = rowId(row);
-  markSelected(state, false);
-}
-
-/** Every row on the page, shown or not. */
-function allRows(): HTMLElement[] {
-  return [...byId("view").querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)];
 }
 
 /** "Needs you" as a list to step through: questions are answered in place, the rest open. */

@@ -117,11 +117,26 @@ describe("parseNeedsYou", () => {
     ["a key that is no key", { key: "<b>" }],
     ["no ask", { ask: "" }],
     ["a priority the board has not", { priority: "urgent" }],
+    ["a group without its representative first", { group: { reason: "drafts", numbers: [3, 2] } }],
+    ["a group of no PRs", { group: { reason: "drafts", numbers: [] } }],
+    ["a group without a reason", { group: { numbers: [2, 3] } }],
   ];
   for (const [name, edit] of refused) it(`leaves out ${name}`, () => {
     const l = parseNeedsYou(rawNeedsYou([rawAsk(1), rawAsk(2, edit)], "2026-10-30T09:30:00Z"));
     assert.ok(typeof l === "object");
     assert.deepEqual([l.items.map((a) => a.key), l.refused, l.complete], [["cgwalters-forge/tracker#1"], 1, false]);
+  });
+
+  it("joins well-formed request descriptors and keeps malformed ones read-only", () => {
+    const action = (kind: string, supported = false) => ({ kind, supported, reason: `${kind}?` });
+    const request = (n: number, over: Record<string, unknown> = {}) => ({ key: `cgwalters-forge/tracker#${n}`, forge: "github.com", quality: "decision", actions: [action("reply")], ...over });
+    const l = parseNeedsYou(rawNeedsYou([rawAsk(1), rawAsk(2), rawAsk(3), rawAsk(4)], "2026-10-30T09:30:00Z", { requests: [
+      request(1), request(1, { forge: "https://forgejo.example/git", actions: [action("close")] }),
+      request(2, { quality: "fine" }), request(3, { actions: [{ kind: "reply", supported: "yes", reason: "r" }] }), request(9),
+    ] }));
+    assert.ok(typeof l === "object" && !l.complete);
+    assert.deepEqual(l.items.map((a) => a.requests?.map((r) => [r.forge, r.actions.map((x) => x.kind)])), [[["github.com", ["reply"]], ["https://forgejo.example/git", ["close"]]], undefined, undefined, undefined]);
+    assert.deepEqual(l.items.map((a) => a.requestsUnreadable), [undefined, true, true, true]);
   });
 
   it("never keeps the published target: links are made from the action", () => {

@@ -71,6 +71,25 @@ that page cannot rule out an existing approval, nothing is written.
 Single and digest cards share in-flight and five-minute write receipts
 (at most 100 heads per signed-in client), including uncertain failures.
 
+Where the pass publishes request descriptors (`needs_you.requests`), a card
+follows their typed actions: Approve only where `review-at-head` is
+supported, Do only where `check-proposal` is, and nothing in place for a
+request on another forge than github.com. Unreadable, missing or capped
+descriptors stay read-only; only older lists with no descriptor field use
+legacy actions. Foreign or unreadable targets offer no GitHub navigation.
+The steps the pass marks
+unsupported (merge or enqueue, reply, close) are listed with its reasons
+under **Not offered here**, never replaced by a generic Answer or Open. A
+quality other than `decision` is shown on the card. A group of stranded PRs
+gets no Answer, which would land on its first PR alone; each member is read
+only when opened. **Promote** is a midstream draft (`review-promote`): each
+member opened shows its state and head. Promotion is read-only here because
+bot-pr's `/promote` command cannot bind authorization to the displayed head;
+a preflight read cannot close that race. Merging is never used to promote.
+Reloading with `r` refreshes member readers, not a cached member-list receipt.
+A successful approve or answer marks its card done at once and
+says what it waits on; an answer that only comments says the hold stays.
+
 The digest's approvals are one **Approve selected** card. It approves
 selected PRs at the heads the digest assessed, skipping changed heads and
 closed PRs and reporting each outcome; the report stays until `r`.
@@ -90,7 +109,9 @@ Cards retain their nodes across polls. A card holding an unsent pick, text
 or focused field is not redrawn, moved or removed. It says when its source
 changed or left; `r` explicitly reloads it, dropping the draft. A document
 answer is sent only if its entry still matches the card shown. Switching
-between Needs you and Status does not discard unsent answers.
+between Needs you and Status does not discard unsent answers. If descriptors
+change while a draft or receipt is retained, its old controls and links are
+disabled until reload; the text and receipt remain visible.
 
 The optional single checklist document is configured in
 `src/github/decisions-config.json`: `document` names `repo` and `number`;

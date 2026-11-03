@@ -43,7 +43,7 @@ import {
   TRACKER_SCOPE,
 } from "./board.ts";
 import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, OPERATOR, QUESTION_LABEL, DONE, FETCH_CONCURRENCY, LINKED_STATUSES, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
-import { refKey } from "./forge.ts";
+import { promoteProblem, refKey } from "./forge.ts";
 import { mapLimit, submitReview } from "./prs.ts";
 import type { ReviewRequest } from "./forge.ts";
 import { approveSelected } from "./maintain.ts";
@@ -479,6 +479,29 @@ export async function approveAt(gh: GitHub, pr: IssueRef, head: string, ask?: { 
   if (result!.status === "approved") return result!.url;
   if (result!.note?.includes("already approved")) return undefined;
   throw new Error(result!.note);
+}
+
+/** A member of a card's PRs, as one read of it shows it. */
+export interface MemberPr {
+  ref: IssueRef;
+  url: string;
+  title: string;
+  /** open, closed or merged, and draft. */
+  state: string;
+  head: string;
+  author: string;
+  /** Why bot-pr would not promote it on a plain `/promote`; undefined when it would. */
+  problem?: string;
+}
+
+/** One PR read now, for a card's member: a single request, made when he opens it. */
+export async function readMember(gh: GitHub, ref: IssueRef): Promise<MemberPr> {
+  const pr = await gh.send<{ html_url: string; title: string; state: string; merged?: boolean; draft?: boolean; body?: string | null; user?: { login?: string } | null; head: { sha: string } }>("GET", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`);
+  const actual = parseIssueUrl(pr.html_url);
+  if (!actual || refKey(actual).toLowerCase() !== refKey(ref).toLowerCase()) throw new Error(`${refKey(ref)} is now ${pr.html_url}`);
+  const author = pr.user?.login ?? "ghost";
+  const problem = promoteProblem({ ref: actual, author, body: pr.body ?? "" });
+  return { ref: actual, url: pr.html_url, title: pr.title, state: `${pr.merged ? "merged" : pr.state}${pr.draft ? " draft" : ""}`, head: pr.head.sha, author, ...(problem ? { problem } : {}) };
 }
 
 /**

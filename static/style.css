@@ -351,40 +351,7 @@ pre.line-diff .d-add { background: var(--add); color: var(--add-ink); }
 pre.line-diff .d-del { background: var(--del); color: var(--del-ink); }
 pre.line-diff .d-same { color: var(--muted); }
 
-/* Rows of "Needs you": the one action each asks for, questions answered in place. */
-.dec-id { font: 13px var(--mono); font-weight: 600; color: var(--accent); }
-details.unblocks summary, details.dec-body summary { cursor: pointer; font: 12px var(--mono); color: var(--muted); }
-details.unblocks ul { margin: 6px 0 0; padding-left: 18px; columns: 2 16em; font: 12px var(--mono); }
-.row.need { cursor: default; }
-.row.need:focus { outline: none; border-color: var(--accent); }
-.row.need-done { opacity: .7; }
-.row.need .title a { color: inherit; text-decoration: none; }
-.row.need .title a:hover { text-decoration: underline; }
-.row.need { padding: 12px 14px; }
-.row.need .main { gap: 6px; }
-.row.need .title { font-size: 16px; line-height: 1.4; }
-.row.need .why { font-size: var(--type-secondary); white-space: normal; overflow: visible; overflow-wrap: anywhere; }
-.row.need .sub { color: var(--muted); }
-.row.need .tag, .row.need .age { font: var(--type-meta) var(--mono); overflow-wrap: anywhere; }
-.row.need .tag a { color: inherit; }
-.row.need form.answer { margin: 6px 0 2px; }
-.row.need .note, .row.need .warn { margin: 2px 0; font-size: 13px; }
-.row.need label.opt { font-size: 15px; line-height: 1.4; padding: 10px 12px; }
-.row.need label.opt input { flex: none; width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); }
-/* 16px: a smaller text box makes a phone browser zoom in on focus. */
-.row.need textarea { font-size: 16px; }
-.row.need-off { display: none; }
-.needs-head { display: grid; gap: 8px; }
-.needs-head .note { margin: 0; }
-.needs-filter { display: flex; flex-wrap: wrap; gap: 6px; }
-.needs-filter button { font-size: 13px; padding: 6px 12px; border-radius: 999px; }
-.needs-filter .count { font: var(--type-meta) var(--mono); color: var(--muted); }
-.needs-filter button.on .count { color: inherit; }
-@media (max-width: 600px) {
-  /* The badge's column costs a fifth of a phone's width; the action or the form says what the row is. */
-  .row.need { grid-template-columns: minmax(0, 1fr); }
-  .row.need > .kind { display: none; }
-}
+details.dec-body summary, details.not-offered summary, details.member summary { cursor: pointer; font: 12px var(--mono); color: var(--muted); }
 
 /* The inbox's cards (decisions-config.json's inbox): kind chip, title and age, one line, one action. */
 .inbox-tail { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
@@ -464,12 +431,9 @@ details.sec[open] > summary { border-bottom: 1px solid var(--line); }
 .capture-row button { white-space: nowrap; }
 /* Published status is rendered by the existing sanitizer. */
 .status-note { padding: 1rem; min-width: 0; overflow-wrap: anywhere; }
-.watching-item { min-width: 0; overflow-wrap: anywhere; }
 .source-freshness { overflow-wrap: anywhere; padding: .5rem 1rem; }
 .status-preview > :not(.status-summary) { display: none; }
 .status-preview > :first-child { margin-top: 0; }
-.watching { margin-top: 1rem; }
-.watching-item { opacity: .7; }
 /* The chat drawer, opened from Needs you. It stays within the viewport,
    including long untrusted tool output; full screen covers the page. */
 .chat-panel { min-width: 0; max-width: 100%; display: grid; gap: 6px; padding: 8px 12px; background: var(--surface); }
