@@ -5,10 +5,10 @@ import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { GitHub } from "../src/github/api.ts";
 import { parseNeedsYou } from "../src/github/holds.ts";
-import { type Card, publishedCards } from "../src/github/inbox.ts";
+import { type Card, publishedCards, refusal } from "../src/github/inbox.ts";
 import { fillInbox } from "../src/github/inboxview.ts";
 import { newestDraft, type ReviewDraftConfig } from "../src/github/reviewdrafts.ts";
-import { fields, rawAsk, rawNeedsYou, scriptedFetch, type Scripted } from "./helpers.ts";
+import { fields, fixture, rawAsk, rawNeedsYou, scriptedFetch, type Scripted } from "./helpers.ts";
 
 const dom = new JSDOM(readFileSync(new URL("../static/index.html", import.meta.url), "utf8"), { url: "https://review.example/" });
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, Node: dom.window.Node, HTMLElement: dom.window.HTMLElement,
@@ -33,6 +33,7 @@ const questionIssue = () => ({ ...shown(), labels: [{ name: "question" }, ...sho
 function setup(route: (method: string, path: string) => Scripted | undefined, login = "cgwalters", drafts?: ReviewDraftConfig) {
   const f = scriptedFetch((method, url) => new URL(url).pathname === "/user" ? { body: { login } } : route(method, new URL(url).pathname) ?? (new URL(url).pathname === "/graphql" ? { body: { data: { repository: { issueOrPullRequest: { comments: { nodes: [] } } } } } } : undefined));
   const state = { gh: new GitHub(async () => "test", f.fetchImpl) } as Parameters<typeof inboxHooks>[0];
+  state.items = [];
   let list = document.createElement("div");
   document.body.append(list);
   const paint = (card: Card, force = false, remount = false) => {
@@ -63,6 +64,8 @@ test("main answer posts, then removes exactly needs-human; sent receipt survives
   const { r, card, form } = await answer();
   assert.deepEqual(r.writes().map((c) => `${c.method} ${new URL(c.url).pathname}`), [`POST ${path}/comments`, `DELETE ${path}/labels/needs-human`]);
   assert.match(form.textContent!, /issuecomment-1/);
+  assert.ok(r.list.querySelector(".card")!.classList.contains("card-done"));
+  assert.match(r.list.textContent!, /Released: needs-human on cgwalters-forge\/tracker#50, the needs-human hold\. Other holds stay\. Waiting on the agent\./);
   r.paint({ ...card, priority: "P0" }, true, true);
   await settle();
   assert.equal(r.list.querySelector("form"), form);
@@ -213,6 +216,8 @@ for (const kind of ["needs-operator", "epic-unplanned"]) test(`main never releas
   const { r, form } = await answer({ kind });
   assert.equal(r.writes().length, 1);
   assert.match(form.textContent!, /Only a comment/);
+  assert.match(r.list.textContent!, new RegExp(`Commented only: the ${kind} hold on cgwalters-forge/tracker#50 stays`));
+  assert.doesNotMatch(r.list.textContent!, /Released/);
 });
 
 test("main digest partial results survive forced redraw without offering approved PRs again", async () => {
@@ -241,4 +246,265 @@ test("main Send checks the viewer before ticking, and preserves its refusal on r
   const send = r.list.querySelector(".review-draft");
   r.paint({ ...card, priority: "P0" }, true, true); await settle();
   assert.equal(r.list.querySelector(".review-draft"), send);
+});
+
+// A redacted list in the shape agent-board's needs-you requests publish
+// (agent-board#642, pass/holds/requests.rs): its action kinds and reasons
+// verbatim, its repositories, numbers, heads and questions replaced.
+const published = (): Card[] => {
+  const l = parseNeedsYou(fixture("needs-you-requests.json"));
+  assert.ok(typeof l === "object" && l.complete && !l.refused, String(l));
+  return publishedCards(l.items);
+};
+const byKey = (key: string): Card => published().find((c) => c.key === key)!;
+
+test("main draws each published request with only the step the pass and this forge allow", async () => {
+  const cases: { key: string; kind: string; button?: string; refused?: RegExp; offered?: string; members?: number; note?: RegExp }[] = [
+    { key: "cgwalters-forge/tracker#1101", kind: "answer", offered: "Not offered here: promote, merge or enqueue, close" },
+    { key: "cgwalters-forge/widget#41", kind: "promote", members: 2, offered: "Not offered here: merge or enqueue, reply, close", note: /2 PRs: drafts waiting for promotion/ },
+    { key: "cgwalters-forge/widget#43", kind: "approve", button: "Approve ccccccc", offered: "Not offered here: promote, merge or enqueue, reply, close" },
+    { key: "up/proj#7", kind: "approve", refused: /Not offered here: Use a forge review bound to target\.head/, offered: "Not offered here: merge or enqueue, approve at the head", note: /marks this request unverified-carried/ },
+    { key: "cgwalters-forge/widget#44", kind: "open", members: 2, offered: "Not offered here: reply", note: /missing-concrete-decision/ },
+    { key: "mid/proj#3", kind: "answer", refused: /on https:\/\/forgejo\.example:3000\/git, and this page writes only to github\.com/ },
+  ];
+  for (const c of cases) {
+    const r = setup(() => undefined);
+    const card = byKey(c.key);
+    assert.equal(card.kind, c.kind, c.key);
+    r.paint(card); await settle();
+    const el = r.list.querySelector(".card")!;
+    assert.equal(el.querySelector(".card-body.actions button")?.textContent, c.button, c.key);
+    if (c.refused) {
+      assert.match(el.querySelector(".card-body .warn")!.textContent!, c.refused, c.key);
+      assert.equal(el.querySelector("form, .card-body button"), null, c.key);
+    }
+    assert.equal(el.querySelector(".not-offered summary")?.textContent, c.offered, c.key);
+    assert.equal(el.querySelectorAll("details.member").length, c.members ?? 0, c.key);
+    if (c.note) assert.match(el.querySelector(".card-note")!.textContent!, c.note, c.key);
+    // A group is never answered through its representative.
+    if (c.members) assert.equal(el.querySelector("form"), null, c.key);
+    assert.equal(r.writes().length, 0, c.key);
+  }
+});
+
+test("main's chat answers only where the card would, and any descriptor ruling a step out rules it out", () => {
+  const state = { gh: new GitHub(async () => "t", async () => { throw new Error("network forbidden"); }) } as Parameters<typeof inboxHooks>[0];
+  const hooks = inboxHooks(state);
+  assert.equal(typeof hooks.chatItem!(byKey("cgwalters-forge/tracker#1101"))?.answer, "function");
+  assert.equal(hooks.chatItem!(byKey("mid/proj#3"))?.answer, undefined);
+  const approve = byKey("cgwalters-forge/widget#43") as Card & { kind: "approve" };
+  const [live] = approve.ask.requests!;
+  const carried = { ...live!, actions: [{ kind: "review-at-head", supported: false, reason: "carried" }] };
+  for (const requests of [[live!, carried], [carried, live!]]) assert.equal(refusal({ ...approve.ask, requests }, "review-at-head"), "carried");
+});
+
+const BOT_META = "Fix.\n\n<!-- bot-meta -->\n- Upstream: `up/widget`, base `main`\n<!-- /bot-meta -->";
+
+test("main reads promotion members on demand but withholds the unbound command", async () => {
+  const B = "b".repeat(40);
+  const pulls: Record<number, { body: string; sha: string; moved?: string; post?: number }> = {
+    41: { body: BOT_META, sha: head },
+    42: { body: BOT_META, sha: head, moved: B },
+  };
+  const read = new Map<number, number>();
+  const r = setup((method, p) => {
+    const m = /^\/repos\/cgwalters-forge\/widget\/(?:pulls|issues)\/(\d+)(\/comments)?$/.exec(p);
+    const pr = m && pulls[Number(m[1])];
+    if (!pr) return undefined;
+    if (method === "POST" && m![2]) return { status: pr.post ?? 201, body: { html_url: `https://github.com/cgwalters-forge/widget/pull/${m![1]}#issuecomment-9` } };
+    const n = (read.get(Number(m![1])) ?? 0) + 1;
+    read.set(Number(m![1]), n);
+    return { body: { html_url: `https://github.com/cgwalters-forge/widget/pull/${m![1]}`, title: `Draft ${m![1]}`, state: "open", draft: true, body: pr.body, user: { login: "cgwalters-bot" }, head: { sha: n > 1 && pr.moved ? pr.moved : pr.sha } } };
+  });
+  r.paint(byKey("cgwalters-forge/widget#41")); await settle();
+  assert.equal(read.size, 0, "nothing is read until a member is opened");
+  const [first, second] = r.list.querySelectorAll<HTMLDetailsElement>("details.member");
+  for (const d of [first!, second!]) { d.open = true; d.dispatchEvent(new dom.window.Event("toggle")); }
+  await settle();
+  assert.match(first!.textContent!, /Draft 41 · open draft · aaaaaaa · by cgwalters-bot · Review/);
+  for (const d of [first!, second!]) {
+    assert.equal(d.querySelector("button"), null);
+    assert.match(d.textContent!, /\/promote command cannot be bound to the displayed head/);
+  }
+  assert.deepEqual(r.writes(), []);
+  // An old member report must not freeze the group's live readers on r.
+  const report = document.createElement("p");
+  report.dataset.keep = "";
+  report.dataset.sent = "";
+  first!.append(report);
+  r.paint(byKey("cgwalters-forge/widget#41"), true);
+  const again = r.list.querySelectorAll<HTMLDetailsElement>("details.member")[1]!;
+  again.open = true; again.dispatchEvent(new dom.window.Event("toggle")); await settle();
+  assert.notEqual(again, second);
+  assert.match(again.textContent!, /Draft 42 · open draft · bbbbbbb/);
+  assert.deepEqual(r.writes(), []);
+});
+
+test("main explains member-specific promotion problems", async () => {
+  for (const [body, user, why] of [["No meta.", "cgwalters-bot", /names no upstream/], [BOT_META, "someone", /not a cgwalters-bot PR in cgwalters-forge/]] as const) {
+    const r = setup((method, p) => p === "/repos/cgwalters-forge/widget/pulls/41" ? { body: { html_url: "https://github.com/cgwalters-forge/widget/pull/41", title: "T", state: "open", draft: true, body, user: { login: user }, head: { sha: head } } } : undefined);
+    r.paint(byKey("cgwalters-forge/widget#41"));
+    const d = r.list.querySelector<HTMLDetailsElement>("details.member")!;
+    d.open = true; d.dispatchEvent(new dom.window.Event("toggle")); await settle();
+    assert.match(d.textContent!, why);
+    assert.equal(d.querySelector("button"), null);
+  }
+});
+
+test("foreign-forge cards offer neither GitHub inspection nor a GitHub chat target", async () => {
+  const r = setup(() => { throw new Error("must not read GitHub"); });
+  r.paint(byKey("mid/proj#3")); await settle();
+  assert.equal(r.list.querySelector("a, button, form"), null);
+  assert.equal(r.list.querySelector(".card")!.getAttribute("data-href"), "#");
+  assert.equal(r.calls.length, 0);
+});
+
+test("digest aggregation leaves foreign and unsupported requests read-only", async () => {
+  const items = [7, 8, 9].map((n) => rawAsk(n, { key: `up/proj#${n}/digest`, item: `up/proj#${n}`, source: "digest", kind: "digest-approve", action: { type: "approve_pull_request", repository: "up/proj", number: n, head } }));
+  const requests = items.map((a, i) => ({ key: a.key, forge: i === 1 ? "https://forgejo.example/git" : "github.com", quality: "decision", actions: [{ kind: "review-at-head", supported: i !== 2, reason: "approval unsupported" }] }));
+  const l = parseNeedsYou(rawNeedsYou(items, "2026-10-30T00:00:00Z", { requests }));
+  assert.ok(typeof l === "object");
+  const all = publishedCards(l.items);
+  assert.deepEqual(all.map((c) => c.key), ["digest", "up/proj#8/digest", "up/proj#9/digest"]);
+  const r = setup((method, p) => method === "GET" ? { body: p.endsWith("/reviews") ? [] : { state: "open", head: { sha: head } } } : { body: {} });
+  for (const card of all.slice(1)) {
+    r.paint(card, true, true); await settle();
+    assert.equal(r.list.querySelector(".card-body button, input, form"), null);
+    assert.match(r.list.textContent!, /Not offered here:/);
+  }
+  r.paint(all[0]!, true, true);
+  r.list.querySelector("button")!.click(); await settle();
+  assert.deepEqual(r.writes().map((c) => new URL(c.url).pathname), ["/repos/up/proj/pulls/7/reviews"]);
+});
+
+test("malformed and capped descriptors never restore legacy writes or navigation", async () => {
+  for (const forge of ["github.com", "https://forgejo.example/git"]) {
+    const request = { key: target.toLowerCase(), forge, quality: "decision", actions: [{ kind: "reply", supported: false, reason: "unsupported" }] };
+    for (const requests of [
+      [{ ...request, actions: [{ kind: "reply", supported: false, reason: "" }] }],
+      [{ ...request, quality: "future-quality" }],
+      [...Array.from({ length: 500 }, () => ({ ...request, key: "other/repo#1" })), request],
+      null,
+      [{}],
+      [],
+      [{ ...request, key: "other/repo#1" }],
+    ]) {
+      const l = parseNeedsYou(rawNeedsYou([rawAsk(50)], "2026-10-30T00:00:00Z", { requests }));
+      assert.ok(typeof l === "object" && !l.complete);
+      assert.equal(l.items[0]!.requestsUnreadable, true);
+      const r = setup(() => { throw new Error("must not read GitHub"); });
+      r.paint(publishedCards(l.items)[0]!); await settle();
+      assert.match(r.list.textContent!, /descriptors could not be read safely/);
+      assert.equal(r.list.querySelector("button, form, a"), null);
+      assert.equal(r.calls.length, 0);
+    }
+  }
+});
+
+test("cached approval refusals cannot outlive updated forge or capability restrictions", async () => {
+  for (const policy of [
+    { forge: "https://forgejo.example/git", actions: [{ kind: "review-at-head", supported: true, reason: "ready" }] },
+    { forge: "github.com", actions: [{ kind: "review-at-head", supported: false, reason: "unsupported" }] },
+    { forge: "github.com", actions: [] },
+    { forge: "github.com", actions: [{ kind: "future-action", supported: true, reason: "ready" }] },
+    { forge: "github.com", actions: [{ kind: "review-at-head", supported: true, reason: "" }] },
+  ]) {
+    const r = setup((_method, p) => p.endsWith("/reviews") ? { body: [] } : p.includes("/pulls/") ? { body: { state: "open", head: { sha: "b".repeat(40) } } } : undefined);
+    const raw = rawAsk(7, { key: "up/proj#7", item: "up/proj#7", kind: "review-approve", action: { type: "approve_pull_request", repository: "up/proj", number: 7, head } });
+    const initial = cards(raw)[0]!;
+    r.paint(initial);
+    const old = r.list.querySelector<HTMLButtonElement>(".card-body button")!;
+    old.click(); await settle();
+    assert.equal(old.disabled, false);
+    assert.match(r.list.textContent!, /head moved/);
+    const l = parseNeedsYou(rawNeedsYou([raw], "2026-10-30T00:00:00Z", { requests: [{ key: raw.key, quality: "decision", ...policy }] }));
+    assert.ok(typeof l === "object");
+    const restricted = publishedCards(l.items)[0]!;
+    r.paint(restricted);
+    assert.equal(old.disabled, true, "a retained receipt loses its obsolete controls");
+    assert.equal(r.list.querySelector("a[href]"), null);
+    old.click(); await settle();
+    assert.equal(r.writes().length, 0);
+    r.paint(restricted, true);
+    assert.equal(r.list.querySelector(".card-body button, form"), null);
+    assert.match(r.list.textContent!, /Not offered here:/);
+    assert.equal(r.writes().length, 0);
+  }
+});
+
+test("a retained answer keeps its text but cannot submit after its forge changes", async () => {
+  const r = setup((_method, p) => p === path ? { body: shown() } : undefined);
+  const card = answerCard() as Card & { kind: "answer" };
+  r.paint(card); await settle();
+  const form = r.list.querySelector("form")!;
+  form.querySelector("textarea")!.value = "Keep this unsent answer.";
+  r.paint({ ...card, ask: { ...card.ask, requestsUnreadable: true } });
+  assert.equal(r.list.querySelector("form"), form);
+  assert.equal(form.querySelector("textarea")!.value, "Keep this unsent answer.");
+  form.dispatchEvent(new dom.window.Event("submit", { cancelable: true, bubbles: true })); await settle();
+  assert.equal(r.writes().length, 0);
+  assert.equal(r.list.querySelector("a[href]"), null);
+});
+
+test("new restrictions also retire an old digest's picked members", async () => {
+  const r = setup((method, p) => method === "GET" ? { body: p.endsWith("/reviews") ? [] : { state: "open", head: { sha: "b".repeat(40) } } } : { body: {} });
+  const raw = [7, 8].map((n) => rawAsk(n, { key: `up/proj#${n}/digest`, item: `up/proj#${n}`, kind: "digest-approve", action: { type: "approve_pull_request", repository: "up/proj", number: n, head } }));
+  r.paint(cards(...raw)[0]!);
+  const old = r.list.querySelector<HTMLButtonElement>("button")!;
+  old.click(); await settle();
+  const l = parseNeedsYou(rawNeedsYou(raw, "2026-10-30T00:00:00Z", { requests: raw.map((a, i) => ({ key: a.key, forge: i ? "https://forgejo.example/git" : "github.com", quality: "decision", actions: [{ kind: "review-at-head", supported: true, reason: "ready" }] })) }));
+  assert.ok(typeof l === "object");
+  const current = publishedCards(l.items)[0]!;
+  r.paint(current);
+  assert.equal(old.disabled, true);
+  old.click(); await settle();
+  assert.equal(r.writes().length, 0);
+  r.paint(current, true);
+  assert.equal(r.list.querySelectorAll("input").length, 1);
+});
+
+test("ordinary groups reread members on r after either success or a failed read", async () => {
+  for (const fail of [false, true]) {
+    let reads = 0;
+    const r = setup((_method, p) => {
+      if (p !== "/repos/cgwalters-forge/widget/pulls/44") return undefined;
+      reads++;
+      return fail && reads === 1 ? { status: 502 } : { body: { html_url: "https://github.com/cgwalters-forge/widget/pull/44", title: "Member", state: "open", body: BOT_META, user: { login: "cgwalters-bot" }, head: { sha: reads === 1 ? head : "b".repeat(40) } } };
+    });
+    const card = byKey("cgwalters-forge/widget#44");
+    r.paint(card);
+    const first = r.list.querySelector<HTMLDetailsElement>("details.member")!;
+    first.open = true; first.dispatchEvent(new dom.window.Event("toggle")); await settle();
+    r.paint(card, true);
+    const second = r.list.querySelector<HTMLDetailsElement>("details.member")!;
+    assert.notEqual(first, second);
+    second.open = true; second.dispatchEvent(new dom.window.Event("toggle")); await settle();
+    assert.equal(reads, 2);
+    assert.match(second.textContent!, /bbbbbbb/);
+  }
+});
+
+test("a digest that disappears when all members are restricted retains no approval authority", async () => {
+  for (const restricted of [
+    { forge: "https://forgejo.example/git", supported: true, reason: "ready" },
+    { forge: "github.com", supported: false, reason: "unsupported" },
+    { forge: "github.com", supported: true, reason: "" },
+  ]) {
+    const r = setup((method, p) => method === "GET" ? { body: p.endsWith("/reviews") ? [] : { state: "open", head: { sha: "b".repeat(40) } } } : { body: {} });
+    const raw = rawAsk(7, { key: "up/proj#7/digest", item: "up/proj#7", kind: "digest-approve", action: { type: "approve_pull_request", repository: "up/proj", number: 7, head } });
+    r.paint(cards(raw)[0]!);
+    const old = r.list.querySelector<HTMLButtonElement>("button")!;
+    old.click(); await settle();
+    assert.equal(old.disabled, false);
+    const l = parseNeedsYou(rawNeedsYou([raw], "2026-10-30T00:00:00Z", { requests: [{ key: raw.key, forge: restricted.forge, quality: "decision", actions: [{ kind: "review-at-head", supported: restricted.supported, reason: restricted.reason }] }] }));
+    assert.ok(typeof l === "object");
+    const current = publishedCards(l.items);
+    assert.equal(current.some((c) => c.kind === "digest"), false);
+    r.paint(current[0]!);
+    assert.ok(r.list.contains(old), "the old report remains visible");
+    assert.equal(old.disabled, true);
+    assert.equal(old.closest(".card")!.querySelector("a[href]"), null);
+    old.click(); await settle();
+    assert.equal(r.writes().length, 0);
+  }
 });

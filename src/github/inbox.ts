@@ -25,11 +25,12 @@ import type { ApproveItem } from "./maintain.ts";
 import type { DraftIssue } from "./reviewdrafts.ts";
 import { ago } from "../time.ts";
 
-export type CardKind = "answer" | "approve" | "open" | "do" | "digest" | "document" | "send";
+export type CardKind = "answer" | "approve" | "promote" | "open" | "do" | "digest" | "document" | "send";
 
 export const CARD_LABEL: Record<CardKind, string> = {
   answer: "Answer",
   approve: "Approve",
+  promote: "Promote",
   open: "Act",
   do: "Do",
   digest: "Approve",
@@ -57,7 +58,7 @@ interface CardBase {
 }
 
 export type Card = CardBase & (
-  | { kind: "answer" | "approve" | "open" | "do"; ask: Ask }
+  | { kind: "answer" | "approve" | "promote" | "open" | "do"; ask: Ask }
   | { kind: "digest"; items: ApproveItem[] }
   | { kind: "send"; draft: DraftIssue }
   | { kind: "document"; entry: DocumentEntry; mark?: Mark }
@@ -77,20 +78,53 @@ export function askHref(r: AskRef): string {
 
 const open = (state: string | undefined): boolean => state === undefined || state === "open";
 
+/** The forge this client writes to; a request on another is shown, never acted on. */
+export const GITHUB_FORGE = "github.com";
+
+/** Whether resolving this ask through GitHub (including navigation) is safe. */
+export const githubTarget = (a: Ask): boolean => !a.requestsUnreadable && (a.requests ?? []).every((r) => r.forge === GITHUB_FORGE);
+
+/** The PRs an ask stands for: a group's members, else its own. */
+export const members = (a: Ask): number[] => a.group?.numbers ?? [a.action.number];
+
+/**
+ * Why a card writes nothing in place, though its kind would: its request
+ * is on another forge, or the pass says its step (review-at-head for
+ * Approve, check-proposal for Do) is not supported. Without descriptors,
+ * the card acts as it always did.
+ */
+export function refusal(a: Ask, step?: string): string | undefined {
+  if (a.requestsUnreadable) return "this request's descriptors could not be read safely; it is read-only";
+  const forge = a.requests?.find((r) => r.forge !== GITHUB_FORGE)?.forge;
+  if (forge) return `this request is on ${forge}, and this page writes only to ${GITHUB_FORGE}`;
+  // One card may stand for several decisions: any that rules the step out rules it out.
+  const unsupported = a.requests?.flatMap((r) => r.actions).find((x) => x.kind === step && !x.supported)?.reason;
+  if (unsupported) return unsupported;
+  if (step && a.requests?.some((r) => !r.actions.some((x) => x.kind === step && x.supported))) return `the pass does not support ${step} for this request`;
+  return undefined;
+}
+
 /** The card for one published ask. */
 export function askCard(a: Ask, unavailable = false): Card {
   const type = a.action.type;
-  const kind = type === "operator_action" ? "do" : type === "approve_pull_request" ? "approve" : type === "issue" || type === "pull_request" ? "answer" : "open";
-  const note = [a.recommendation && `Recommendation: ${a.recommendation}`, a.carried && "Carried over: the pass did not read its source again."].filter(Boolean).join(" ");
+  // A group's answer would land on its representative alone: its members are read and opened one by one.
+  const kind = a.kind === "review-promote" ? "promote" : type === "operator_action" ? "do" : type === "approve_pull_request" || (a.kind === "digest-approve" && a.action.head) ? "approve" : !a.group && (type === "issue" || type === "pull_request") ? "answer" : "open";
+  const diagnostic = a.requests?.find((r) => r.quality !== "decision")?.quality;
+  const note = [
+    a.group && `${a.group.numbers.length} PRs: ${a.group.reason}`,
+    a.recommendation && `Recommendation: ${a.recommendation}`,
+    a.carried && "Carried over: the pass did not read its source again.",
+    diagnostic && `The pass marks this request ${diagnostic}.`,
+  ].filter(Boolean).join(" ");
   return {
-    kind, ask: a, key: a.key, title: a.ask, where: `${a.item} · ${a.kind}`, url: askUrl(a.action), since: a.waitingSince,
+    kind, ask: a, key: a.key, title: a.ask, where: `${a.item} · ${a.kind}`, ...(githubTarget(a) ? { url: askUrl(a.action) } : {}), since: a.waitingSince,
     ...(a.priority ? { priority: a.priority } : {}), ...(note ? { note } : {}), ...(unavailable ? { unavailable } : {}),
   };
 }
 
 /** The asks as cards in the pass's order, the digest's approvals one group where the first of them ranks. */
 export function publishedCards(asks: readonly Ask[], unavailable = false): Card[] {
-  const digest = asks.filter((a) => a.kind === "digest-approve" && a.action.head);
+  const digest = asks.filter((a) => a.kind === "digest-approve" && a.action.head && !refusal(a, "review-at-head"));
   const items = digest.map((a): ApproveItem => {
     const [owner = "", repo = ""] = a.action.repository.split("/");
     return { pr: { owner, repo, number: a.action.number }, head: a.action.head!, reason: a.recommendation ?? a.ask };

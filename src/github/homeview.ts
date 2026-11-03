@@ -4,18 +4,12 @@ import type { Renderer } from "../markdown.ts";
 import type { ProjectStatus } from "./backend.ts";
 import type { Item } from "./board.ts";
 import { TRACKER_REPO } from "./config.ts";
-import { DECISIONS_CONFIG } from "./decisiondocument.ts";
-import { refKey, VERDICT_LABEL } from "./forge.ts";
-import { ALL_PRIORITIES, type Need, waitingCount } from "./needs.ts";
-import { applyPriority, NEED_CLASS, NEED_FILTERED_CLASS, NEED_ORDER_ATTR, needRow, needsHead, type NeedsHooks, WATCHING_CLASS, WATCHING_ITEM_CLASS } from "./needsview.ts";
-import type { Entry } from "./queue.ts";
 import type { People } from "./people.ts";
 import { peopleView } from "./peopleview.ts";
 import { PREVIEW_ROWS, SECTION_HINT, SECTION_TITLE, type SectionId } from "./sections.ts";
 import { VIEW_ATTR } from "./shell.ts";
 import type { PageState } from "./state.ts";
-import { agoLabel, CAUGHT_UP_CLASS, ROW_CLASS, rowText } from "./view.ts";
-import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
+import { agoLabel, ROW_CLASS } from "./view.ts";
 
 export const HOME_CLASS = "home";
 export const SECTION_CLASS = "sec";
@@ -31,7 +25,7 @@ export interface SectionEls {
 export interface Home {
   el: HTMLElement;
   sections: Record<SectionId, SectionEls>;
-  slots: { needs: HTMLElement; people: HTMLElement; peopleCount: HTMLElement; freshness: HTMLElement; statusNote: HTMLElement };
+  slots: { people: HTMLElement; peopleCount: HTMLElement; freshness: HTMLElement; statusNote: HTMLElement };
   expected: Map<SectionId, boolean>;
 }
 
@@ -42,9 +36,8 @@ export interface HomeHooks {
 }
 
 export function homeSkeleton(hooks: HomeHooks): Home {
-  const needs = h("div", { class: "needs-slot" });
   const count = h("span", { class: COUNT_CLASS }, "…");
-  const body = h("div", { class: "sec-body" }, needs);
+  const body = h("div", { class: "sec-body" });
   const details = h("details", { class: `${SECTION_CLASS} sec-needs`, id: "sec-needs", [VIEW_ATTR]: "inbox" },
     h("summary", {}, h("span", { class: "sec-title" }, SECTION_TITLE.needs), count, h("span", { class: "sec-hint" }, SECTION_HINT.needs)), body);
   details.open = true;
@@ -62,7 +55,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const statusNote = h("section", { class: "status-note", [VIEW_ATTR]: "status", "aria-label": "Published status" });
   const freshness = h("p", { class: "source-freshness note", "aria-label": "Source freshness" });
   const el = h("div", { class: HOME_CLASS }, details, peopleSection, statusNote, freshness);
-  return { el, sections: { needs: { details, count, body } }, slots: { needs, people, peopleCount, statusNote, freshness }, expected };
+  return { el, sections: { needs: { details, count, body } }, slots: { people, peopleCount, statusNote, freshness }, expected };
 }
 
 export function fillState(home: Home, state: PageState): void {
@@ -126,58 +119,13 @@ export function applyLimit(slot: HTMLElement, id: string, rowSelector: string, l
   slot.append(button);
 }
 
-export function reveal(row: HTMLElement, slot: HTMLElement, id: string, rowSelector: string): void {
-  const watching = row.closest<HTMLDetailsElement>("details.watching");
-  if (watching) watching.open = true;
-  if (!row.hidden && !row.closest("[hidden]")) return;
-  expanded.add(id);
-  applyLimit(slot, id, rowSelector);
-}
-
 export function walkRows(root: HTMLElement): HTMLElement[] {
-  return [...root.querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)].filter((r) => !r.closest(`[hidden], .${NEED_FILTERED_CLASS}, details:not([open])`));
+  return [...root.querySelectorAll<HTMLElement>(`.${ROW_CLASS}`)].filter((r) => !r.closest("[hidden], details:not([open])"));
 }
 
 export function stepRow(rows: readonly HTMLElement[], selected: HTMLElement | undefined, step: 1 | -1): HTMLElement | undefined {
   const i = selected ? rows.indexOf(selected) : -1;
   return rows[Math.max(0, Math.min(rows.length - 1, i + step))];
-}
-
-export const LIMIT_ID = { needs: "needs" } as const;
-export const NEED_ROW_SELECTOR = `.${NEED_CLASS}`;
-export const DECISION_LIMIT = 15;
-
-export function fillNeeds(home: Home, needs: readonly Need[], hooks: NeedsHooks, entries: readonly Entry[] = []): number {
-  const slot = home.slots.needs;
-  const waiting = waitingCount(needs);
-  const limit = Math.max(DECISION_LIMIT, needs.filter((n) => n.action === "answer" && !n.done).length);
-  if (needs.length === 0) slot.replaceChildren(h("p", { class: `empty ${CAUGHT_UP_CLASS}` }, DECISIONS_CONFIG.document ? "No other asks. See the decisions document above." : "All caught up: nothing needs you right now."));
-  else slot.replaceChildren(needsHead(needs, hooks, slot, limit), ...needs.map((n, i) => {
-    const row = needRow(n, hooks);
-    row.setAttribute(NEED_ORDER_ATTR, String(i));
-    return row;
-  }));
-  const keys = new Set(needs.map((n) => n.key));
-  const identity = (e: Entry): string => {
-    const ref = e.pr?.ref ?? e.item?.ref;
-    return ref ? refKey(ref).toLowerCase() : e.key;
-  };
-  const seen = new Set(needs.flatMap((n) => n.entry ? [identity(n.entry)] : n.decision?.item.ref ? [refKey(n.decision.item.ref).toLowerCase()] : []));
-  const watching = entries.flatMap((e) => [e, ...(e.children ?? [])]).filter((e) => {
-    const key = identity(e);
-    if (keys.has(e.key) || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  if (watching.length || needs.length > limit) slot.append(h("details", { class: WATCHING_CLASS }, h("summary", {}), ...watching.map((e) => {
-    const label = hooks.labelOf(e);
-    const state = e.verdict ? VERDICT_LABEL[e.verdict.state] : label?.text ?? "read";
-    const reason = e.wait?.onBot ? ON_BOT_LABEL : e.wait?.reasons.length ? e.wait.reasons.map((r) => REASON_LABEL[r]).join(" · ") : rowText(e) || "No concrete ask; read for context.";
-    return h("p", { class: WATCHING_ITEM_CLASS }, h("a", { href: e.href }, e.title), ` · ${e.where} `, h("span", { class: `state ${label?.cls ?? "read"}` }, state), h("span", { class: "why" }, ` · ${reason}`));
-  })));
-  applyPriority(slot, hooks.priority ?? ALL_PRIORITIES, limit);
-  setCount(home, "needs", DECISIONS_CONFIG.document ? `document + ${waiting} other asks` : String(waiting), { title: `${waiting} other asks waiting on you`, hot: waiting > 0 });
-  return waiting;
 }
 
 // Restore full board titles only when the publisher cut the link label short.

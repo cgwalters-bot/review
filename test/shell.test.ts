@@ -46,16 +46,16 @@ describe("views", () => {
   it("walks only the rows of the view shown, and keeps a half-written answer across a switch", () => {
     const home = mounted();
     const row = (slot: HTMLElement, key: string) => slot.appendChild(Object.assign(win.document.createElement("a"), { className: ROW_CLASS, href: `#${key}` }));
-    const need = row(home.slots.needs, "need");
+    const need = row(home.sections.needs.body, "need");
     const status = row(home.slots.statusNote, "status");
-    const draft = home.slots.needs.appendChild(win.document.createElement("textarea"));
+    const draft = home.sections.needs.body.appendChild(win.document.createElement("textarea"));
     draft.value = "half written";
     showView(home.el, "inbox");
     assert.deepEqual(walkRows(home.el), [need]);
     showView(home.el, "status");
     assert.deepEqual(walkRows(home.el), [status]);
     showView(home.el, "inbox");
-    assert.equal(home.slots.needs.querySelector("textarea"), draft);
+    assert.equal(home.sections.needs.body.querySelector("textarea"), draft);
     assert.equal(draft.value, "half written");
   });
 

@@ -68,6 +68,28 @@ export interface Ask {
   action: AskRef;
   /** Kept from an earlier pass, as its source was not read again whole. */
   carried: boolean;
+  /** Stranded PRs of one repository the pass lists as this one ask; `action` is only the lowest numbered. */
+  group?: { reason: string; numbers: number[] };
+  /** The pass's descriptors of the decisions this card stands for (needs_you.requests): data, never write authority. */
+  requests?: Request[];
+  /** Descriptors were supplied but could not be read safely; never fall back to legacy writes. */
+  requestsUnreadable?: boolean;
+}
+
+/** One next step a request names, and whether the pass says it can be taken from here. */
+export interface RequestAction {
+  /** promote, merge-or-enqueue, reply, close, review-at-head, check-proposal or a newer one. */
+  kind: string;
+  supported: boolean;
+  reason: string;
+}
+
+export interface Request {
+  /** The forge host the target is on, a Forgejo instance's with its scheme, port and path. */
+  forge: string;
+  /** decision, missing-concrete-decision, unknown-request or unverified-carried. */
+  quality: string;
+  actions: RequestAction[];
 }
 
 /** The pass's ranked list of what waits on the operator. */
@@ -176,7 +198,36 @@ function parseAsk(raw: unknown): Ask | undefined {
   const recommendation = raw.recommendation === null ? null : text(raw.recommendation);
   if (!action || !key || !item || !waitingSince || !ask || recommendation === undefined || !str(raw.source, MODE_RE) || !str(raw.kind, KIND_RE)) return undefined;
   if ((raw.priority !== null && !str(raw.priority, PRIORITY_RE)) || (raw.carried !== undefined && typeof raw.carried !== "boolean")) return undefined;
-  return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true };
+  // A group read as its representative alone would answer for the others: a malformed one is no ask.
+  const group = raw.group === undefined || raw.group === null ? undefined : parseGroup(raw.group, action.number);
+  if (group === null) return undefined;
+  return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true, ...(group ? { group } : {}) };
+}
+
+/** The pass caps nothing here, so a reader does: past this many members a group is not read. */
+const GROUP_MAX = 50;
+
+function parseGroup(raw: unknown, representative: number): Ask["group"] | null {
+  const reason = isObject(raw) ? text(raw.reason) : undefined;
+  const numbers = isObject(raw) ? raw.numbers : undefined;
+  if (!reason || !Array.isArray(numbers) || !numbers.length || numbers.length > GROUP_MAX || !numbers.every(isPositive) || numbers[0] !== representative) return null;
+  return { reason, numbers: [...new Set(numbers)] };
+}
+
+const QUALITIES = ["decision", "missing-concrete-decision", "unknown-request", "unverified-carried"];
+const FORGE_RE = /^[A-Za-z0-9.:/_-]{1,200}$/;
+/** Bounds on what a reader keeps of the optional descriptors. */
+const REQUESTS_MAX = 500;
+const ACTIONS_MAX = 8;
+
+/** A descriptor and the card key it joins, or undefined where it is malformed. */
+function parseRequest(raw: unknown): [string, Request] | undefined {
+  if (!isObject(raw) || !Array.isArray(raw.actions) || raw.actions.length > ACTIONS_MAX) return undefined;
+  const key = str(raw.key, KEY_RE);
+  const forge = str(raw.forge, FORGE_RE);
+  const actions = raw.actions.map((a) => (isObject(a) && str(a.kind, KIND_RE) && typeof a.supported === "boolean" && text(a.reason) ? { kind: a.kind as string, supported: a.supported, reason: text(a.reason)! } : undefined));
+  if (!key || !forge || !QUALITIES.includes(raw.quality as string) || !actions.every((a) => a !== undefined)) return undefined;
+  return [key, { forge, quality: raw.quality as string, actions: actions as RequestAction[] }];
 }
 
 /** The snapshot's needs-you list; a string says why it can't be used. A malformed item is left out and makes the list incomplete, not the others unread. */
@@ -188,8 +239,24 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
   const sources = isObject(raw.sources) ? Object.entries(raw.sources).filter(([k, v]) => str(k, MODE_RE) && READS.includes(v as string)) as [string, string][] : [];
   if (!validatedAt || !changedAt || !Array.isArray(raw.items) || !isCount(raw.omitted) || !READS.includes(raw.summaries as string) || !sources.length) return "the needs-you list is malformed";
   const items = raw.items.map(parseAsk).filter((a) => a !== undefined);
+  // Only an absent descriptor field gets legacy behavior. A bound we cannot
+  // read, or a malformed descriptor with no usable key, may affect any ask.
+  const requests = Array.isArray(raw.requests) ? raw.requests.slice(0, REQUESTS_MAX).map(parseRequest).filter((r) => r !== undefined) : [];
+  const unreadable = new Set<string>();
+  let allUnreadable = raw.requests !== undefined && (!Array.isArray(raw.requests) || raw.requests.length > REQUESTS_MAX);
+  if (Array.isArray(raw.requests)) for (const r of raw.requests.slice(0, REQUESTS_MAX)) {
+    if (parseRequest(r)) continue;
+    const key = isObject(r) ? str(r.key, KEY_RE) : undefined;
+    if (key) unreadable.add(key);
+    else allUnreadable = true;
+  }
+  for (const a of items) {
+    const mine = requests.filter(([k]) => k === a.key).map(([, r]) => r);
+    if (mine.length) a.requests = mine;
+    if (allUnreadable || unreadable.has(a.key) || (raw.requests !== undefined && !mine.length)) a.requestsUnreadable = true;
+  }
   const refused = raw.items.length - items.length;
-  const complete = raw.complete === true && refused === 0 && raw.count === raw.items.length && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
+  const complete = raw.complete === true && refused === 0 && !items.some((a) => a.requestsUnreadable) && raw.count === raw.items.length && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
   return { complete, validatedAt, changedAt, sources: Object.fromEntries(sources), summaries: raw.summaries as string, omitted: raw.omitted, items, refused };
 }
 
