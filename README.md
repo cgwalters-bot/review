@@ -94,12 +94,37 @@ under **Not offered here**, never replaced by a generic Answer or Open. A
 quality other than `decision` is shown on the card. A group of stranded PRs
 gets no Answer, which would land on its first PR alone; each member is read
 only when opened. **Promote** is a midstream draft (`review-promote`): each
-member opened shows its state and head. Promotion is read-only here because
-bot-pr's `/promote` command cannot bind authorization to the displayed head;
-a preflight read cannot close that race. Merging is never used to promote.
+member opened shows its state and head. Eligible open drafts offer an explicit
+**Promote** confirmation, unless the descriptors rule it out. This submits only
+an APPROVE review with `commit_id` equal to that displayed head, as the operator.
+The current request's policy and membership and the exact live PR's eligibility,
+draft state and head are checked again before writing. A changed member requires
+`r`, rereading and a new confirmation. A push after preflight cannot authorize
+the replacement commit. No command, ready, merge or enqueue is sent. Sent and
+uncertain receipts stay independently per member/head in this signed-in session;
+they do not mark the group done. The receipt says approval sent, waiting on promoter,
+not promotion completed. Human-text members still require Make it mine.
 Reloading with `r` refreshes member readers, not a cached member-list receipt.
 A successful approve or answer marks its card done at once and
 says what it waits on; an answer that only comments says the hold stays.
+
+Promotion evidence (read-only, 2026-11-03): the controller's
+[commit-bound decision](https://github.com/cgwalters-forge/review/issues/222#issuecomment-6615351214)
+was retrieved with the GitHub API. The original promoter's current source is
+[homegit `c027d9f4`, `bin/bot-pr`](https://github.com/cgwalters-bot/homegit/blob/c027d9f4c28c8e21df37f82e978b3fc55fe73cab/bin/bot-pr#L1944-L1975):
+its ordinary approval rule compares the operator review's `commit_id` to the
+current head (with a separately verified sign-off-record exception), and it
+checks the branch ref again before upstream PR creation (lines 2695–2698).
+This is source evidence, not verification of the deployed scheduler or an atomic
+approval/head check across its writes. Agent-board's current promotion stage at
+`e1886655e67dd85919f7c1a1771ba3be7b806a17` is still inert; it is not evidence of
+a working replacement promoter. No live writes or promotion integration test ran.
+The configured current publication, `cgwalters-forge/bot-ops#1` comments, returned
+404 to this run, so current real requests could not be revalidated. The sanitized
+`test/fixtures/needs-you-real-2026-11-03.json` remains replay evidence only: its
+17:41:35Z snapshot is partial (12 asks, 85 omitted), with promotion and future
+reply/close/merge-or-enqueue capabilities explicitly unsupported. Those refusals
+remain in force; agent-board#640 capabilities are not implemented here.
 
 The digest's approvals are one **Approve selected** card. It approves
 selected PRs at the heads the digest assessed, skipping changed heads and

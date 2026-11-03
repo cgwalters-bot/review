@@ -14,7 +14,7 @@ export interface ApproveResult { pr: PrRef; status: "approved" | "skipped" | "fa
 const approvals = new WeakMap<GitHub, Map<string, { until: number; work: Promise<string | undefined> }>>();
 
 /** Stop duplicate approvals after reload; one page at action time, never during polling. */
-async function approveHead(gh: GitHub, it: ApproveItem): Promise<string | undefined> {
+export async function approveHead(gh: GitHub, it: ApproveItem, check?: () => Promise<void>): Promise<string | undefined> {
   const key = `${refText(it.pr).toLowerCase()}@${it.head}`;
   const recent = approvals.get(gh) ?? new Map();
   const previous = recent.get(key);
@@ -31,9 +31,19 @@ async function approveHead(gh: GitHub, it: ApproveItem): Promise<string | undefi
     if (reviews.some((r) => r.user?.login.toLowerCase() === login.toLowerCase() && r.state === "APPROVED" && r.commit_id === it.head)) return undefined;
     // A full page may hide an approval: refuse rather than guess from a partial read.
     if (reviews.length >= 100) throw new Error("Reviews exceed one page; check GitHub before approving");
-    return (await gh.send<{ html_url: string }>("POST", `${path}/reviews`, { event: "APPROVE", commit_id: it.head })).html_url ?? `https://github.com/${refText(it.pr).replace("#", "/pull/")}`;
+    await check?.();
+    try {
+      return (await gh.send<{ html_url: string }>("POST", `${path}/reviews`, { event: "APPROVE", commit_id: it.head })).html_url ?? `https://github.com/${refText(it.pr).replace("#", "/pull/")}`;
+    } catch (e) {
+      const uncertain = new Error(`Approval failed or uncertain: ${String(e)}; check GitHub, do not retry`);
+      uncertain.name = "MaybeSentError";
+      throw uncertain;
+    }
   })();
-  const receipt = { until: Infinity, work: work.finally(() => { receipt.until = Date.now() + 5 * 60_000; }) };
+  const receipt = { until: Infinity, work: work.catch((e: unknown) => {
+    if (!(e instanceof Error) || e.name !== "MaybeSentError") recent.delete(key);
+    throw e;
+  }).finally(() => { receipt.until = Date.now() + 5 * 60_000; }) };
   recent.set(key, receipt);
   approvals.set(gh, recent);
   return receipt.work;

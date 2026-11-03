@@ -20,6 +20,7 @@ const target = "cgwalters-forge/tracker#50";
 const url = "https://github.com/cgwalters-forge/tracker/issues/50";
 const path = "/repos/cgwalters-forge/tracker/issues/50";
 const head = "a".repeat(40);
+const replacement = "b".repeat(40);
 const shown = () => ({ title: "Which way?", body: "Q: Which way?", state: "open", html_url: url, labels: [{ name: "needs-human" }, { name: "needs-design" }, { name: "other" }] });
 /** The pass's asks of `raw`. */
 function asks(...raw: Record<string, unknown>[]): Ask[] {
@@ -62,6 +63,128 @@ async function answer(opts: { login?: string; after?: boolean; fail?: "comment" 
   await settle();
   return { r, card, form };
 }
+
+const promotion = () => cards(rawAsk(7, { key: "cgwalters-forge/widget#7", kind: "review-promote", action: { type: "pull_request", repository: "cgwalters-forge/widget", number: 7 }, group: { reason: "drafts", numbers: [7, 8] } }))[0]!;
+const draft = (n: number, sha = head) => ({ html_url: `https://github.com/cgwalters-forge/widget/pull/${n}`, title: `Draft ${n}`, state: "open", draft: true, user: { login: "cgwalters-bot" }, head: { sha }, body: "<!-- bot-meta -->\n- Upstream: `up/widget`\n<!-- /bot-meta -->" });
+async function openMember(r: ReturnType<typeof setup>, n = 0) {
+  const d = r.list.querySelectorAll<HTMLDetailsElement>(".member")[n]!;
+  d.open = true;
+  await settle();
+  return d;
+}
+
+test("promotion sends exactly the inspected commit; independent sent/uncertain receipts survive reload while changed heads reread", async () => {
+  let sha = head;
+  const r = setup((method, p) => {
+    const n = Number(/\/pulls\/(\d+)/.exec(p)?.[1]);
+    if (method === "GET" && p.endsWith("/reviews")) return { body: [] };
+    if (method === "GET") return { body: draft(n, sha) };
+    return { status: n === 8 ? 502 : 200, body: { html_url: `${draft(n).html_url}#pullrequestreview-1` } };
+  });
+  const c = promotion();
+  r.paint(c);
+  for (const n of [0, 1]) {
+    const d = await openMember(r, n);
+    d.querySelector<HTMLButtonElement>("button")!.click();
+    d.querySelector<HTMLButtonElement>("button")!.click();
+    await settle();
+  }
+  assert.deepEqual(r.writes().map((c) => c.body), [{ event: "APPROVE", commit_id: head }, { event: "APPROVE", commit_id: head }]);
+  assert.match(r.list.textContent!, /Approval sent:.*Waiting on promoter/s);
+  assert.match(r.list.textContent!, /Not sent, or uncertain/);
+  assert.equal(r.list.querySelector(".card-done"), null);
+  r.paint(c, true, true);
+  for (const n of [0, 1]) {
+    const d = await openMember(r, n);
+    assert.equal(d.querySelector("button")!.disabled, true);
+    d.querySelector<HTMLButtonElement>("button")!.click();
+  }
+  assert.equal(r.writes().length, 2);
+  sha = replacement;
+  r.paint(c, true, true);
+  const d = await openMember(r);
+  assert.match(d.textContent!, /bbbbbbb/);
+  assert.equal([...d.querySelectorAll("button")].find((b) => b.textContent === "Promote bbbbbbb")!.disabled, false);
+  assert.equal(r.writes().length, 2, "rereading does not approve a changed head");
+});
+
+for (const failure of ["head", "race", "viewer", "membership", "policy", "closed", "ready", "ineligible", "human-text", "target", "unavailable", "foreign", "unreadable"] as const) {
+  test(`promotion guards ${failure} and never authorizes a replacement`, async () => {
+    let reads = 0;
+    const r = setup((method, p) => {
+      if (p.endsWith("/reviews") && method === "GET") {
+        if (failure === "race") reads = 99;
+        return { body: [] };
+      }
+      if (method === "POST") return { body: {} };
+      reads++;
+      const pr = draft(7, failure === "head" && reads > 1 || failure === "race" && reads > 99 ? replacement : head);
+      if (reads > 1) {
+        if (failure === "closed") pr.state = "closed";
+        if (failure === "ready") pr.draft = false;
+        if (failure === "ineligible") pr.user.login = "someone";
+        if (failure === "human-text") pr.body = pr.body.replace("- Upstream:", "- Contribution policy: `human-text`\n- Upstream:");
+        if (failure === "target") pr.html_url = draft(8).html_url;
+      }
+      return { body: pr };
+    }, failure === "viewer" ? "someone-else" : "cgwalters");
+    const c = promotion();
+    r.paint(c);
+    const d = await openMember(r);
+    if (["membership", "policy", "unavailable", "foreign", "unreadable"].includes(failure)) {
+      const a = r.state.published.asks[0]!;
+      if (failure === "membership") a.group!.numbers = [8];
+      else if (failure === "unavailable") r.state.published.unavailable = true;
+      else if (failure === "unreadable") a.requestsUnreadable = true;
+      else a.requests = [{ forge: failure === "foreign" ? "forge.example" : "github.com", quality: "decision", actions: [{ kind: "promote", supported: false, reason: "revoked" }] }];
+    }
+    d.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+    assert.equal(r.writes().length, 0);
+    assert.equal(d.querySelector("button")!.disabled, true);
+    if (failure === "head" || failure === "race") assert.match(d.textContent!, /This member changed.*reread/);
+  });
+}
+
+test("push after final preflight cannot change the APPROVE payload", async () => {
+  let live = head;
+  const r = setup((method, p) => {
+    if (method === "POST") { live = replacement; return { body: {} }; }
+    return { body: p.endsWith("/reviews") ? [] : draft(7, live) };
+  });
+  r.paint(promotion());
+  const d = await openMember(r);
+  d.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  assert.equal(live, replacement);
+  assert.deepEqual(r.writes().map((c) => c.body), [{ event: "APPROVE", commit_id: head }]);
+});
+
+test("fresh client recovers existing approval without writing and refuses a full review page", async () => {
+  for (const count of [1, 100]) {
+    const r = setup((_method, p) => ({ body: p.endsWith("/reviews") ? Array.from({ length: count }, () => ({ user: { login: "cgwalters" }, state: "APPROVED", commit_id: count === 1 ? head : replacement })) : draft(7) }));
+    r.paint(promotion());
+    const d = await openMember(r);
+    d.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+    assert.equal(r.writes().length, 0);
+    assert.match(d.textContent!, count === 1 ? /Already approved:.*Waiting on promoter/ : /Reviews exceed one page/);
+  }
+});
+
+test("moved member recovers only after reload, rereading and a new confirmation", async () => {
+  let sha = head;
+  const r = setup((method, p) => ({ body: method === "POST" ? {} : p.endsWith("/reviews") ? [] : draft(7, sha) }));
+  const c = promotion();
+  r.paint(c);
+  const old = await openMember(r);
+  sha = replacement;
+  old.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  assert.match(old.textContent!, /This member changed/);
+  r.paint(c, true);
+  const fresh = await openMember(r);
+  assert.notEqual(old, fresh);
+  assert.equal(r.writes().length, 0);
+  fresh.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  assert.deepEqual(r.writes().map((c) => c.body), [{ event: "APPROVE", commit_id: replacement }]);
+});
 
 test("main answer posts, then removes exactly needs-human; sent receipt survives refresh, metadata redraw and remount", async () => {
   const { r, card, form } = await answer();
@@ -329,7 +452,7 @@ test("main's chat answers only where the card would, and any descriptor ruling a
 
 const BOT_META = "Fix.\n\n<!-- bot-meta -->\n- Upstream: `up/widget`, base `main`\n<!-- /bot-meta -->";
 
-test("main reads promotion members on demand but withholds the unbound command", async () => {
+test("main reads promotion members on demand but respects unsupported descriptors", async () => {
   const B = "b".repeat(40);
   const pulls: Record<number, { body: string; sha: string; moved?: string; post?: number }> = {
     41: { body: BOT_META, sha: head },
@@ -353,7 +476,7 @@ test("main reads promotion members on demand but withholds the unbound command",
   assert.match(first!.textContent!, /Draft 41 · open draft · aaaaaaa · by cgwalters-bot · Review/);
   for (const d of [first!, second!]) {
     assert.equal(d.querySelector("button"), null);
-    assert.match(d.textContent!, /\/promote command cannot be bound to the displayed head/);
+    assert.match(d.textContent!, /promotion evaluation and writes are not implemented/);
   }
   assert.deepEqual(r.writes(), []);
   // An old member report must not freeze the group's live readers on r.

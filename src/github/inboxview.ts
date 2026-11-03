@@ -49,6 +49,7 @@ export interface InboxHooks {
   approve?(a: Ask, head: string): Promise<string | undefined>;
   /** Read one of a card's PRs now (readMember). */
   member?(ref: IssueRef): Promise<MemberPr>;
+  promote?(a: Ask, ref: IssueRef, head: string): Promise<string | undefined>;
   /** Send the digest's picked approvals (approveSelected). */
   approveDigest?(items: readonly ApproveItem[]): Promise<ApproveResult[]>;
   /** A card's chat context, for its Chat button; none for a card about no item. */
@@ -66,7 +67,7 @@ const failed = (e: unknown): string => `Not sent, or uncertain: ${e instanceof E
  */
 function writeButton(hooks: InboxHooks, key: string, label: string, question: string, write: () => Promise<string | undefined>, done: (url: string | undefined) => (string | Node)[]): HTMLElement {
   const previous = hooks.writes?.get(key);
-  if (previous?.querySelector("[data-sent]")) return previous;
+  if (previous?.querySelector(`[data-sent], [${KEEP_ATTR}="${KEEP_BUSY}"]`)) return previous;
   const button = h("button", { type: "button", class: "primary" }, label);
   const status = h("p", { class: "status", role: "status" });
   button.addEventListener("click", () => {
@@ -77,14 +78,14 @@ function writeButton(hooks: InboxHooks, key: string, label: string, question: st
     write().then((url) => {
       status.removeAttribute(KEEP_ATTR);
       status.setAttribute("data-sent", "");
-      status.closest(`.${CARD_CLASS}`)?.classList.add(CARD_DONE_CLASS);
+      if (!status.closest(".member")) status.closest(`.${CARD_CLASS}`)?.classList.add(CARD_DONE_CLASS);
       status.replaceChildren(...done(url));
     }, (e: unknown) => {
       // Kept until r, which reads the target again: it may have moved, or the write gone out.
       status.setAttribute(KEEP_ATTR, "");
       status.textContent = failed(e);
       if (e instanceof Error && e.name === "MaybeSentError") status.setAttribute("data-sent", "");
-      else button.disabled = false;
+      else button.disabled = label.startsWith("Promote ");
     });
   });
   const el = h("div", { class: "card-body actions" }, button, status);
@@ -107,26 +108,32 @@ function approveBody(a: Ask, hooks: InboxHooks): HTMLElement {
     (url) => (url ? ["Approved: ", link(url, url), `. ${APPROVED_WAIT}`] : ["Skipped: already approved at HEAD."]));
 }
 
-/** A preflight read cannot bind bot-pr's bare /promote command to a commit. */
-export const PROMOTION_REFUSAL = "bot-pr's /promote command cannot be bound to the displayed head; promotion is read-only here";
-
 /** One member read now: its facts, and on a Promote card its own Promote or why there is none. */
 async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHooks): Promise<HTMLElement> {
-  const m = await hooks.member!(ref);
+  const receipts = [...(hooks.writes ?? [])].filter(([key, el]) => key.startsWith(JSON.stringify(["approve", refKey(ref).toLowerCase()]).slice(0, -1) + ",") && el.querySelector("[data-sent]"));
+  let m: MemberPr;
+  try { m = await hooks.member!(ref); }
+  catch (e) { return h("div", {}, h("p", { class: "warn" }, String(e)), ...receipts.map(([, el]) => el)); }
   const where = refKey(m.ref);
   const facts = h("p", {}, link(m.url, m.title), ` · ${m.state} · ${m.head.slice(0, 7)} · by ${m.author} · `, h("a", { href: `#pr/${where.replace("#", "/")}` }, "Review"));
   if (c.kind !== "promote") return h("div", {}, facts);
-  const no = refusal(c.ask) ?? m.problem ?? PROMOTION_REFUSAL;
-  return h("div", {}, facts, h("p", { class: "warn" }, `Promote not offered: ${no}.`));
+  const no = [refusal(c.ask, "promote"), m.problem, m.state !== "open draft" ? `member is ${m.state}, not an open draft` : undefined].filter(Boolean).join("; ");
+  const key = JSON.stringify(["approve", where.toLowerCase(), m.head]);
+  return h("div", {}, facts, ...receipts.filter(([k]) => k !== key || no || !hooks.mayAct).map(([, el]) => el), no ? h("p", { class: "warn" }, `Promote not offered: ${no}.`) : hooks.mayAct && hooks.promote ?
+    writeButton(hooks, key, `Promote ${m.head.slice(0, 7)}`,
+      `Approve ${where} at ${m.head} for promotion as you? A changed member must be reread and confirmed again.`,
+      () => hooks.promote!(c.ask, ref, m.head),
+      (url) => [url ? "Approval sent: " : "Already approved: ", ...(url ? [link(url, url)] : []), " Waiting on promoter; promotion is not completed."]) : null);
 }
 
 /** A card's PRs, each read only when he opens it: a group's members, or a Promote card's PR. */
 function memberList(c: Card & { ask: Ask }, hooks: InboxHooks): HTMLElement | null {
   const [owner = "", repo = ""] = c.ask.action.repository.split("/");
-  if (!hooks.member) return null;
   // Its PRs are not on github.com: reading them there would show someone else's.
   const no = refusal(c.ask);
   if (no) return refused(no, c.ask);
+  if (!hooks.member) return h("div", { class: "card-body" }, "Inspect each member; no group writes.",
+    h("ul", {}, ...members(c.ask).map((number) => h("li", {}, h("a", { href: askHref({ ...c.ask.action, number }) }, `Inspect ${c.ask.action.repository}#${number}`)))));
   return h("div", { class: "card-body members" }, ...members(c.ask).map((number) => {
     const d = h("details", { class: "member" }, h("summary", {}, `${c.ask.action.repository}#${number}`));
     d.addEventListener("toggle", () => {
@@ -160,16 +167,8 @@ const LIMIT_ATTR = "data-limit";
 /** What a card shows, so an unchanged card is not redrawn. Its age is left out: the ticker moves it in place. */
 export function cardSignature(c: Card): string {
   const base = [c.kind, c.key, c.title, c.where, c.url, c.since, c.answered === true, c.note, c.priority, c.unavailable === true];
-  switch (c.kind) {
-    case "answer":
-    case "approve":
-    case "promote":
-    case "open":
-    case "do": return JSON.stringify([...base, c.ask.action, c.ask.group, c.ask.requests, c.ask.requestsUnreadable]);
-    case "digest": return JSON.stringify([...base, c.items]);
-    case "send": return JSON.stringify([...base, c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused]);
-    case "document": return JSON.stringify([...base, c.entry.text, c.mark]);
-  }
+  return JSON.stringify([...base, ...("ask" in c ? [c.ask.action, c.ask.group, c.ask.requests, c.ask.requestsUnreadable] :
+    c.kind === "digest" ? [c.items] : c.kind === "send" ? [c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused] : [c.entry.text, c.mark])]);
 }
 
 /**
@@ -221,15 +220,11 @@ function action(c: Card, hooks: InboxHooks): HTMLElement | null {
   if (c.answered) return null;
   const no = "ask" in c ? refusal(c.ask, c.kind === "approve" ? "review-at-head" : c.kind === "do" ? "check-proposal" : undefined) : undefined;
   if (no && "ask" in c) return refused(no, c.ask);
-  if ("ask" in c && c.ask.group) return h("div", { class: "card-body" },
-    h("p", { class: "note" }, "Inspect each member; no group writes."),
-    h("ul", {}, ...c.ask.group.numbers.map((number) => h("li", {}, h("a", { href: askHref({ ...c.ask.action, number }) }, `Inspect ${c.ask.action.repository}#${number}`)))), memberList(c, hooks));
+  if ("ask" in c && (c.ask.group || c.kind === "promote")) return memberList(c, hooks);
   switch (c.kind) {
     case "answer": if (hooks.answerBody && hooks.mayAct) return bodySlot(hooks.answerBody(c.ask)); break;
     case "approve": if (hooks.approve && hooks.mayAct) return approveBody(c.ask, hooks); break;
     case "do": if (hooks.offerBody) return bodySlot(hooks.offerBody(c.ask)); break;
-    case "promote": return memberList(c, hooks);
-    case "open": if (c.ask.group) return memberList(c, hooks); break;
     case "document": return hooks.mayAct && c.entry.options.length ? entryForm(c, hooks) : null;
     case "send": return hooks.draftBody ? bodySlot(hooks.draftBody(c)) : null;
     case "digest": return hooks.approveDigest && hooks.mayAct ? approveGroup(c.items, hooks.approveDigest) : null;
@@ -288,7 +283,7 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   // After the card's own action: chatting never stands in for it.
   const chat = chatButton(!ask || githubTarget(ask) ? hooks.chatItem?.(c) : undefined);
   if (chat) el.append(h("div", { class: "actions" }, chat));
-  if (c.kind !== "answer") hooks.writes?.set(key, el);
+   if (c.kind !== "answer" && c.kind !== "promote" && c.kind !== "open") hooks.writes?.set(key, el);
   return el;
 }
 
@@ -360,13 +355,13 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     const report = force && el?.querySelector(`[${KEEP_ATTR}=""]`);
     if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS) && !report && !(force && "ask" in c && (c.kind === "promote" || c.ask.group))) return el;
     // A newly published group revokes the representative's old single-item form.
-    if (el && keep(el) && !("ask" in c && c.ask.group)) {
+    if (el && keep(el) && !("ask" in c && (c.ask.group || c.kind === "promote"))) {
       if (el.getAttribute(POLICY_ATTR) !== policySignature(c)) retireActions(el);
       staleNote(el, CARD_CHANGED_NOTE);
       return el;
     }
     const fresh = cardEl(c, hooks);
-    if ("ask" in c && c.ask.group) {
+    if ("ask" in c && c.ask.group && c.kind !== "promote") {
       const prior = el?.querySelector<HTMLElement>(":scope > .prior-write");
       if (prior) fresh.append(prior);
       else if (el?.querySelector("[data-sent], [data-keep]")) {
