@@ -220,6 +220,34 @@ for (const failure of [false, true]) for (const policy of ["foreign", "unreadabl
   });
 }
 
+for (const failRead of [false, true]) test(`obsolete member ${failRead ? "failed" : "successful"} read cannot steal a restricted receipt`, async () => {
+  let delay = false;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const r = setup((method, p) => ({ body: method === "POST" ? { html_url: `${draft(7).html_url}#pullrequestreview-1` } : p.endsWith("/reviews") ? [] : draft(7) }));
+  r.state.gh = new GitHub(async () => "test", async (url, init) => {
+    if (delay && new URL(url).pathname.endsWith("/pulls/7")) {
+      await pending;
+      if (failRead) return new Response("unavailable", { status: 502 });
+    }
+    return r.fetchImpl(url, init);
+  });
+  const c = promotion() as Card & { kind: "promote" };
+  r.paint(c);
+  const d = await openMember(r);
+  d.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  r.paint(c, true);
+  delay = true;
+  const obsolete = await openMember(r);
+  assert.match(obsolete.textContent!, /Reading/);
+  r.paint({ ...c, ask: { ...c.ask, requestsUnreadable: true } });
+  assert.match(r.list.textContent!, /Prior write.*Approval sent:.*pullrequestreview-1/s);
+  release(); await settle();
+  assert.match(r.list.textContent!, /Prior write.*Approval sent:.*pullrequestreview-1/s);
+  assert.equal(r.list.querySelector("a[href], button"), null);
+  assert.equal(r.writes().length, 1);
+});
+
 for (const failure of [false, true]) test(`policy revocation keeps a pending member's eventual ${failure ? "uncertain" : "sent"} outcome visible`, async () => {
   let release!: () => void;
   const pending = new Promise<void>((resolve) => { release = resolve; });

@@ -26,6 +26,7 @@ export const CARD_STALE_CLASS = "card-stale";
 export const CARD_UNAVAILABLE_CLASS = "card-unavailable";
 const SIG_ATTR = "data-sig";
 const POLICY_ATTR = "data-policy";
+const retired = new WeakSet<Element>();
 
 export const CARD_CHANGED_NOTE = "This changed since it was drawn; send or clear your text, or press r to reload it (unsent text is lost).";
 export const CARD_GONE_NOTE = "This has left the inbox; your unsent text is kept until you clear it or press r.";
@@ -124,11 +125,13 @@ function memberReceipts(ref: IssueRef, hooks: InboxHooks): [string, HTMLElement]
 }
 
 /** One member read now: its facts, and on a Promote card its own Promote or why there is none. */
-async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHooks): Promise<HTMLElement> {
-  const receipts = memberReceipts(ref, hooks);
+async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHooks, current: () => boolean): Promise<HTMLElement> {
   let m: MemberPr;
   try { m = await hooks.member!(ref); }
-  catch (e) { return h("div", {}, h("p", { class: "warn" }, String(e)), ...receipts.map(([, el]) => receiptOnly(el))); }
+  catch (e) { return current() ? h("div", {}, h("p", { class: "warn" }, String(e)), ...memberReceipts(ref, hooks).map(([, el]) => receiptOnly(el))) : h("div"); }
+  // Receipts are shared live nodes: an obsolete read must not move them off the current card.
+  if (!current()) return h("div");
+  const receipts = memberReceipts(ref, hooks);
   const where = refKey(m.ref);
   const facts = h("p", {}, link(m.url, m.title), ` · ${m.state} · ${m.head.slice(0, 7)} · by ${m.author} · `, h("a", { href: `#pr/${where.replace("#", "/")}` }, "Review"));
   if (c.kind !== "promote") return h("div", {}, facts);
@@ -148,8 +151,9 @@ function memberList(c: Card & { ask: Ask }, hooks: InboxHooks): HTMLElement | nu
     h("ul", {}, ...members(c.ask).map((number) => h("li", {}, h("a", { href: askHref({ ...c.ask.action, number }) }, `Inspect ${c.ask.action.repository}#${number}`)))));
   return h("div", { class: "card-body members" }, ...members(c.ask).map((number) => {
     const d = h("details", { class: "member" }, h("summary", {}, `${c.ask.action.repository}#${number}`));
+    const current = () => d.isConnected && !retired.has(d.closest(`.${CARD_CLASS}`)!);
     d.addEventListener("toggle", () => {
-      if (d.open && d.children.length === 1) d.append(bodySlot(memberBody(c, { owner, repo, number }, hooks)));
+      if (current() && d.open && d.children.length === 1) d.append(bodySlot(memberBody(c, { owner, repo, number }, hooks, current)));
     });
     return d;
   }));
@@ -315,6 +319,7 @@ function policySignature(c: Card): string {
 
 /** Keep typed text and receipts, but retire their old handlers until an explicit reload. */
 function retireActions(el: HTMLElement): void {
+  retired.add(el);
   for (const button of el.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input[type=submit]")) button.disabled = true;
   for (const a of el.querySelectorAll("a")) a.removeAttribute("href");
   el.setAttribute(ROW_HREF_ATTR, "#");
@@ -381,6 +386,7 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
       staleNote(el, CARD_CHANGED_NOTE);
       return el;
     }
+    if (el) retired.add(el);
     const fresh = cardEl(c, hooks);
     if ("ask" in c && c.ask.group && c.kind !== "promote") {
       const prior = el?.querySelector<HTMLElement>(":scope > .prior-write");
