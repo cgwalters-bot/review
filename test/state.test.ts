@@ -24,7 +24,7 @@ describe("source freshness", () => {
 
   it("shows the footer's per-source line only while a source is not ok", () => {
     installDom();
-    const home = homeSkeleton({ open: () => false, toggled: () => {} });
+    const home = homeSkeleton({ toggled: () => {} });
     const ok = { state: "ok" as const, checkedAt: NOW, fetchedAt: NOW };
     const cases: [string, Parameters<typeof pageState>[0]["sources"], boolean][] = [
       ["every source ok or not read yet", { board: ok, heartbeat: ok }, true],

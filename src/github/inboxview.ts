@@ -216,14 +216,14 @@ function entryForm(c: Card & { kind: "document" }, hooks: InboxHooks): HTMLEleme
   return form;
 }
 
-/** What a link card's action asks, by the type of its action. */
-const VERB: Record<string, string> = { review_pull_request: "Review", reply_pull_request: "Reply", close_pull_request: "Close or keep" };
-
 /** The card's in-place action or body, read on drawing where it needs to be; else a link to where it is done. */
 function action(c: Card, hooks: InboxHooks): HTMLElement | null {
   if (c.answered) return null;
   const no = "ask" in c ? refusal(c.ask, c.kind === "approve" ? "review-at-head" : c.kind === "do" ? "check-proposal" : undefined) : undefined;
   if (no && "ask" in c) return refused(no, c.ask);
+  if ("ask" in c && c.ask.group) return h("div", { class: "card-body" },
+    h("p", { class: "note" }, "Inspect each member; no group writes."),
+    h("ul", {}, ...c.ask.group.numbers.map((number) => h("li", {}, h("a", { href: askHref({ ...c.ask.action, number }) }, `Inspect ${c.ask.action.repository}#${number}`)))), memberList(c, hooks));
   switch (c.kind) {
     case "answer": if (hooks.answerBody && hooks.mayAct) return bodySlot(hooks.answerBody(c.ask)); break;
     case "approve": if (hooks.approve && hooks.mayAct) return approveBody(c.ask, hooks); break;
@@ -234,7 +234,7 @@ function action(c: Card, hooks: InboxHooks): HTMLElement | null {
     case "send": return hooks.draftBody ? bodySlot(hooks.draftBody(c)) : null;
     case "digest": return hooks.approveDigest && hooks.mayAct ? approveGroup(c.items, hooks.approveDigest) : null;
   }
-  return h("a", { class: "action", href: askHref(c.ask.action) }, VERB[c.ask.action.type] ?? "Open");
+  return h("a", { class: "action", href: askHref(c.ask.action) }, "Inspect");
 }
 
 /**
@@ -261,11 +261,11 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   // An answer keeps its own receipts (answerBody); the rest by what they write.
   const key = JSON.stringify(c.kind === "digest" ? [c.kind, c.items.map((a) => [a.pr, a.head])] : c.kind === "send" ? [c.kind, c.key, c.draft.issue.body, c.draft.found?.raw] : c.kind === "document" ? [c.kind, c.key, cardSignature(c)] : [c.kind, c.key, c.ask.action, members(c.ask), policySignature(c)]);
   const previous = hooks.writes?.get(key);
-  if (c.kind !== "answer" && c.kind !== "promote" && previous?.querySelector("[data-sent], [data-keep]")) return previous;
+  if (c.kind !== "answer" && c.kind !== "promote" && c.kind !== "open" && previous?.querySelector("[data-sent], [data-keep]")) return previous;
   const head = h("div", { class: "card-head" },
     h("span", { class: `kind c-${c.kind}` }, CARD_LABEL[c.kind]),
     c.priority ? pill(c.priority) : null,
-    h("span", { class: "title" }, c.url ? link(c.url, c.title) : c.title),
+    h("span", { class: "title" }, c.url && !("ask" in c && c.ask.group) ? link(c.url, c.title) : c.title),
     h("span", { class: "age", ...(c.since ? { [SINCE_ATTR]: c.since, title: c.since } : {}) }, age(c.since, hooks.now)));
   const ask = "ask" in c ? c.ask : undefined;
   const el = h("article", {
@@ -359,12 +359,18 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     // r clears a write's kept report too, reading the card's state again.
     const report = force && el?.querySelector(`[${KEEP_ATTR}=""]`);
     if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS) && !report && !(force && "ask" in c && (c.kind === "promote" || c.ask.group))) return el;
-    if (el && keep(el)) {
+    // A newly published group revokes the representative's old single-item form.
+    if (el && keep(el) && !("ask" in c && c.ask.group)) {
       if (el.getAttribute(POLICY_ATTR) !== policySignature(c)) retireActions(el);
       staleNote(el, CARD_CHANGED_NOTE);
       return el;
     }
     const fresh = cardEl(c, hooks);
+    if ("ask" in c && c.ask.group) {
+      const prior = el?.querySelector<HTMLElement>(":scope > .prior-write");
+      if (prior) fresh.append(prior);
+      else if (el?.querySelector("[data-sent], [data-keep]")) fresh.append(h("div", { class: "prior-write" }, "Prior write:", ...el.children));
+    }
     el?.replaceWith(fresh);
     return fresh;
   });

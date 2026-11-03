@@ -8,7 +8,7 @@ import { fixture, installDom } from "./helpers.ts";
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
 const TRACKER = "https://github.com/cgwalters-forge/tracker/issues";
-const hooks = { open: () => true, toggled: () => {} };
+const hooks = { toggled: () => {} };
 const text = (el: Element | null) => el?.textContent?.replace(/\s+/g, " ").trim() ?? "";
 afterEach(resetExpanded);
 
@@ -76,17 +76,18 @@ describe("row limits and keyboard walking", () => {
   it("previews rows, shows all on request and remembers expansion across redraws", () => {
     const list = () => {
       const slot = document.createElement("div");
-      slot.append(...Array.from({ length: 8 }, () => Object.assign(document.createElement("p"), { className: "row" })));
-      applyLimit(slot, "people", ".row");
+      slot.append(...Array.from({ length: 8 }, () => Object.assign(document.createElement("p"), { className: "people-row" })));
+      applyLimit(slot);
       return slot;
     };
     const slot = list();
-    assert.equal(slot.querySelectorAll(".row:not([hidden])").length, 5);
+    assert.equal(slot.querySelectorAll(".people-row:not([hidden])").length, 5);
+    const last = slot.querySelectorAll<HTMLElement>(".people-row")[7]!;
     slot.querySelector<HTMLButtonElement>(".view-all")!.click();
-    assert.equal(slot.querySelectorAll<HTMLElement>(".row")[7]!.hidden, false);
-    assert.equal(list().querySelectorAll(".row:not([hidden])").length, 8);
+    assert.equal(last.hidden, false);
+    assert.equal(list().querySelectorAll(".people-row:not([hidden])").length, 8);
     slot.querySelector<HTMLButtonElement>(".view-all")!.click();
-    assert.equal(slot.querySelectorAll(".row:not([hidden])").length, 5);
+    assert.equal(slot.querySelectorAll(".people-row:not([hidden])").length, 5);
   });
 
   it("skips hidden rows and closed folds and clamps at the first and last row", () => {

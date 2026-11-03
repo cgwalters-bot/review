@@ -66,6 +66,14 @@ outcomes, including a comment URL when release fails, survive ordinary
 refreshes and card redraws in this signed-in session. An uncertain comment
 is not offered again; check and finish on GitHub.
 
+Published PR groups instead show their reason and exact member links for
+inspection, including one-member and carried groups. They never offer an
+answer, approval or release on just the representative. Membership is
+limited to 100 distinct positive safe-integer PR numbers, including the
+representative; invalid groups are refused whole and counted as unreadable
+in the incomplete-list warning. Published URLs are not used. A new group
+replaces any old representative form, dropping its unsent text for safety.
+
 Approval checks read at most 100 reviews per PR, only when you act. If
 that page cannot rule out an existing approval, nothing is written.
 Single and digest cards share in-flight and five-minute write receipts

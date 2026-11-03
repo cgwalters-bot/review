@@ -73,7 +73,7 @@ import { composeReviews, type ForgePr, refKey, type ReviewAction, VERDICT_LABEL 
 import { type Command, HELP, keyCommand, parseRoute, type Route, type RouteInfo } from "./keys.ts";
 import { deleteCacheDatabase, IdbStore } from "./idbstore.ts";
 import type { Active } from "./agents.ts";
-import { fillStatus, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, setCount, setSectionOpen, stepRow, walkRows } from "./homeview.ts";
+import { fillStatus, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadOffer } from "./actions.ts";
 import { proposalCard } from "./actionsview.ts";
 import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG } from "./reviewdrafts.ts";
@@ -107,7 +107,6 @@ import {
 } from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
-import { isSection, loadSectionPrefs, type SectionId, type SectionPrefs, saveSectionPref, sectionOpen } from "./sections.ts";
 import { DEFAULT_VIEW, fillNav, SECTION_VIEW, showView, VIEW_ATTR, VIEW_TITLE, type ViewId, viewHash, VIEWS, visibleView } from "./shell.ts";
 import { checkedText, SourceLayer } from "./sourcelayer.ts";
 import { loadAdvance, saveAdvance } from "./store.ts";
@@ -194,7 +193,6 @@ interface State {
   activeRunning: boolean;
   /** The page's sections, while it is shown, and which of them he opened or closed. */
   home?: Home;
-  prefs: SectionPrefs;
   /** The rows of "Needs you" as last drawn, and a signature of them. */
   needs: Need[];
   /** The inbox's cards and their sources beyond the needs. */
@@ -407,10 +405,7 @@ function markSelected(state: State, scroll: boolean): void {
 /** The page's section hooks: its default open state, what opening one starts, and what is remembered. */
 function homeHooks(state: State): HomeHooks {
   return {
-    open: (id) => sectionOpen(id, state.prefs, true),
-    toggled: (id, open) => {
-      state.prefs[id] = open;
-      saveSectionPref(id, open);
+    toggled: (_id, open) => {
       if (open) tickSources(state);
     },
     peopleToggled: (open) => {
@@ -484,6 +479,12 @@ const askPr = (a: Ask): IssueRef => {
 /** The receipt of the last answer attempted on an ask's target, shown beside a failed read so its outcome and comment URL stay visible. */
 const answeredKey = (a: Ask): string => JSON.stringify(["answered", `${a.action.repository}#${a.action.number}`.toLowerCase()]);
 
+/** A captured card or chat cannot authorize its representative after grouping or refusal. */
+function singleAsk(state: State, a: Ask): void {
+  const current = [...(state.published.holds ?? []), ...state.published.asks].find((x) => x.key === a.key);
+  if (!current || current.group) throw new Error("Ask left or grouped; inspect members.");
+}
+
 /**
  * Read an Answer card's target and ask now; `post` answers only that, as
  * the operator, releasing only an eligible needs-human hold. Its card and a
@@ -499,6 +500,7 @@ async function readAsk(state: State, a: Ask) {
   const key = JSON.stringify([target.toLowerCase(), shown.title, shown.body, ask]);
   const check = async () => {
     if (await readHoldAsk(state.gh, owner, repo, number) !== ask) throw new Error("The ask changed; not releasing it. Reload and read it again.");
+    singleAsk(state, a);
   };
   // Only needs-human is released, and only where the pass listed it so; other holds are the pass's.
   const release = a.kind === "needs-human" || a.kind === "review-needs-human";
@@ -587,6 +589,7 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
     },
     answerEntry: (entry, letter, reply) => asOperator(state.gh, () => answerEntry(state, entry, letter, reply)),
     approve: (a, head) => asOperator(state.gh, async () => {
+      singleAsk(state, a);
       const ref = askPr(a);
       const found = reviewAskFor(state.items, ref);
       const url = await approveAt(state.gh, ref, head, found && { ref: found.ref, head: found.target.head });
@@ -662,7 +665,10 @@ function paintInbox(state: State, force = false): void {
   const waiting = cards.filter((c) => !c.answered).length;
   // Empty says nothing waits only when the pass's list is complete and current.
   inbox.empty.hidden = total > 0 || !settled;
-  setCount(home, "needs", String(total), { title: `${waiting} of ${total} cards waiting on you${settled ? "" : "; the pass's list is not complete and current, so more may wait"}`, hot: waiting > 0 });
+  const count = home.sections.needs.count;
+  count.textContent = String(total);
+  count.title = `${waiting} of ${total} cards waiting on you${settled ? "" : "; the pass's list is not complete and current, so more may wait"}`;
+  count.classList.toggle("hot", waiting > 0);
   markSelected(state, false);
 }
 
@@ -1732,25 +1738,21 @@ function run(state: State, cmd: Command, where: Route): void {
       window.location.hash = viewHash("status");
       return;
     default:
-      if (cmd.startsWith("section:")) jumpTo(state, cmd.slice("section:".length));
+      if (cmd === "section:needs") jumpTo(state);
   }
 }
 
 /** Switch to a section's view, open the section and scroll to it, as the section keys do; remembered like any opening. */
-function jumpTo(state: State, id: string): void {
-  if (!isSection(id) || !state.home) return;
-  const view = SECTION_VIEW[id];
-  if (view !== state.view) {
-    // Shown at once, so there is something to scroll to; the hash change then follows.
-    state.view = view;
-    showView(state.home.el, view);
-    window.location.hash = viewHash(view);
-  }
-  setSectionOpen(state.home, id, true, true, homeHooks(state));
+function jumpTo(state: State): void {
+  if (!state.home) return;
+  state.view = "inbox";
+  showView(state.home.el, "inbox");
+  window.location.hash = "#inbox";
+  state.home.sections.needs.details.open = true;
   tickSources(state);
-  state.home.sections[id].details.scrollIntoView?.({ block: "start" });
+  state.home.sections.needs.details.scrollIntoView?.({ block: "start" });
   // The first row of it, so j/k go on from there.
-  const first = state.home.sections[id].details.querySelector<HTMLElement>(`.${ROW_CLASS}`);
+  const first = state.home.sections.needs.details.querySelector<HTMLElement>(`.${ROW_CLASS}`);
   if (first) {
     state.selected = rowId(first);
     markSelected(state, false);
@@ -1893,7 +1895,6 @@ async function start(source: TokenSource): Promise<void> {
     hash: window.location.hash,
     advance: loadAdvance(),
     selected: undefined,
-    prefs: loadSectionPrefs(),
     needs: [],
     answeredHere: new Set(),
     activeRunning: false,
