@@ -597,10 +597,10 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
       singleAsk(state, a);
       const ref = askPr(a);
       const found = reviewAskFor(state.items, ref);
-      const url = await approveAt(state.gh, ref, head, found && { ref: found.ref, head: found.target.head });
-      if (url) reviewed(state, ref, head, "approve", url, found);
-      rebuildEntries(state);
-      return url;
+      const result = await approveAt(state.gh, ref, head, found && { ref: found.ref, head: found.target.head });
+      if (result.status === "approved" && result.url) reviewed(state, ref, head, "approve", result.url, found);
+      if (result.status === "approved" || result.status === "already-approved") rebuildEntries(state);
+      return result;
     }),
     member: (ref) => readMember(state.gh, ref),
     promote: (a, ref, head) => promoteMember(state.gh, ref, head, () => {

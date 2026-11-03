@@ -96,7 +96,10 @@ refreshes and card redraws in this signed-in session. An uncertain comment
 is not offered again; check and finish on GitHub.
 
 Published PR groups instead show their reason and exact member links for
-inspection, including one-member and carried groups. They never offer an
+inspection, including one-member and carried groups. Each member's Inspect
+link is independent of its lazy read, so a failed read does not hide it.
+Foreign/unreadable descriptors and retired policy still remove navigation.
+Groups never offer an
 answer, approval or release on just the representative. Membership is
 limited to 100 distinct positive safe-integer PR numbers, including the
 representative; invalid groups are rejected in full and counted as unreadable
@@ -158,7 +161,11 @@ remain in force; agent-board#640 capabilities are not implemented here.
 
 The digest's approvals are one **Approve selected** card. It approves
 selected PRs at the heads the digest assessed, skipping changed heads and
-closed PRs and reporting each outcome; the report stays until `r`.
+closed PRs and reporting each outcome. Safe preflight failures say Not sent;
+possibly sent approvals stay uncertain, with that member unticked and disabled.
+These per-head receipts also survive `r` and changed digest membership in this
+signed-in session, and are shared with ordinary approval cards. Status comes
+from structured results, not the wording of a failure.
 
 **Send** presents an open review-draft issue. **Do** presents one
 [operator-action proposal](docs/operator-actions.md) the pass lists: the

@@ -46,7 +46,7 @@ import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, OPERATOR, QUESTION_LABEL, DONE, F
 import { promoteProblem, refKey } from "./forge.ts";
 import { mapLimit, submitReview } from "./prs.ts";
 import type { ReviewRequest } from "./forge.ts";
-import { approveHead, approveSelected } from "./maintain.ts";
+import { approveHead, approveSelected, type ApproveResult } from "./maintain.ts";
 
 const PROJECT = `/orgs/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
 
@@ -470,15 +470,13 @@ export async function submitAskedReview(
  * Approve `pr` at `head`, the head an Inbox card read: through its review
  * ask when one names it. Without the PR pane's prompt, an ask about
  * another head refuses rather than approving one the bot didn't ask about.
- * Undefined means the viewer already approved this head; nothing was written.
+ * Preserve the structured outcome, including possibly sent writes.
  */
-export async function approveAt(gh: GitHub, pr: IssueRef, head: string, ask?: { ref: IssueRef; head: string }): Promise<string | undefined> {
+export async function approveAt(gh: GitHub, pr: IssueRef, head: string, ask?: { ref: IssueRef; head: string }): Promise<ApproveResult> {
   if (ask && ask.head !== head) throw new Error(`not approving: ${refKey(ask.ref)} asks about ${ask.head.slice(0, 12)}, but the head is ${head.slice(0, 12)}; open the PR to review it`);
   if (ask) await freshReviewAsk(gh, ask.ref, pr, ask.head);
   const [result] = await approveSelected(gh, [{ pr, head, reason: "" }]);
-  if (result!.status === "approved") return result!.url;
-  if (result!.note?.includes("already approved")) return undefined;
-  throw new Error(result!.note);
+  return result!;
 }
 
 /** A member of a card's PRs, as one read of it shows it. */

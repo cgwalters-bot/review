@@ -7,7 +7,9 @@ import { refText, type PrRef } from "./reviewdrafts.ts";
 
 export interface ApproveItem { pr: PrRef; head: string; reason: string; approved?: boolean }
 
-export interface ApproveResult { pr: PrRef; status: "approved" | "skipped" | "failed"; note?: string; url?: string | undefined }
+export interface ApproveResult { pr: PrRef; status: "approved" | "already-approved" | "skipped" | "failed" | "uncertain"; note?: string; url?: string | undefined }
+
+export const approvalKey = (pr: PrRef, head: string): string => JSON.stringify(["approve", refText(pr).toLowerCase(), head]);
 
 // Share in-flight and completed writes across single/digest cards, including
 // uncertain failures. One authenticated client, at most 100 heads for five minutes.
@@ -15,7 +17,7 @@ const approvals = new WeakMap<GitHub, Map<string, { until: number; work: Promise
 
 /** Stop duplicate approvals after reload; one page at action time, never during polling. */
 export async function approveHead(gh: GitHub, it: ApproveItem, check?: () => Promise<void>): Promise<string | undefined> {
-  const key = `${refText(it.pr).toLowerCase()}@${it.head}`;
+  const key = approvalKey(it.pr, it.head);
   const recent = approvals.get(gh) ?? new Map();
   const previous = recent.get(key);
   if (previous && previous.until > Date.now()) { await previous.work; return undefined; }
@@ -68,10 +70,10 @@ export async function approveSelected(gh: GitHub, items: readonly ApproveItem[])
       } else {
         const url = it.approved ? undefined : await approveHead(gh, it);
         it.approved = true;
-        out.push({ pr: it.pr, status: url ? "approved" : "skipped", url, ...(!url ? { note: `${refText(it.pr)} already approved at HEAD` } : {}) });
+        out.push({ pr: it.pr, status: url ? "approved" : "already-approved", url, ...(!url ? { note: `${refText(it.pr)} already approved at HEAD` } : {}) });
       }
     } catch (e) {
-      out.push({ pr: it.pr, status: "failed", note: `${refText(it.pr)}: ${String(e)}` });
+      out.push({ pr: it.pr, status: e instanceof Error && e.name === "MaybeSentError" ? "uncertain" : "failed", note: `${refText(it.pr)}: ${String(e)}` });
     }
   }
   return out;

@@ -48,9 +48,9 @@ function cardHooks(gh: GitHub, refreshed: string[]): InboxHooks {
     mayAct: true,
     answerEntry: async () => {},
     approve: (a, head) => asOperator(gh, async () => {
-      const url = await approveAt(gh, PR, head);
-      refreshed.push("approve");
-      return url;
+      const result = await approveAt(gh, PR, head);
+      if (result.status === "approved") refreshed.push("approve");
+      return result;
     }),
     approveDigest: (items) => asOperator(gh, () => approveSelected(gh, items)),
   };
@@ -181,7 +181,7 @@ describe("digest card", () => {
     assert.equal(r.results[0], "Approved up/proj#7.");
     assert.match(r.results[1]!, /^Skipped: up\/proj#8's head moved/);
     assert.match(r.results[2]!, /^Failed or uncertain: up\/proj#9/);
-    assert.deepEqual(r.boxes, [true, false, false]);
+    assert.deepEqual(r.boxes, [true, false, true]);
   });
 
   it("keeps a clean batch's report, not offering the approvals again", async () => {

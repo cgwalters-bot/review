@@ -32,7 +32,7 @@ test("Approve selected approves at the assessed head, and skips a PR whose head 
   // A fresh card shares the write receipt even while GitHub's reviews lag.
   const before = f.calls.length;
   const again = await approveSelected(gh, [approve()[0]!]);
-  assert.equal(again[0]!.status, "skipped");
+  assert.equal(again[0]!.status, "already-approved");
   assert.deepEqual(f.calls.slice(before).map((c) => c.method), ["GET"]);
   installDom();
   const el = approveGroup(items, (picked) => approveSelected(gh, picked));

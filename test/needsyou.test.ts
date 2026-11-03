@@ -223,13 +223,13 @@ describe("Needs you from the pass's published list", () => {
     const app = await boot(t, { status: 200, etag: '"a"', comments: listed(T0, [7, 8, 9].map((n) => approval(n, true))), approvals: { 7: ["a".repeat(40)], 8: ["b".repeat(40)] }, fail: 9 });
     try {
       app.doc.querySelector<HTMLButtonElement>(".maintain-sec button")!.click();
-      await app.until(() => !!app.doc.querySelector(".maintain-results .failed"), "partial batch");
+      await app.until(() => !!app.doc.querySelector(".maintain-results .uncertain"), "partial batch");
       const results = app.doc.querySelector(".maintain-results")!.textContent!;
       assert.match(results, /Skipped: up\/proj#7 already approved at HEAD/);
       assert.match(results, /Approved up\/proj#8/);
       assert.match(results, /Failed or uncertain: up\/proj#9/);
       assert.deepEqual(app.reads.writes, ["POST /repos/up/proj/pulls/8/reviews", "POST /repos/up/proj/pulls/9/reviews"]);
-      assert.deepEqual([...app.doc.querySelectorAll<HTMLInputElement>(".maintain-sec input[type=checkbox]")].map((b) => [b.checked, b.disabled]), [[false, true], [false, true], [true, false]]);
+      assert.deepEqual([...app.doc.querySelectorAll<HTMLInputElement>(".maintain-sec input[type=checkbox]")].map((b) => [b.checked, b.disabled]), [[false, true], [false, true], [false, true]]);
     } finally { await app.close(); }
   });
 
@@ -246,8 +246,8 @@ describe("Needs you from the pass's published list", () => {
       await settle();
       assert.equal(app.reads.writes.length, 1, "the other card must not post while the first is in flight or lagging");
       release();
-      await app.until(() => !!app.doc.querySelector(".maintain-results .skipped"), "deduplicated digest result");
-      assert.match(app.doc.querySelector(".maintain-results")!.textContent!, /already approved at HEAD/);
+      await app.until(() => !!app.doc.querySelector(".maintain-results [data-sent]"), "deduplicated digest result");
+      assert.match(app.doc.querySelector(".maintain-results")!.textContent!, overlapping ? /already approved at HEAD/ : /Approved:/);
       assert.deepEqual(app.reads.reviews, [7], "the shared receipt bridges the unread write");
     } finally { release(); await app.close(); }
   });
