@@ -26,6 +26,7 @@ import {
   loadRuns,
   MaybeSentError,
   readMember,
+  promoteMember,
   postAnswer,
   postAskComment,
   rerunFailedJobs,
@@ -49,7 +50,7 @@ import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from 
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { DecisionsRefresh } from "./decisionsrefresh.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, sendDocumentEdit } from "./decisiondocument.ts";
-import { type Card, inboxCards, mayAct, type Published, publishedNote, refusal } from "./inbox.ts";
+import { type Card, inboxCards, mayAct, members, type Published, publishedNote, refusal } from "./inbox.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { CHAT_CONFIG } from "./chatconfig.ts";
 import { type ChatAnswer, chatItem, type ChatItem, startChatButton } from "./chatitem.ts";
@@ -598,6 +599,12 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
       return url;
     }),
     member: (ref) => readMember(state.gh, ref),
+    promote: (a, ref, head) => promoteMember(state.gh, ref, head, () => {
+      const current = state.published.asks.find((x) => x.key === a.key);
+      if (state.published.unavailable || !current || current.kind !== "review-promote" || current.action.repository.toLowerCase() !== `${ref.owner}/${ref.repo}`.toLowerCase() || !members(current).includes(ref.number)) throw new Error("Member left this request; reload and inspect it.");
+      const no = refusal(current, "promote");
+      if (no) throw new Error(no);
+    }),
     // A report stays on its card until r; the pass lists the PRs until its next digest.
     approveDigest: (items) => asOperator(state.gh, async () => {
       // A kept card approves only what the pass still lists, ungrouped, in its digest.

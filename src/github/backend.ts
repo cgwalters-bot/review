@@ -46,7 +46,7 @@ import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, OPERATOR, QUESTION_LABEL, DONE, F
 import { promoteProblem, refKey } from "./forge.ts";
 import { mapLimit, submitReview } from "./prs.ts";
 import type { ReviewRequest } from "./forge.ts";
-import { approveSelected } from "./maintain.ts";
+import { approveHead, approveSelected } from "./maintain.ts";
 
 const PROJECT = `/orgs/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
 
@@ -502,6 +502,21 @@ export async function readMember(gh: GitHub, ref: IssueRef): Promise<MemberPr> {
   const author = pr.user?.login ?? "ghost";
   const problem = promoteProblem({ ref: actual, author, body: pr.body ?? "" });
   return { ref: actual, url: pr.html_url, title: pr.title, state: `${pr.merged ? "merged" : pr.state}${pr.draft ? " draft" : ""}`, head: pr.head.sha, author, ...(problem ? { problem } : {}) };
+}
+
+/** A push after this check can only leave an approval of the old commit, never its replacement. */
+export async function promoteMember(gh: GitHub, ref: IssueRef, head: string, policy: () => void): Promise<string | undefined> {
+  return asOperator(gh, async () => {
+    const check = async () => {
+      policy();
+      const now = await readMember(gh, ref);
+      if (now.head !== head) throw new Error("This member changed: head moved. Reload, reread and confirm again.");
+      if (now.state !== "open draft" || now.problem || !/^[0-9a-f]{40}$/.test(head)) throw new Error(now.problem ?? `Member is ${now.state}, not an eligible open draft`);
+      policy();
+    };
+    await check();
+    return approveHead(gh, { pr: ref, head, reason: "promote" }, check);
+  });
 }
 
 /**
