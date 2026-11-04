@@ -301,6 +301,30 @@ test("a pending member preflight's revoked-policy failure survives restricted re
   assert.equal(fresh.querySelector("button")!.disabled, false, "a valid policy allows explicit rereading after preflight refusal");
 });
 
+for (const failure of [false, true]) test(`inspection preserves pending ordinary approval's live ${failure ? "uncertain" : "sent"} completion`, async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const r = setup((method, p) => ({ status: method === "POST" && failure ? 502 : 200, body: method === "POST" ? { html_url: `${draft(7).html_url}#pullrequestreview-1` } : p.endsWith("/reviews") ? [] : draft(7) }));
+  r.state.gh = new GitHub(async () => "test", async (url, init) => {
+    if (init?.method === "POST") await pending;
+    return r.fetchImpl(url, init);
+  });
+  r.paint(cards(rawAsk(7, { kind: "review-approve", action: { type: "approve_pull_request", repository: "cgwalters-forge/widget", number: 7, head } }))[0]!);
+  r.list.querySelector<HTMLButtonElement>(".primary")!.click(); await settle();
+  const c = promotion() as Card & { kind: "promote" };
+  const restricted = { ...c, ask: { ...c.ask, requestsUnreadable: true } };
+  r.paint(restricted, true, true);
+  assert.match(r.list.textContent!, /Prior write.*Sending/s);
+  release(); await settle();
+  for (const remount of [false, true]) {
+    r.paint(restricted, true, remount);
+    assert.match(r.list.textContent!, failure ? /Not sent, or uncertain/ : /Approved:.*pullrequestreview-1/s);
+    assert.doesNotMatch(r.list.textContent!, /Sending/);
+    assert.equal(r.list.querySelector("a[href], button"), null);
+    assert.equal(r.writes().length, 1);
+  }
+});
+
 test("moved member recovers only after reload, rereading and a new confirmation", async () => {
   let sha = head;
   const r = setup((method, p) => ({ body: method === "POST" ? {} : p.endsWith("/reviews") ? [] : draft(7, sha) }));
@@ -465,6 +489,55 @@ test("adding and removing an ordinary card never steals the digest's detailed re
   assert.match(r.list.querySelector(".maintain-results")!.textContent!, /Failed or uncertain: up\/proj#7/);
   assert.equal(r.writes().length, 1);
 });
+
+for (const mode of ["read-failed", "ordinary-read-failed", "changed-head", "member-refused", "foreign", "unreadable", "unsupported"] as const) {
+  test(`visible mixed digest keeps its own rows during nonrepresentative member inspection: ${mode}`, async () => {
+    let inspecting = false;
+    const r = setup((method, p) => {
+      const n = Number(/\/pulls\/(\d+)/.exec(p)?.[1]);
+      if (method === "POST") return n === 8 ? { status: 502 } : { body: {} };
+      if (inspecting && mode.endsWith("read-failed")) return { status: 503 };
+      if (n === 10) return { status: 503 };
+      if (p.endsWith("/reviews")) return { body: n === 12 ? [{ user: { login: "cgwalters" }, state: "APPROVED", commit_id: head, submitted_at: "2026-11-03T00:00:00Z" }] : [] };
+      const pr = draft(n, n === 9 || inspecting && mode === "changed-head" ? replacement : head);
+      if (inspecting && mode === "member-refused") pr.draft = false;
+      return { body: pr };
+    });
+    const listed = asks(...[7, 8, 9, 10, 12].map((n) => rawAsk(n, { key: `cgwalters-forge/widget#${n}/digest`, kind: "digest-approve", action: { type: "approve_pull_request", repository: "cgwalters-forge/widget", number: n, head } })));
+    r.paint(publishedCards(listed)[0]!, false, false, listed);
+    r.list.querySelector<HTMLButtonElement>(".maintain-sec button")!.click(); await settle();
+    const report = r.list.querySelector(".maintain-results")!;
+    const rows = [...report.children];
+    const outcomes = rows.map((row) => row.textContent);
+    assert.deepEqual(rows.map((row) => row.className), ["approved", "uncertain", "skipped", "failed", "already-approved"]);
+    assert.equal(r.writes().length, 2);
+    inspecting = true;
+    const group = cards(rawAsk(6, { key: "cgwalters-forge/widget#6", kind: mode === "ordinary-read-failed" ? "review-approve" : "review-promote",
+      action: { type: "pull_request", repository: "cgwalters-forge/widget", number: 6 }, group: { reason: "inspect nonrepresentatives", numbers: [6, 7, 8, 12] },
+    }))[0]!;
+    assert.ok("ask" in group);
+    if (mode === "unreadable") group.ask.requestsUnreadable = true;
+    if (["foreign", "unsupported"].includes(mode)) group.ask.requests = [{ forge: mode === "foreign" ? "forge.example" : "github.com", quality: "decision", actions: [{ kind: "promote", supported: false, reason: "promotion disabled by publisher" }] }];
+    const all = [...publishedCards(listed), group];
+    for (const force of [false, true, true]) {
+      r.state.published = { asks: [...listed, ...("ask" in group ? [group.ask] : [])], unavailable: false };
+      fillInbox(r.list, all, inboxHooks(r.state), force);
+      if (!["foreign", "unreadable"].includes(mode)) for (const i of [1, 2, 3]) await openMember(r, i);
+      const inspectingCard = r.list.querySelector(".members")?.closest("article") ?? r.list.querySelector(".c-promote")!;
+      assert.deepEqual([...report.children], rows, "inspection retains every original row in the visible digest");
+      assert.deepEqual(rows.map((row) => row.textContent), outcomes);
+      for (const text of [outcomes[0], outcomes[1], outcomes[4]]) assert.ok(inspectingCard.textContent!.includes(text!), text!);
+      for (const copy of inspectingCard.querySelectorAll("[data-approval-receipt]")) {
+        assert.equal(copy.querySelector("button, input, textarea, select, a[href]"), null);
+        assert.ok(!rows.includes(copy), "member sees a copy, not the digest-owned node");
+      }
+      if (mode === "unsupported") assert.match(inspectingCard.textContent!, /promotion disabled by publisher/);
+      if (["foreign", "unreadable"].includes(mode)) assert.equal(inspectingCard.querySelector("a[href], button"), null);
+      assert.deepEqual([...r.list.querySelectorAll<HTMLInputElement>(".maintain-sec input")].map((x) => x.disabled), [true, true, false, false, true]);
+      assert.equal(r.writes().length, 2, "reload and inspection never POST");
+    }
+  });
+}
 
 test("real digest mixed outcomes retain per-head uncertainty across changed membership and ordinary cards", async () => {
   const r = setup((method, p) => {
