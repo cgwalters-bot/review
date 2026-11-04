@@ -6,10 +6,10 @@ A small review interface for work proposed by
 [cgwalters-bot](https://github.com/cgwalters-bot) and by people: questions,
 approvals, review drafts and operator actions, with a head-checked PR review
 pane. The forge, git and markdown are the source of truth. Answers and edits
-are made as you, with your token; no private contents ship in the build.
+are made as you, with your token; the build doesn't include private contents.
 
 The GitHub browser has just two pages: **Needs you** and **Status**. It is
-an action and reading surface, not another scheduler or operations console.
+a place to read and act, not another scheduler or operations console.
 See [docs/design.md](docs/design.md) for the backend design and
 [docs/prior-prototype.md](docs/prior-prototype.md) for the earlier prototype.
 The Forgejo client remains separate.
@@ -19,11 +19,11 @@ for the 3 November snapshot, existing-work exclusions and ranked additional gaps
 
 ## Needs you
 
-**Needs you** (`#inbox`) is the default. Its cards are first what the
-scheduler's pass publishes as waiting on the operator, its `needs_you`
+**Needs you** (`#inbox`) is the default. Its first cards show what the
+scheduler's pass publishes as waiting on the operator in its `needs_you`
 list (`agent-board/needs-you/v2`, agent-board's docs/pass.md, on with the
-pass's `holds.needsYou`): holds only he releases, followed PRs waiting on
-his approval or answer (broker PRs included), operator-action proposals
+pass's `holds.needsYou`): holds that only he can release, followed PRs waiting
+on his approval or answer (broker PRs included), operator-action proposals
 and maintain digest asks. Without epic activity they come in the pass's order.
 With agent-board#661's epic activity, the default shows in-progress epics,
 focus first, with approval-only rows first within each epic, then Priority
@@ -34,11 +34,11 @@ and draft cards; **No epic** means explicitly published `none`. The choice
 is remembered per viewer when storage works. `#epic-N` selects tracker epic N,
 matching either the nearest or top epic across repositories. The heading
 counts the selected cards (including a visible retained draft); cap omissions
-and filter exclusions are reported separately. Then
-come the decisions document's entries and open review drafts, which the
-pass doesn't read; completed ones last. The section count is every card on
-the page, including one kept for unsent text after it left. Five cards are
-drawn initially; **Show more** draws the rest and starts any reads their
+and filter exclusions are reported separately. The decisions document's
+entries and open review drafts come next, with completed ones last. The
+pass doesn't read these. The section count includes every card on
+the page, including a card kept for its unsent text after its source left.
+Five cards are drawn initially; **Show more** draws the rest and starts any reads their
 controls require. Questions stay as short asks (wrapping on narrow screens,
 never clipped); context and answer forms are collapsed. Approval rows show
 published diff size, CI and review-agent evidence, or explicitly unknown.
@@ -58,18 +58,18 @@ these encodings remain a fixture contract, not verified publisher compatibility.
 Default filtering is inactive for missing or malformed epic activity; it
 does not infer activity or issue extra reads. Malformed metadata must not
 silently hide decisions. Activity parsing accepts at most 10,000 entries
-with eight reasons each, refusing the index whole beyond that bound.
+with eight reasons each, rejecting the entire index if it exceeds that bound.
 
 The line over the cards says how current the list is by the pass's own
 clock: when it last confirmed the list (`validated_at`) and changed it,
 and when GitHub last confirmed the comment. A 304 confirms the comment,
-not the pass: past an hour and a pass interval since `validated_at`, the
+not the pass: after an hour plus a pass interval since `validated_at`, the
 line says the pass may have stopped. It also names any source the pass
 read only in part or not at all, asks past its cap, and summaries it
 didn't read (an ask then shows the board's question or the hold's
 reason). "All caught up" appears only for an empty list that is complete
 and current. If the comment can't be read, or no longer holds a usable
-list, the last list's cards stay, marked unavailable, with the reason. A
+list, the previous list's cards stay, marked unavailable, with the reason. A
 snapshot from a pass without the list shows its own operator holds and
 says that review waits, proposals and digest asks aren't listed. A line
 also shows published holds that block all new runs, marked stale when the
@@ -78,13 +78,13 @@ coordinator heartbeat is.
 **Answer** is a hold or a PR's needs-human. Its card reads the target and
 its newest bot comment before showing the form, then checks the ask again
 before commenting; on a `needs-human` ask it then removes only that
-label, and a changed ask refuses release. Other operator and epic holds
-are comment-only; `needs-design` and unrelated labels are never removed. A
+label. If the ask has changed, the app refuses to release it. Other operator
+and epic holds allow comments only; `needs-design` and unrelated labels are never removed. A
 recognized ask-created tracker question on the board is also closed as
 completed; labels on its `Blocks:` target are left alone for agent-board's
 `ask resolve`, which checks all other asks before unlabelling.
-**Approve** is a PR the pass found waiting on his approval at a head. Its
-card checks the head and your existing approvals when you act, and writes
+**Approve** is a PR the pass found waiting for his approval at a specific head.
+Its card checks the head and your existing approvals when you act, and writes
 only if the head is still the one the pass read and you haven't approved
 it already; if it moved, or a review ask names another head, nothing is
 sent: open the PR pane to review it. Other asks on a PR (a closer look, a
@@ -99,7 +99,7 @@ Published PR groups instead show their reason and exact member links for
 inspection, including one-member and carried groups. They never offer an
 answer, approval or release on just the representative. Membership is
 limited to 100 distinct positive safe-integer PR numbers, including the
-representative; invalid groups are refused whole and counted as unreadable
+representative; invalid groups are rejected in full and counted as unreadable
 in the incomplete-list warning. Published URLs are not used. A new group
 replaces any old representative form, dropping its unsent text for safety.
 
@@ -113,7 +113,7 @@ Single and digest cards share in-flight and five-minute write receipts
 Where the pass publishes request descriptors (`needs_you.requests`), a card
 follows their typed actions: Approve only where `review-at-head` is
 supported, Do only where `check-proposal` is, and nothing in place for a
-request on another forge than github.com. Unreadable, missing or capped
+request on a forge other than github.com. Unreadable, missing or capped
 descriptors stay read-only; only older lists with no descriptor field use
 legacy actions. Foreign or unreadable targets offer no GitHub navigation.
 The steps the pass marks
@@ -129,21 +129,21 @@ The current request's policy and membership and the exact live PR's eligibility,
 draft state and head are checked again before writing. A changed member requires
 `r`, rereading and a new confirmation. A push after preflight cannot authorize
 the replacement commit. No command, ready, merge or enqueue is sent. Sent and
-uncertain receipts stay independently per member/head in this signed-in session;
-they do not mark the group done. The receipt says approval sent, waiting on promoter,
+uncertain receipts are kept separately for each member/head in this signed-in
+session; they do not mark the group done. The receipt says approval sent, waiting on promoter,
 not promotion completed. Human-text members still require Make it mine.
 If descriptors become foreign or unreadable, prior member outcomes remain
 visible without controls or navigation, even if the write was still pending.
 Reloading with `r` refreshes member readers, not a cached member-list receipt.
-A successful approve or answer marks its card done at once and
-says what it waits on; an answer that only comments says the hold stays.
+A successful approval or answer marks its card done at once and
+says what it is waiting for; an answer that only comments says the hold stays.
 
 Promotion evidence (read-only, 2026-11-03): the controller's
 [commit-bound decision](https://github.com/cgwalters-forge/review/issues/222#issuecomment-6615351214)
 was retrieved with the GitHub API. The original promoter's current source is
 [homegit `c027d9f4`, `bin/bot-pr`](https://github.com/cgwalters-bot/homegit/blob/c027d9f4c28c8e21df37f82e978b3fc55fe73cab/bin/bot-pr#L1944-L1975):
 its ordinary approval rule compares the operator review's `commit_id` to the
-current head (with a separately verified sign-off-record exception), and it
+current head (with a separately verified sign-off-record exception). It also
 checks the branch ref again before upstream PR creation (lines 2695–2698).
 This is source evidence, not verification of the deployed scheduler or an atomic
 approval/head check across its writes. Agent-board's current promotion stage at
@@ -192,7 +192,7 @@ alone. A fresh body comparison refuses stale answers, preserving the pick
 and reply; GitHub has no atomic issue-body compare-and-swap, so an edit
 between the final read and write can still race.
 
-**From people** follows the cards, closed by default. Opening it reads
+**From people** appears after the cards, closed by default. Opening it reads
 human-authored PRs requesting the operator's review and recent unread human
 mention/review-request notifications. It deduplicates matching threads and
 previews five rows before **View all**. **Mark done** marks notifications
@@ -244,8 +244,8 @@ unified or split diffs. It supports file/range selection, syntax and word
 highlighting, expandable context, versioned Viewed marks, inline comments,
 and the bot's advisory review guide. Guides are trusted only from the bot's
 COMMENT reviews at their named head; stale guides are labelled. Approve
-targets the shown head and refuses if it moved. Request changes and Comment
-send your text. Review confirmations name unseen files and guide hotspots.
+targets the shown head and refuses to approve if it moved. Request changes
+and Comment send your text. Review confirmations name unseen files and guide hotspots.
 
 **Make it mine** edits a bot forge PR's title, description and commit
 messages for human-text upstreams. It requires your authorship confirmation,
@@ -264,7 +264,7 @@ GitHub's search lag for up to five minutes.
 The operator-only **capture bar** files a tracker issue labelled
 `needs-triage` and adds it to Workstream. It supports an optional repository,
 Priority, labels and Epic; partial failures retain the created issue link
-and explain follow-up rather than inviting duplicate filing. A lost creation
+and explain what to do next rather than inviting duplicate filing. A lost creation
 response disables retry until the tracker is checked. Esc collapses without
 losing text; the draft survives reloads in localStorage and is deleted on
 sign-out.
@@ -286,7 +286,7 @@ item; there is no session-chat socket, workflow discovery for chat, activity
 feed, cost chart or operations-panel polling. The CLI's richer read-only
 state loaders remain separate consumers.
 
-The header says when the current page was checked, using its oldest source;
+The header says when the current page was checked, based on its oldest source;
 failed reads do not count. It also explains hidden-tab pauses, low budgets,
 rate limits and stalled requests. Polls are single-flight, use backoff, stop
 while hidden, and recover when a suspended page resumes. Rate-limit recovery

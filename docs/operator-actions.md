@@ -5,17 +5,17 @@
 Proposals are disabled by default. Enable them only by editing
 `src/github/action-config.json` on the repository's default branch: set
 `operator`, `planner`, `tracker` (`OWNER/REPO`), and an explicit
-`repositories` allowlist. `project` is the one GitHub project URL proposals may
-change, or empty to refuse project-field actions. `org` is likewise the one
+`repositories` allowlist. `project` is the only GitHub project URL proposals may
+change, or empty to refuse project-field actions. `org` is likewise the only
 organisation whose Actions variables and rulesets proposals may change, or
-empty to refuse those kinds. No dispatcher or proposal can widen this
+empty to refuse those kinds of actions. No dispatcher or proposal can widen this
 configuration. The allowlist should start with the forge-native repositories;
 upstreams require an operator-reviewed configuration change.
 
 The shipped allowlist explicitly includes `cgwalters-bot/praxis-credential-broker`
 alongside the forge repositories. The app does not read tracker's pass config;
 its existing bot-PR search is already repository-independent, so broker PRs
-requesting the operator's review need no extra search or repository list.
+requesting the operator's review don't need an extra search or repository list.
 
 This prevents a proposal from borrowing the viewer's token to write outside
 the approved repositories or project. Only the configured operator can execute, using
@@ -50,8 +50,9 @@ proposed together.
 
 ## Stale checks
 
-Proposals on issues and PRs carry no timestamps or prior values. Instead, rendering a proposal
-reads every target and shows the fact each action depends on: issue state for
+Proposals on issues and PRs don't include timestamps or prior values. Instead,
+when the site renders a proposal, it reads every target and shows the fact
+each action depends on: issue state for
 close and reopen, label membership, a PR's state, draft flag and head (which
 must be open, non-draft and at `head_sha`), the current parent, or the
 project field's current value. Actions run in order, so an action on a target
@@ -65,17 +66,18 @@ For a variable, the live value must equal `expected_current` (null: unset);
 the fact shown also covers its visibility and selected repositories. For a
 ruleset, the live ruleset of exactly that name, normalised as agent-board
 defines, must have the SHA-256 `expected_current_sha256` (null: none of that
-name). A member proposer cannot see a ruleset's bypass actors, so cannot
-compute that digest for an update: the stale refusal names the live digest
+name). A member proposing a change cannot see a ruleset's bypass actors, so cannot
+compute that digest for an update: the stale-action message gives the live digest
 for the operator to hand back. A wrong expectation only makes the action stale.
 
 Both kinds create or update: a variable is POSTed when unset and PATCHed
-when set, with repository IDs read from `GET /repos/OWNER/NAME` at plan time
+when set. Repository IDs are read from `GET /repos/OWNER/NAME` at plan time
 and again just before the write (a renamed or transferred repository is
 refused), never from the proposal. A ruleset is POSTed when none has its name
-and PUT to the live ruleset's ID otherwise; more than one ruleset of the name,
-or more than 1,000 rulesets, is refused. A proposal may hold only one action
-per organisation variable or ruleset, since each is planned against live state
+and PUT to the live ruleset's ID otherwise. The site refuses to proceed if more
+than one ruleset has that name, or if there are more than 1,000 rulesets.
+A proposal may hold only one action per organisation variable or ruleset,
+since each is planned against live state
 alone. The ruleset body is only the reviewed source file: it is fetched at the
 pinned commit, which must be reachable from the source repository's default
 branch (compare status `behind` or `identical`), since a member can push an
@@ -97,8 +99,8 @@ need it. A fine-grained token sends no scopes, and one without org access may
 see a variable as unset (a 404); that fails safe, since GitHub then refuses
 the create.
 
-Execution reads every target again and refuses unless each fact still equals
-what was shown, then checks each one again just before its write. A target
+Execution reads every target again and refuses to proceed unless each fact
+still matches what was shown, then checks each one again just before its write. A target
 that changed in a way these facts do not cover (its title, body or comments)
 does not make an action stale.
 
@@ -129,7 +131,7 @@ Receipts count only from trusted writers with a trusted last editor. The first
 receipt wins after a bounded re-read, as in job-plan dispatch. GitHub comments
 are not an atomic lock: concurrent clients depend on GitHub showing earlier
 receipts. Do not execute the same proposal from multiple tabs/devices. Deleting
-a receipt can permit replay. Editing a proposal creates a new version.
+a receipt can allow replay. Editing a proposal creates a new version.
 
 GitHub offers no compare-and-swap for issue, label, project-field, sub-issue,
 org variable or org ruleset writes, so a change racing the final read remains possible. A read that lags

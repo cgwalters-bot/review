@@ -33,8 +33,8 @@ board mirror and the migration). Auth, hosting, CSP, rendering and deploys
 ### Answers, and why the bot can trust them (revised 2026-09-26)
 
 The bot's existing rule is that only the `cgwalters` login carries intent.
-Answers therefore are things only that login can create, and the simplest
-such thing is a comment: GitHub records its author.
+Answers must therefore be something only that login can create. A comment
+is the simplest option: GitHub records its author.
 
 The first version answered board *draft* items, which have no comments and
 whose edits are unattributed (`DraftIssue` and `ProjectV2Item` expose only
@@ -72,8 +72,8 @@ authorship. It is gone. Instead:
   there is a recommendation, it is always option A. `Options:` and
   `Recommended:` count only after the `Q:` line and outside fenced code
   blocks, and each option is exactly one line, lettered from A, at least
-  two; the app says so when a list doesn't read that way rather than
-  guess at a wrapped option.
+  two; if a list doesn't follow that format, the app reports it rather than
+  guessing at a wrapped option.
 - **He answers with a normal comment on it**, and his login is what
   authenticates it. If he picks an option, the comment's first line is
   exactly that letter, optionally followed by his own text; otherwise it
@@ -88,7 +88,7 @@ authorship. It is gone. Instead:
     `/promote` on *any* line of his comments, so "ok" followed by a
     `/promote` line in an answer would promote a fork PR. Backticks or
     other wording get around it on purpose. It also refuses free text
-    whose first line is a single letter, which would read as a pick.
+    whose first line is a single letter, because it would be read as a pick.
 - **Only open question issues in the tracker, opened by the bot and
   assigned to him, get an answer box** (reviews and chores are below). `postAnswer` reads the issue fresh and refuses anything
   else before writing, and also a picked letter that the question's body
@@ -134,8 +134,8 @@ it.
   `https://github.com/OWNER/REPO/pull/N` at <40-hex head> ``. The app
   opens that PR in its review pane, including an upstream PR he is asked
   to approve. The pane offers a review form for any PR an open review
-  ask names, besides the bot's own forge PRs; a PR nothing asks about
-  still gets none, so a crafted link can't make the page a one-click
+  ask names, besides the bot's own forge PRs. Any other PR without an ask
+  still gets no review form, so a crafted link can't turn the page into a one-click
   approval. The pane shows the head the bot asked about and warns when
   the PR has moved since: a review is always of the head shown, and when
   that isn't the one asked about he must confirm reviewing the new head
@@ -160,7 +160,7 @@ it.
   with failed jobs in its latest attempt; he confirms, and only then the
   app calls `POST .../actions/runs/{id}/rerun-failed-jobs`, built from the
   parsed URL's parts, and comments "Reran the failed jobs of <run URL>".
-  `cancelled` counts as failed: jobs that lost their runner end up so.
+  `cancelled` counts as failed: jobs that lost their runner end up in that state.
   The confirmation names the commit the run is on, and warns when that
   is older than the current head of the PR the chore blocks. One rerun
   per run is in flight at a time, even across re-renders. A 4xx answer
@@ -180,7 +180,7 @@ it.
 
 The relay and the `cgwalters-review` App stay as in §3; v0 ships the
 client side (see "Hosting v0" below). With answers as issue comments,
-the App needs no Gists permission; Contents write is not needed until PR
+the App doesn't need Gists permission; Contents write is not needed until PR
 review (v2).
 
 **Resolved (2026-09-30):** the board was owned by the `cgwalters-bot`
@@ -189,8 +189,8 @@ user, and GitHub Apps have no account-level Projects permission
 so it moved to the cgwalters-forge org
 (cgwalters-forge/tracker#144), where an App with Projects write can
 update it. App user tokens
-reach only repositories where the App is installed, which the tracker
-and the forge are; upstream repositories need no write access now that
+reach only repositories where the App is installed, including the tracker
+and the forge; upstream repositories don't need write access now that
 answers never go there.
 
 **Plan, revised:** v0 is the GitHub queue, the item view and answers, as
@@ -247,7 +247,7 @@ What this gives up, compared with §3:
   organization is served from `cgwalters-forge.github.io`, and they can
   read each other's storage: the token, and the response cache below,
   which holds whatever the token read, private repositories included.
-  None other exists; don't add one while tokens or the cache live here.
+  No other site exists there; don't add one while tokens or the cache live here.
   A custom domain would give the app an origin of its own.
 - **A long-lived credential in the browser**, rather than the relay's
   short-lived access tokens.
@@ -277,9 +277,9 @@ first (stale-while-revalidate):
   same rows, a PR only if it differs. (The board is REST with ETags, so
   it revalidates like everything else; only the forge's search has no
   validators and is always re-read.) A finished workflow run's jobs never
-  change, so the ops view uses a cached copy in which every job of the
-  run's attempt has completed as is, without revalidating it, even from
-  an earlier session. That is decided by the copy's content, not by
+  change. If every job in the cached run attempt has completed, the ops view
+  uses that copy without revalidating it, even if it comes from
+  an earlier session. This depends on the copy's content, not on
   comparing the browser's clock with GitHub's.
 - **Writes invalidate.** A successful write drops every cached response
   under the issue or PR it wrote to (its `/issues/N` and `/pulls/N`
@@ -298,17 +298,17 @@ first (stale-while-revalidate):
   once; a different token waits for `GET /user`, keeps the cache if the
   login is the same (a rotated token) and wipes it otherwise. Signing
   out deletes the database, and so does GitHub rejecting the token with
-  a 401 at any time, at load or mid-session (a token revoked or expired
-  while the tab is open), from any read or write; the app then stops
-  and asks for a new token. Another tab of the app lets go of the
+  a 401 from any read or write, whether at load or mid-session (if a token
+  is revoked or expires while the tab is open). The app then stops
+  and asks for a new token. Another tab of the app releases the
   database when that happens.
 - **Only with "remember".** A remembered token is on disk anyway, so
   its cache may be too. Without "remember" the token lasts as long as
   the tab, and so does the cache: it stays in memory, and each such
   load deletes any database an earlier remembered sign-in left. That
   gives up the fast reload for tokens that aren't remembered, in
-  exchange for leaving nothing behind after the tab closes, which is
-  what the sign-in page promises. Keeping a session's cache in
+  exchange for leaving nothing behind after the tab closes, as
+  the sign-in page promises. Keeping a session's cache in
   IndexedDB and deleting it on the next load would have left private
   data on disk until then, possibly forever.
 - **Without storage** (blocked site data, some private modes, a full
@@ -339,7 +339,7 @@ first (stale-while-revalidate):
   - The served code is deployed only from commits you approved, and the bot
     can't touch what's served.
 - **Sign-off.**
-  - GitHub: pure API. New commits reuse each original tree, then a
+  - GitHub: API only. New commits reuse each original tree, followed by a
     compare-and-swap ref update.
   - Forgejo: no commit-creation API. The browser uses isomorphic-git with a
     pre-push head check, or the relay does the rewrite server-side.
@@ -442,7 +442,7 @@ user account
   always passes `redirect_uri`, and with this on GitHub sends users to the
   first callback.
 - **Enable Device Flow:** **off**. GitHub's best practices say "Don't enable
-  device flow without reason": it needs no redirect URI, so it can be used
+  device flow without reason": it doesn't need a redirect URI, so it can be used
   for phishing. Revisit if a CLI ever needs it.
 - **Webhooks:** off. **Setup URL:** none.
 - **Repository permissions:**

@@ -4,10 +4,11 @@
 
 For [review#227](https://github.com/cgwalters-forge/review/issues/227): the
 operator wants to see and answer work here, rather than receive another list
-of links in chat. **Three additional gaps are substantiated below, not five.**
-The larger, more frequent escapes—missing concrete questions, incomplete
-coverage, unavailable writes and missing run context—are already assigned.
-Counting them again would manufacture a longer backlog, not a better inbox.
+of links in chat. **The evidence below supports three additional gaps, not five.**
+The larger problems that more often force the operator to leave the app—missing
+concrete questions, incomplete coverage, unavailable writes and missing run
+context—are already assigned.
+Counting them again would create a longer backlog, not a better inbox.
 These are issue-ready suggestions for the controller, not filed issues or
 implemented features. Ranking estimates frequency and consequence from this
 snapshot and the reported workflow; it is not measured operator telemetry.
@@ -94,7 +95,7 @@ uncertain receipts. This snapshot publishes no supported reply actions, but
 that does **not** prove production answer forms are absent: the current
 renderer checks the named descriptor capability for Approve/Do, while Answer
 can still call its target-reading hook without checking the `reply` capability.
-The diagnostic below omits that hook, independently explaining its zero forms.
+The diagnostic below omits that hook, which alone explains why it shows no forms.
 Signed-in eligibility and any mismatch with the published reply policy need
 verification under #222, not a new gap or a mobile rendering claim.
 Paperclip has approval comments/actions and conditional inline
@@ -118,7 +119,7 @@ windows; [accounting tests][pc-accounting] cover usage availability. The useful
 shape is `period → pool/provider → task/agent contribution → known/unknown`,
 not an amount or a public financial dashboard. Review intentionally removed
 usage-dashboard polling; budget/pool hold reasons and reset/observation facts
-are already #640. This redacted snapshot cannot substantiate an additional
+are already #640. This redacted snapshot doesn't provide evidence of an additional
 cost-visibility defect. Paperclip [Goals][pc-goals] and its [API docs][pc-goal-doc]
 provide organization-scoped goal hierarchy/project links. Review has Org and
 tracker epics/sub-issues instead. There is no evidence this operator needs a
@@ -244,8 +245,8 @@ state, never an unbounded history fetch. No new cold-inbox or poll requests.
 ## Replay and verification record
 
 This patch is **documentation-only**: no product code, replay tests, fixtures,
-dependencies or configuration were changed. Existing checks were nevertheless
-run to ground the assessment. No token was supplied to the UI; no live writes
+dependencies or configuration were changed. Existing checks were still
+run to support the assessment. No token was supplied to the UI; no live writes
 or private source reads were made.
 
 Commands and results:
@@ -296,7 +297,7 @@ publication payloads or credentials; the fixture was not copied or modified.
 
 ## Uncertainties and recommended next slice
 
-There are **two fewer additional gaps than the requested minimum of five**.
+The assessment found **two fewer additional gaps than the requested minimum of five**.
 Notifications beyond in-app read state, per-task usage attribution, a new org
 model, push delivery and mobile interaction defects lack sufficient operator
 evidence to rank as separate new issues. Layout density is real in this
