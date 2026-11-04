@@ -199,6 +199,8 @@ interface State {
   needs: Need[];
   /** The inbox's cards and their sources beyond the needs. */
   inbox?: Inbox;
+  /** Viewer choice survives leaving the home page, even when storage is blocked. */
+  inboxChoice?: { login: string | undefined; value: EpicFilter };
   /** What the pass's needs-you list said when last read. */
   published: Published;
   /** Why GitHub hasn't confirmed `login` (it is then the cache's, or unknown); retried at each poll. */
@@ -428,8 +430,6 @@ function mountHome(state: State): Home {
 
 interface Inbox {
   filters: HTMLElement;
-  choice?: EpicFilter;
-  choiceLogin?: string;
   list: HTMLElement;
   /** What holds every new run, if anything (passLine). */
   pass: HTMLElement;
@@ -675,21 +675,28 @@ function paintInbox(state: State, force = false): void {
     inboxNote(inbox, "document", `The decisions document can't be read: ${message(e)}`);
   }
   const cards = inboxCards({ published: state.published, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}) });
-  if (inbox.choiceLogin !== state.login) {
-    delete inbox.choice;
-    if (state.login) inbox.choiceLogin = state.login;
-    else delete inbox.choiceLogin;
-  }
-  const choice = /^#epic-[1-9]\d{0,9}$/.test(window.location.hash) ? epicChoice(state.login, window.location.hash) : inbox.choice ?? epicChoice(state.login, "");
+  const savedChoice = state.inboxChoice?.login === state.login ? state.inboxChoice?.value : undefined;
+  const deepLink = /^#epic-[1-9]\d{0,9}$/.test(window.location.hash);
+  const choice = deepLink ? epicChoice(state.login, window.location.hash) : savedChoice ?? epicChoice(state.login, "");
+  if (deepLink && choice !== savedChoice) saveEpicChoice(state.login, choice);
+  state.inboxChoice = { login: state.login, value: choice };
   const epics = state.published.unavailable ? undefined : state.published.list?.epics;
   const selection = epicSelection(cards, epics, choice);
+  const focused = inbox.filters.ownerDocument.activeElement;
+  const focusedChoice = focused && inbox.filters.contains(focused) ? focused.getAttribute("data-epic-choice") : null;
   inbox.filters.replaceChildren(epicChips(selection, choice, epics !== undefined, (next) => {
-    inbox.choice = next;
+    state.inboxChoice = { login: state.login, value: next };
     saveEpicChoice(state.login, next);
     if (window.location.hash.startsWith("#epic-")) window.history.replaceState(null, "", "#inbox");
     inbox.list.removeAttribute("data-limit");
     paintInbox(state);
   }));
+  // Polls and selection redraw the chips; keep keyboard users on the same
+  // choice, or on the first filter if that epic is no longer active.
+  if (focusedChoice) {
+    const chips = [...inbox.filters.querySelectorAll<HTMLButtonElement>("button[data-epic-choice]")];
+    (chips.find((b) => b.getAttribute("data-epic-choice") === focusedChoice) ?? chips[0])?.focus({ preventScroll: true });
+  }
   // Counted as drawn: a card kept for his unsent text after it left is still on the page.
   const total = fillInbox(inbox.list, epics ? selection.ordered : cards, inboxHooks(state), force,
     choice === "all" || (choice === "active" && !epics) ? undefined : new Set(selection.selected.map((c) => c.key)));

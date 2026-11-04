@@ -54,7 +54,7 @@ export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[
 
 export function epicChips(model: ReturnType<typeof epicSelection>, choice: EpicFilter, available: boolean, choose: (f: EpicFilter) => void): HTMLElement {
   const chip = (f: EpicFilter, label: string) => {
-    const b = h("button", { type: "button", class: "small", "aria-pressed": String(f === choice) }, `${label} · ${model.count(f)}`);
+    const b = h("button", { type: "button", class: "small", "data-epic-choice": f, "aria-pressed": String(f === choice) }, `${label} · ${model.count(f)}`);
     b.addEventListener("click", () => choose(f));
     return b;
   };

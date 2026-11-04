@@ -160,6 +160,48 @@ describe("Needs you from the pass's published list", () => {
 
   const approval = (n: number, digest = false) => rawAsk(n, { key: `up/proj#${n}${digest ? "/digest" : ""}`, item: `up/proj#${n}`, kind: digest ? "digest-approve" : "review-approve", source: digest ? "digest" : "reviews", action: { type: "approve_pull_request", repository: "up/proj", number: n, head: "a".repeat(40) } });
 
+  it("keeps a deep-linked epic on return navigation even with blocked storage", async (t) => {
+    const extension = fixture<{ epics: unknown[]; items: Record<string, unknown>[] }>("needs-you-661.json");
+    const app = await boot(t, { status: 200, etag: '"epics"', comments: listed(T0,
+      extension.items.map((item, i) => rawAsk(i + 1, item)), { epics: extension.epics }) });
+    try {
+      Object.defineProperty(app.window, "localStorage", { configurable: true, get() { throw new Error("blocked"); } });
+      app.window.location.hash = "#epic-976";
+      await app.until(() => app.count() === "2", "epic deep link");
+      app.window.location.hash = "#issue/cgwalters-forge/tracker/7";
+      await app.until(() => !app.doc.querySelector(".inbox-cards"), "issue navigation");
+      app.window.location.hash = "#inbox";
+      await app.until(() => !!app.doc.querySelector(".inbox-cards"), "return to inbox");
+      assert.equal(app.count(), "2");
+      assert.match(app.doc.querySelector(".epic-filter")!.textContent!, /Selected cgwalters-forge\/tracker#976/);
+    } finally { await app.close(); }
+  });
+
+  it("retains chip focus across selection and polls without stealing focus elsewhere", async (t) => {
+    const extension = fixture<{ epics: unknown[]; items: Record<string, unknown>[] }>("needs-you-661.json");
+    const holds = { status: 200, etag: '"epics"', comments: listed(T0,
+      extension.items.map((item, i) => rawAsk(i + 1, item)), { epics: extension.epics }) };
+    const app = await boot(t, holds);
+    try {
+      const chip = (text: string) => [...app.doc.querySelectorAll<HTMLButtonElement>(".epic-chips button")].find((b) => b.textContent!.startsWith(text))!;
+      chip("Show everything").focus();
+      chip("Show everything").click();
+      assert.equal(app.doc.activeElement, chip("Show everything"));
+      await app.reload();
+      assert.equal(app.doc.activeElement, chip("Show everything"));
+      chip("Focus:").focus();
+      holds.etag = '"no-epics"';
+      holds.comments = listed(T0, extension.items.map((item, i) => rawAsk(i + 1, item)), { epics: [] });
+      await app.reload();
+      assert.equal(app.doc.activeElement, chip("In progress"), "removed chip falls back to the first filter");
+      const elsewhere = app.doc.createElement("input");
+      app.doc.body.append(elsewhere);
+      elsewhere.focus();
+      await app.wake(2 * MINUTE);
+      assert.equal(app.doc.activeElement, elsewhere);
+    } finally { await app.close(); }
+  });
+
   for (const same of [true, false]) it(`after reload, ${same ? "skips a current" : "writes past an older"} viewer approval`, async (t) => {
     const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [approval(7)]), approvals: { 7: [(same ? "a" : "b").repeat(40)] } };
     const app = await boot(t, holds);
