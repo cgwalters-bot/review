@@ -184,7 +184,7 @@ const LIMIT_ATTR = "data-limit";
 export function cardSignature(c: Card): string {
   const base = [c.kind, c.key, c.title, c.where, c.url, c.since, c.answered === true, c.note, c.priority, c.unavailable === true];
   return JSON.stringify([...base, ...("ask" in c ? [c.ask.action, c.ask.group, c.ask.requests, c.ask.requestsUnreadable] :
-    c.kind === "digest" ? [c.items] : c.kind === "send" ? [c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused] : [c.entry.text, c.mark])]);
+    c.kind === "digest" ? [c.items] : c.kind === "send" ? [c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused] : [c.entry.text, c.mark]), ...("ask" in c ? [c.ask.approval] : [])]);
 }
 
 /**
@@ -285,7 +285,7 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   const head = h("div", { class: "card-head" },
     h("span", { class: `kind c-${c.kind}` }, CARD_LABEL[c.kind]),
     c.priority ? pill(c.priority) : null,
-    h("span", { class: "title" }, c.url && !("ask" in c && c.ask.group) ? link(c.url, c.title) : c.title),
+    h("span", { class: "title", title: c.title }, c.url && !("ask" in c && c.ask.group) ? link(c.url, c.title) : c.title),
     h("span", { class: "age", ...(c.since ? { [SINCE_ATTR]: c.since, title: c.since } : {}) }, age(c.since, hooks.now)));
   const ask = "ask" in c ? c.ask : undefined;
   const el = h("article", {
@@ -298,11 +298,19 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
     [POLICY_ATTR]: policySignature(c),
   }, head, h("p", { class: "card-where" }, c.where),
   c.unavailable ? h("p", { class: "card-note warn" }, "Unavailable: from the last list read; the pass's list can't be read now.") : null,
-  c.note ? h("p", { class: "card-note" }, c.note) : null);
+   c.note ? h("details", { class: "card-note" }, h("summary", {}, "Context"), h("p", {}, c.note)) : null);
+  if (ask?.requests?.some((r) => r.quality !== "decision")) el.append(h("small", { class: "note" }, [...new Set(ask.requests.map((r) => r.quality).filter((q) => q !== "decision"))].join(" · ")));
+  if (c.kind === "approve") {
+    const evidence = c.ask.approval;
+    el.append(h("div", { class: "approval-evidence" },
+      h("span", {}, evidence ? `+${evidence.additions} −${evidence.deletions}` : "Diff size unknown"),
+      h("span", { class: "pill" }, `CI: ${evidence?.ci ?? "unknown"}`),
+      h("span", { class: "pill" }, `Review agent: ${evidence?.reviewAgent ?? "unknown"}`)));
+  }
   if (c.kind === "document" && c.entry.text.trim()) el.append(h("details", { class: "dec-body" }, h("summary", {}, "The whole entry"), h("div", { class: "md" }, hooks.render(c.entry.text, c.entry.about?.repo))));
   // Read on drawing (the target and its ask, the PR's head, the proposal's facts, the draft's PR): filled in when it arrives.
   const act = action(c, hooks);
-  if (act) el.append(act);
+  if (act) el.append(c.kind === "answer" || c.kind === "send" || c.kind === "do" || c.kind === "document" ? h("details", { class: "card-full" }, h("summary", {}, "Details and action"), act) : act);
   const off = ask && !c.answered ? notOffered({ ...c, ask }) : null;
   if (off) el.append(off);
   // After the card's own action: chatting never stands in for it.
@@ -360,19 +368,21 @@ function moreButton(list: HTMLElement, drawn: number, total: number, more: () =>
  * Returns how many cards the list holds, drawn or not: those of `cards`
  * and those kept for a draft though they left, as the heading counts them.
  */
-export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: InboxHooks, force = false): number {
+export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: InboxHooks, force = false, selected?: ReadonlySet<string>): number {
   const shown = new Map([...list.querySelectorAll<HTMLElement>(`:scope > .${CARD_CLASS}`)].map((el) => [el.getAttribute(ROW_KEY_ATTR)!, el]));
   // Not even r redraws writes still going out: a fresh card would offer them again.
   const keep = (el: HTMLElement): boolean => (!force && holdsDraft(el)) || el.querySelector(`[${KEEP_ATTR}="${KEEP_BUSY}"]`) !== null;
   const limit = Number(list.getAttribute(LIMIT_ATTR)) || INBOX_PAGE;
-  const drawn = cards.filter((c, i) => {
-    if (i < limit) return true;
+  const matching = cards.filter((c) => !selected || selected.has(c.key));
+  const page = new Set(matching.slice(0, limit).map((c) => c.key));
+  const drawn = cards.filter((c) => {
+    if (page.has(c.key)) return true;
     const el = shown.get(c.key);
     return el !== undefined && keep(el);
   });
   const more = () => {
     list.setAttribute(LIMIT_ATTR, String(limit + INBOX_PAGE));
-    fillInbox(list, cards, hooks);
+    fillInbox(list, cards, hooks, false, selected);
   };
   const wanted = drawn.map((c) => {
     const el = shown.get(c.key);
@@ -406,10 +416,11 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
       // with. Keep its report/text, never its obsolete approval handlers.
       retireActions(el);
       staleNote(el, CARD_GONE_NOTE);
-      gone++;
+      if (!el.hidden) gone++;
     } else el.remove();
   }
-  moreButton(list, drawn.length + gone, cards.length + gone, more);
+  wanted.forEach((el, i) => { el.hidden = !!selected && !selected.has(drawn[i]!.key); });
+  moreButton(list, drawn.filter((c) => !selected || selected.has(c.key)).length + gone, matching.length + gone, more);
   let cursor: HTMLElement | undefined;
   for (const el of wanted) {
     if (!(keep(el) && el.isConnected)) {
@@ -421,5 +432,5 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     }
     cursor = el;
   }
-  return cards.length + gone;
+  return matching.length + gone;
 }

@@ -1,0 +1,16 @@
+{
+  "description": "Synthetic, provisional agent-board#661 extension to needs-you/v2; not a captured publication. Item overrides are applied to rawAsk by the replay test. Approval evidence field names are provisional too.",
+  "epics": [
+    { "item": "cgwalters-forge/tracker#900", "title": "Storage", "active": true, "activeWhy": ["child has an open PR"], "focus": false },
+    { "item": "cgwalters-forge/tracker#976", "title": "Operator inbox", "active": true, "activeWhy": ["epics.focus", "operator commented in the last 7 days"], "focus": true },
+    { "item": "other/project#50", "title": "Paused epic", "active": false, "activeWhy": [], "focus": false }
+  ],
+  "items": [
+    { "epic": "other/child#12", "topEpic": "cgwalters-forge/tracker#976", "priority": "P0", "ask": "Which decision should the controller take?" },
+    { "epic": "cgwalters-forge/tracker#976", "topEpic": "cgwalters-forge/tracker#976", "priority": "P1", "ask": "Controller: publish approval-only requests", "kind": "review-approve", "action": { "type": "approve_pull_request", "repository": "cgwalters-forge/tracker", "number": 1261, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "approval": { "additions": 42, "deletions": 8, "ci": "success", "reviewAgent": "approved" } },
+    { "epic": "cgwalters-forge/tracker#900", "topEpic": "cgwalters-forge/tracker#900" },
+    { "epic": "other/project#50", "topEpic": "other/project#50" },
+    { "epic": "none", "topEpic": "none" },
+    { "ask": "A legacy ask with unknown epic membership" }
+  ]
+}

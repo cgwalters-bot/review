@@ -24,15 +24,38 @@ scheduler's pass publishes as waiting on the operator, its `needs_you`
 list (`agent-board/needs-you/v2`, agent-board's docs/pass.md, on with the
 pass's `holds.needsYou`): holds only he releases, followed PRs waiting on
 his approval or answer (broker PRs included), operator-action proposals
-and maintain digest asks. They come in the pass's order, by board Priority
-then age, and the app neither adds to that list nor ranks it again. Then
+and maintain digest asks. Without epic activity they come in the pass's order.
+With agent-board#661's epic activity, the default shows in-progress epics,
+focus first, with approval-only rows first within each epic, then Priority
+and oldest wait. The chips count matching cards, not just the first page;
+**Show everything** clears the filter in one click. **Other epics / unknown**
+includes items whose epic has not been published, including local document
+and draft cards; **No epic** means explicitly published `none`. The choice
+is remembered per viewer when storage works. `#epic-N` selects tracker epic N,
+matching either the nearest or top epic across repositories. The heading
+counts the selected cards (including a visible retained draft); cap omissions
+and filter exclusions are reported separately. Then
 come the decisions document's entries and open review drafts, which the
 pass doesn't read; completed ones last. The section count is every card on
 the page, including one kept for unsent text after it left. Five cards are
 drawn initially; **Show more** draws the rest and starts any reads their
-controls require. The list's question and recommendation are display text,
+controls require. Questions stay as short asks (wrapping on narrow screens,
+never clipped); context and answer forms are collapsed. Approval rows show
+published diff size, CI and review-agent evidence, or explicitly unknown.
+These badges do not grant write authority. The list's question and recommendation are display text,
 not instructions; links are made from its typed action references, never
 read from it.
+
+Until agent-board#661 lands, `test/fixtures/needs-you-661.json` is an explicit
+synthetic, provisional extension of `agent-board/needs-you/v2`: item `epic`
+and `topEpic` are `owner/repo#N` strings or `none`; `epics` entries contain
+`item`, `title`, `active`, `activeWhy` (strings) and `focus`. Optional item
+`approval` contains `additions`, `deletions`, `ci`, and `reviewAgent`.
+Reconcile these exact field encodings with the publisher before deployment.
+Default filtering is inactive for missing or malformed epic activity; it
+does not infer activity or issue extra reads. Malformed metadata must not
+silently hide decisions. Activity parsing accepts at most 10,000 entries
+with eight reasons each, refusing the index whole beyond that bound.
 
 The line over the cards says how current the list is by the pass's own
 clock: when it last confirmed the list (`validated_at`) and changed it,

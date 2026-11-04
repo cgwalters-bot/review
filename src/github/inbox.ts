@@ -124,7 +124,7 @@ export function askCard(a: Ask, unavailable = false): Card {
 
 /** The asks as cards in the pass's order, the digest's approvals one group where the first of them ranks. */
 export function publishedCards(asks: readonly Ask[], unavailable = false): Card[] {
-  const digest = asks.filter((a) => !a.group && a.kind === "digest-approve" && a.action.head && !refusal(a, "review-at-head"));
+  const digest = asks.filter((a) => !a.epic && !a.topEpic && !a.group && a.kind === "digest-approve" && a.action.head && !refusal(a, "review-at-head"));
   const items = digest.map((a): ApproveItem => {
     const [owner = "", repo = ""] = a.action.repository.split("/");
     return { pr: { owner, repo, number: a.action.number }, head: a.action.head!, reason: a.recommendation ?? a.ask };

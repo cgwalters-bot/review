@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { describe, it, type TestContext } from "node:test";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { usagePath } from "../src/github/usage.ts";
-import { fields, holdsComment, rawAsk, rawNeedsYou } from "./helpers.ts";
+import { fields, fixture, holdsComment, rawAsk, rawNeedsYou } from "./helpers.ts";
 
 const T0 = Date.parse("2026-10-30T12:00:00Z");
 const MINUTE = 60_000;
@@ -127,6 +127,37 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 const listed = (at: number, items: unknown[], over: Record<string, unknown> = {}) => [holdsComment(iso(at), rawNeedsYou(items, iso(at), over))];
 
 describe("Needs you from the pass's published list", () => {
+  it("661 fixture through sign-in: default, chips, deep link, approval and separate hidden counts", async (t) => {
+    const extension = fixture<{ epics: unknown[]; items: Record<string, unknown>[] }>("needs-you-661.json");
+    const app = await boot(t, { status: 200, etag: '"epics"', comments: listed(T0,
+      extension.items.map((item, i) => rawAsk(i + 1, item)), { epics: extension.epics, omitted: 123, complete: false }) });
+    try {
+      const visible = () => [...app.doc.querySelectorAll<HTMLElement>(".inbox-cards > .card")].filter((c) => !c.hidden);
+      const chip = (text: string) => [...app.doc.querySelectorAll<HTMLButtonElement>(".epic-chips button")].find((b) => b.textContent!.startsWith(text))!;
+      assert.equal(app.count(), "3");
+      assert.equal(visible().length, 3);
+      assert.ok(visible()[0]!.classList.contains("c-approve"));
+      assert.match(app.note(), /Hidden by cap: 123; hidden by filter: 3/);
+      assert.equal(app.empty(), false);
+      chip("No epic").click();
+      assert.equal(app.count(), "1");
+      assert.equal(visible().length, 1);
+      chip("Show everything").click();
+      assert.equal(app.count(), "6");
+      assert.match(app.note(), /Hidden by cap: 123; hidden by filter: 0/);
+      app.window.location.hash = "#epic-976";
+      await app.until(() => app.count() === "2", "epic deep link");
+      assert.equal(visible().length, 2);
+      visible()[0]!.querySelector<HTMLButtonElement>("button.primary")!.click();
+      await app.until(() => !!app.doc.querySelector("[data-sent]"), "approval receipt");
+      assert.deepEqual(app.reads.writes, ["POST /repos/cgwalters-forge/tracker/pulls/1261/reviews"]);
+      assert.match(app.doc.querySelector(".c-approve")!.textContent!, /merge policy still decide/);
+      chip("In progress").click();
+      assert.equal(app.window.location.hash, "#inbox");
+      assert.equal(app.count(), "3");
+    } finally { await app.close(); }
+  });
+
   const approval = (n: number, digest = false) => rawAsk(n, { key: `up/proj#${n}${digest ? "/digest" : ""}`, item: `up/proj#${n}`, kind: digest ? "digest-approve" : "review-approve", source: digest ? "digest" : "reviews", action: { type: "approve_pull_request", repository: "up/proj", number: n, head: "a".repeat(40) } });
 
   for (const same of [true, false]) it(`after reload, ${same ? "skips a current" : "writes past an older"} viewer approval`, async (t) => {
