@@ -138,6 +138,10 @@ not promotion completed. Human-text members still require Make it mine.
 If descriptors become foreign or unreadable, prior member outcomes remain
 visible without controls or navigation, even if the write was still pending.
 Reloading with `r` refreshes member readers, not a cached member-list receipt.
+Digest-owned approval result rows stay in the digest report: inspecting a member
+shows a copy, including when its read fails, head changes or policy refuses Promote.
+Read-only presentations remove controls and receipt navigation; pending ordinary
+and member writes retain live completion rather than a frozen snapshot.
 A successful approval or answer marks its card done at once and
 says what it is waiting for; an answer that only comments says the hold stays.
 
@@ -158,6 +162,45 @@ The configured current publication, `cgwalters-forge/bot-ops#1` comments, return
 17:41:35Z snapshot is partial (12 asks, 85 omitted), with promotion and future
 reply/close/merge-or-enqueue capabilities explicitly unsupported. Those refusals
 remain in force; agent-board#640 capabilities are not implemented here.
+
+Read-only follow-up (2026-11-04): the configured `bot-ops#1` comments API still
+returned HTTP 404 (not found or inaccessible with this run's credentials), so no
+current publication or real mixed-outcome request could be verified. Homegit main
+is still `c027d9f4c28c8e21df37f82e978b3fc55fe73cab`. Its five most recent Actions
+runs were successful `controller-report.yml` runs; the workflow explicitly uses
+read-only permissions and a report-only scheduler, not a deployed promoter.
+Agent-board main at `f382fb0ad2196db1a1401758e2ae2923c809a24b` has an inert pass
+promotion stage and a standalone evidence preview whose remaining gates explicitly
+include publication and first-write revalidation, with no writes implemented.
+Its five most recent runs showed CI, site and skipped review jobs, not promotion.
+These bounded API observations and source reads do not establish the deployed
+promoter's identity/configuration or its exact-commit behavior. Deployment access
+and a sanitized real end-to-end example remain needed; fixtures are replay evidence,
+not integration proof. No live mutations were attempted.
+
+Receipt follow-up size check (Node 24.22.1, npm 11.19.1; each revision's lockfile,
+`npm ci && npm run build`): source LOC below counts LF characters in tracked
+`src/**/*.ts`, including comments and blank lines, excluding tests and generated files.
+`app.js` is the minified build's byte length, excluding its map and legal text.
+
+| Revision | Source LOC | `inboxview.ts` LOC | `dist/app.js` bytes |
+| --- | ---: | ---: | ---: |
+| pre-#229 `f71d4e46814b4660b27714a1ab228e39b857a586` | 18,971 | 405 | 546,778 |
+| #231 `e653070e6e8ffe7bb124044e4565fd679370dea9` | 19,211 | 454 | 555,893 |
+| This receipt follow-up | 19,213 | 456 | 555,937 |
+
+Reproduce in separate worktrees at those revisions, then in this checkout: run
+`npm ci && npm run build`, and the following measurement in each worktree:
+
+```sh
+node -e 'const fs=require("node:fs"),cp=require("node:child_process");const files=cp.execFileSync("git",["ls-files","src"],{encoding:"utf8"}).trim().split("\n").filter(f=>f.endsWith(".ts"));const lines=f=>fs.readFileSync(f,"utf8").split("\n").length-1;console.log({source:files.reduce((n,f)=>n+lines(f),0),inboxview:lines("src/github/inboxview.ts"),bytes:fs.statSync("dist/app.js").size});'
+```
+
+The shared receipt presentation adds 2 source lines and 44 built bytes over #231;
+against pre-#229 the totals grow by 242 lines and 9,159 bytes. **The “JS shrinks”
+acceptance is still unmet**, as are real deployed-promotion/hold-release evidence
+and the unsupported reply/close/merge-or-enqueue actions in #222. This follow-up
+does not close that issue or add those writes.
 
 The digest's approvals are one **Approve selected** card. It approves
 selected PRs at the heads the digest assessed, skipping changed heads and

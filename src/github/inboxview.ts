@@ -68,7 +68,7 @@ const failed = (e: unknown): string => `Not sent, or uncertain: ${e instanceof E
  */
 function writeButton(hooks: InboxHooks, key: string, label: string, question: string, write: () => Promise<string | undefined | ApproveResult>, done: (url: string | undefined) => (string | Node)[], reread = false): HTMLElement {
   const previous = hooks.writes?.get(key);
-  if (previous?.querySelector(`[data-sent], [${KEEP_ATTR}="${KEEP_BUSY}"]`)) return previous.hasAttribute("data-approval-receipt") ? previous.cloneNode(true) as HTMLElement : previous;
+  if (previous?.querySelector(`[data-sent], [${KEEP_ATTR}="${KEEP_BUSY}"]`)) return presentReceipt(previous);
   const button = h("button", { type: "button", class: "primary" }, label);
   const status = h("p", { class: "status", role: "status" });
   button.addEventListener("click", () => {
@@ -76,7 +76,7 @@ function writeButton(hooks: InboxHooks, key: string, label: string, question: st
     // Its session receipt outlives approveHead's bounded five-minute cache.
     const latest = hooks.writes?.get(key);
     if (latest && latest !== el && latest.querySelector("[data-sent]")) {
-      el.replaceChildren(receiptOnly(latest.cloneNode(true) as HTMLElement));
+      el.replaceChildren(presentReceipt(latest.cloneNode(true) as HTMLElement, true));
       return;
     }
     if (button.disabled || !window.confirm(question)) return;
@@ -125,8 +125,10 @@ function approveBody(a: Ask, hooks: InboxHooks): HTMLElement {
     (url) => (url ? ["Approved: ", link(url, url), `. ${APPROVED_WAIT}`] : ["Skipped: already approved at HEAD."]));
 }
 
-/** A live outcome without obsolete controls or navigation, including writes still pending. */
-function receiptOnly(el: HTMLElement): HTMLElement {
+/** Digest rows belong to their report; other receipts stay live, including pending writes. */
+function presentReceipt(el: HTMLElement, only = false): HTMLElement {
+  if (el.hasAttribute("data-approval-receipt")) el = el.cloneNode(true) as HTMLElement;
+  if (!only) return el;
   el.setAttribute("data-receipt-only", "");
   for (const control of el.querySelectorAll("button, input, textarea, select")) control.remove();
   for (const a of el.querySelectorAll("a")) a.removeAttribute("href");
@@ -143,7 +145,7 @@ function memberReceipts(ref: IssueRef, hooks: InboxHooks): [string, HTMLElement]
 async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHooks, current: () => boolean): Promise<HTMLElement> {
   let m: MemberPr;
   try { m = await hooks.member!(ref); }
-  catch (e) { return current() ? h("div", {}, h("p", { class: "warn" }, String(e)), ...memberReceipts(ref, hooks).map(([, el]) => receiptOnly(el))) : h("div"); }
+  catch (e) { return current() ? h("div", {}, h("p", { class: "warn" }, String(e)), ...memberReceipts(ref, hooks).map(([, el]) => presentReceipt(el, true))) : h("div"); }
   // Receipts are shared live nodes: an obsolete read must not move them off the current card.
   if (!current()) return h("div");
   const receipts = memberReceipts(ref, hooks);
@@ -152,7 +154,7 @@ async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHoo
   if (c.kind !== "promote") return h("div", {}, facts);
   const no = [refusal(c.ask, "promote"), m.problem, m.state !== "open draft" ? `member is ${m.state}, not an open draft` : undefined].filter(Boolean).join("; ");
   const key = approvalKey(m.ref, m.head);
-  return h("div", {}, facts, ...receipts.filter(([k]) => k !== key || no || !hooks.mayAct).map(([, el]) => receiptOnly(el)), no ? h("p", { class: "warn" }, `Promote not offered: ${no}.`) : hooks.mayAct && hooks.promote ?
+  return h("div", {}, facts, ...receipts.filter(([k]) => k !== key || no || !hooks.mayAct).map(([, el]) => presentReceipt(el, true)), no ? h("p", { class: "warn" }, `Promote not offered: ${no}.`) : hooks.mayAct && hooks.promote ?
     writeButton(hooks, key, `Promote ${m.head.slice(0, 7)}`,
       `Approve ${where} at ${m.head} for promotion as you? A changed member must be reread and confirmed again.`,
       () => hooks.promote!(c.ask, ref, m.head),
@@ -255,7 +257,7 @@ function action(c: Card, hooks: InboxHooks): HTMLElement | null {
     if (c.kind === "promote") for (const number of members(c.ask)) {
       const [owner = "", repo = ""] = c.ask.action.repository.split("/");
       for (const [, receipt] of memberReceipts({ owner, repo, number }, hooks)) {
-        body.append(h("div", {}, `Prior write on ${owner}/${repo}#${number}:`, receiptOnly(receipt)));
+        body.append(h("div", {}, `Prior write on ${owner}/${repo}#${number}:`, presentReceipt(receipt, true)));
       }
     }
     return body;
@@ -418,7 +420,7 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
       if (prior) fresh.append(prior);
       else if (el?.querySelector("[data-sent], [data-keep]")) {
         // Its outcome stays visible; its controls go, so a failed write offers no retry.
-        fresh.append(receiptOnly(h("div", { class: "prior-write" }, "Prior write:", ...el.children)));
+        fresh.append(presentReceipt(h("div", { class: "prior-write" }, "Prior write:", ...el.children), true));
       }
     }
     el?.replaceWith(fresh);
