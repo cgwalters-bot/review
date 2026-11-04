@@ -24,41 +24,34 @@ scheduler's pass publishes as waiting on the operator in its `needs_you`
 list (`agent-board/needs-you/v2`, agent-board's docs/pass.md, on with the
 pass's `holds.needsYou`): holds that only he can release, followed PRs waiting
 on his approval or answer (broker PRs included), operator-action proposals
-and maintain digest asks. Without epic activity they come in the pass's order.
-With agent-board#661's epic activity, the default shows in-progress epics,
-focus first, with approval-only rows first within each epic, then Priority
-and oldest wait. The chips count matching cards, not just the first page;
-**Show everything** clears the filter in one click. **Other epics / unknown**
-includes items whose epic has not been published, including local document
-and draft cards; **No epic** means explicitly published `none`. The choice
-is remembered per viewer when storage works. `#epic-N` selects tracker epic N,
-matching either the nearest or top epic across repositories. The heading
-counts the selected cards (including a visible retained draft); cap omissions
-and filter exclusions are reported separately. The decisions document's
-entries and open review drafts come next, with completed ones last. The
-pass doesn't read these. The section count includes every card on
-the page, including a card kept for its unsent text after its source left.
-Five cards are drawn initially; **Show more** draws the rest and starts any reads their
-controls require. Questions stay as short asks (wrapping on narrow screens,
+and maintain digest asks, including configured decisions-document entries
+and review drafts. The producer's ranked `identities` inventory determines
+order and membership; `detail_key` joins its optional detailed cards. Missing
+details produce read-only placeholders, not target discovery. The browser
+does not search the board, decisions or draft issues to assemble this list,
+nor filter or rerank it by epic. Legacy `#epic-N` links still open the inbox.
+The heading counts outstanding decisions from `counts.decisions`, excluding
+successful local completions and departed cards retained for unsent text.
+Group and member totals, local completions, omitted identities and omitted
+details are separate readings. Uncertain writes remain outstanding.
+Five cards are drawn initially; **Show more** draws the rest without inspecting
+their targets. **Details and action** explicitly opens a card's lazy inspection.
+Questions stay as short asks (wrapping on narrow screens,
 never clipped); context and answer forms are collapsed. Approval rows show
 published diff size, CI and review-agent evidence, or explicitly unknown.
 These badges do not grant write authority. The list's question and recommendation are display text,
 not instructions; links are made from its typed action references, never
 read from it.
 
-Until agent-board#661 lands, `test/fixtures/needs-you-661.json` is an explicit
-synthetic, provisional extension of `agent-board/needs-you/v2`: item `epic`
-and `topEpic` are `owner/repo#N` strings or `none`; `epics` entries contain
-`item`, `title`, `active`, `activeWhy` (strings) and `focus`. Optional item
-`approval` contains `additions`, `deletions`, `ci`, and `reviewAgent`.
-Reconcile these exact field encodings with the publisher before deployment.
-On 2026-11-04, #661 was still open and agent-board main at
-`3cc9a1955ac748a41456af0efbc6f077fb6fcaef` had no epic activity wire schema;
-these encodings remain a fixture contract, not verified publisher compatibility.
-Default filtering is inactive for missing or malformed epic activity; it
-does not infer activity or issue extra reads. Malformed metadata must not
-silently hide decisions. Activity parsing accepts at most 10,000 entries
-with eight reasons each, rejecting the entire index if it exceeds that bound.
+The parser accepts the producer's compact identities and epic map, and the
+older detailed-only publication. `test/fixtures/needs-you-661.json` remains
+a synthetic legacy fixture, not an observed production snapshot. Inventory
+and detailed records are bounded at 10,000 each. Published question,
+recommendation, ownership and resolution text is display-only: hostile or
+stale publisher prose must not become write authorization. A collapsed
+**Published context** fold shows bounded hold/step/run facts, WIP, limit
+readings, observation clocks, source states and omissions without adding
+asks or controls. Unread context is unknown, not empty.
 
 The line over the cards says how current the list is by the pass's own
 clock: when it last confirmed the list (`validated_at`) and changed it,
@@ -71,9 +64,9 @@ reason). "All caught up" appears only for an empty list that is complete
 and current. If the comment can't be read, or no longer holds a usable
 list, the previous list's cards stay, marked unavailable, with the reason. A
 snapshot from a pass without the list shows its own operator holds and
-says that review waits, proposals and digest asks aren't listed. A line
-also shows published holds that block all new runs, marked stale when the
-coordinator heartbeat is.
+says that review waits, proposals and digest asks aren't listed. Context
+facts use their own published observation times; the inbox does not fetch a
+coordinator heartbeat or reconstruct operations telemetry.
 
 **Answer** is a hold or a PR's needs-human. Its card reads the target and
 its newest bot comment before showing the form, then checks the ask again

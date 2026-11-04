@@ -18,11 +18,7 @@ import {
   approveAt,
   asOperator,
   type Context,
-  loadAnswered,
   loadContext,
-  loadDecisions,
-  loadQueue,
-  loadWholeBoard,
   loadRuns,
   MaybeSentError,
   readMember,
@@ -48,20 +44,15 @@ import {
 import { type CacheSession, forgetCache, openCache } from "./cache.ts";
 import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from "./capture.ts";
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
-import { DecisionsRefresh } from "./decisionsrefresh.ts";
-import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, readDocument, sendDocumentEdit } from "./decisiondocument.ts";
-import { type Card, inboxCards, mayAct, members, type Published, publishedNote, refusal } from "./inbox.ts";
+import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, sendDocumentEdit } from "./decisiondocument.ts";
+import { type Card, askHref, decisionKey, githubTarget, inboxCards, inboxCounts, mayAct, members, type Published, publishedNote, refusal } from "./inbox.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { CHAT_CONFIG } from "./chatconfig.ts";
 import { type ChatAnswer, chatItem, type ChatItem, startChatButton } from "./chatitem.ts";
-import { CARD_CLASS, CARD_DONE_CLASS, fillInbox, type InboxHooks, passLine } from "./inboxview.ts";
-import { epicChips, epicChoice, epicSelection, saveEpicChoice, type EpicFilter } from "./epicfilter.ts";
+import { CARD_CLASS, CARD_DONE_CLASS, cardEl, fillInbox, type InboxHooks, publishedContext } from "./inboxview.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
-  FETCH_CONCURRENCY,
-  FORGE_MIN_INTERVAL_MS,
-  FORGE_POLL_INTERVAL_MS,
   OPERATOR,
   OPS_POLL_INTERVAL_MS,
   POLL_BACKOFF_FACTOR,
@@ -78,12 +69,11 @@ import type { Active } from "./agents.ts";
 import { fillStatus, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadOffer } from "./actions.ts";
 import { proposalCard } from "./actionsview.ts";
-import { type DraftIssue, loadDraftIssues, REVIEW_DRAFT_CONFIG, refText } from "./reviewdrafts.ts";
+import { type DraftIssue, loadDraftIssue, REVIEW_DRAFT_CONFIG, refText } from "./reviewdrafts.ts";
 import { draftCard, draftReviewForm } from "./reviewdraftsview.ts";
 import { type ApproveResult, approveSelected } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
-import { botWaitingCount, type Need, needStops } from "./needs.ts";
-import { loadHeartbeat } from "./heartbeat.ts";
+import { type Need, needStops } from "./needs.ts";
 import { type Ask, holdAsks, loadHolds, readHoldAsk } from "./holds.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
@@ -92,16 +82,10 @@ import { loadPeople, markPeopleDone, type People } from "./people.ts";
 import { peopleMeta } from "./peopleview.ts";
 import {
   loadFileLines,
-  loadForgePrs,
-  loadOtherPrs,
   loadPrDetail,
   loadRangeFiles,
-  loadWaiting,
-  mapLimit,
   type OtherPr,
   type PrDetail,
-  refreshVerdicts,
-  searchBotPrs,
   submitReview,
   type VerdictEntry,
   type WaitingPr,
@@ -112,7 +96,7 @@ import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
 import { DEFAULT_VIEW, fillNav, SECTION_VIEW, showView, VIEW_ATTR, VIEW_TITLE, type ViewId, viewHash, VIEWS, visibleView } from "./shell.ts";
 import { checkedText, SourceLayer } from "./sourcelayer.ts";
 import { loadAdvance, saveAdvance } from "./store.ts";
-import { type Decision, decisionLabel, parseDecision, sortDecisions } from "./triage.ts";
+import type { Decision } from "./triage.ts";
 import { agoLabel, answerForm, answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
@@ -120,6 +104,7 @@ const render = createRenderer(window);
 
 interface State {
   cardWrites?: Map<string, HTMLElement>;
+  completedAsks?: Map<string, string>;
   routed?: { id: string; item?: Item; error?: string; loading?: boolean };
   people?: People;
   peopleRunning?: boolean;
@@ -200,7 +185,6 @@ interface State {
   /** The inbox's cards and their sources beyond the needs. */
   inbox?: Inbox;
   /** Viewer choice survives leaving the home page, even when storage is blocked. */
-  inboxChoice?: { login: string | undefined; value: EpicFilter };
   /** What the pass's needs-you list said when last read. */
   published: Published;
   /** Why GitHub hasn't confirmed `login` (it is then the cache's, or unknown); retried at each poll. */
@@ -232,7 +216,6 @@ interface State {
   /** The open decisions, in order, and when a cached copy was fetched. */
   decisions?: Decision[];
   decisionsCachedAt?: number;
-  decisionsRefresh?: DecisionsRefresh<DecisionsRead, DecisionsRead & { at: number }>;
   /** Decisions he answered (on GitHub, or from this tab until the next read) and the bot hasn't acted on, by issue node id. */
   decisionsAnswered: Set<string>;
   error?: string;
@@ -311,7 +294,7 @@ function renderMeta(state: State): void {
   const parts: Node[] = [];
   const part = (cls: string, ...children: (string | Node)[]) => parts.push(h("span", { class: `mp ${cls}` }, ...children));
   // From what waits now, not state.needs (the rows drawn), which stays behind while a redraw is deferred under a half-written answer.
-  const botCount = botWaitingCount(currentNeeds(state));
+  const botCount = inboxCounts(state.published, state.completedAsks).outstanding;
   const people = peopleMeta(state.people, !!state.home?.el.isConnected && !!state.home.el.querySelector<HTMLDetailsElement>("#sec-people")?.open);
   byId("menu-meta").replaceChildren(...[
     state.login ? `signed in as ${state.login}` : undefined,
@@ -421,7 +404,10 @@ function homeHooks(state: State): HomeHooks {
 
 /** The page, built once and kept while it is shown: its sections are filled in place. */
 function mountHome(state: State): Home {
-  if (state.home?.el.isConnected) return state.home;
+  if (state.home) {
+    if (!state.home.el.isConnected) showMain(state.home.el);
+    return state.home;
+  }
   state.home = homeSkeleton(homeHooks(state));
   mountInbox(state, state.home);
   showMain(state.home.el);
@@ -464,15 +450,8 @@ function mountInbox(state: State, home: Home): void {
     inbox.startChat.hidden = !state.chat;
     tail.append(inbox.startChat);
   }
-  if (REVIEW_DRAFT_CONFIG) tail.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => void refreshDrafts(state)));
+  if (REVIEW_DRAFT_CONFIG) tail.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => refreshSoon(state)));
   home.sections.needs.body.prepend(inbox.filters, inbox.pass, status, list, empty, tail);
-}
-
-/** Say (or, with "", stop saying) why `what` can't be shown. */
-function inboxNote(inbox: Inbox, what: string, text: string): void {
-  if (text) inbox.notes.set(what, text);
-  else inbox.notes.delete(what);
-  inbox.status.textContent = [...inbox.notes.values()].join(" ");
 }
 
 /** An ask's PR, as the PR pane and the review writes name it. */
@@ -487,7 +466,7 @@ const answeredKey = (a: Ask): string => JSON.stringify(["answered", `${a.action.
 /** A captured card or chat cannot authorize its representative after grouping or refusal. */
 function singleAsk(state: State, a: Ask): void {
   const current = [...(state.published.holds ?? []), ...state.published.asks].find((x) => x.key === a.key);
-  if (!current || current.group) throw new Error("Ask left or grouped; inspect members.");
+  if (state.published.unavailable || !current || current.group || JSON.stringify(current.action) !== JSON.stringify(a.action) || refusal(current)) throw new Error("Ask left, changed, grouped or became unavailable; inspect it again.");
 }
 
 /**
@@ -524,6 +503,9 @@ async function readAsk(state: State, a: Ask) {
     receipt.append(h("p", { class: "note", "data-sent": "" }, release
       ? `Released: needs-human on ${target}, the ${a.kind} hold. Other holds stay. Waiting on the agent.`
       : `Commented only: the ${a.kind} hold on ${target} stays until the pass sees it change.`));
+    if (release) (state.completedAsks ??= new Map()).set(a.key, decisionKey(a));
+    refreshSoon(state);
+    paintInbox(state);
     return url;
   };
   return { target, shown, ask, key, release, receipts, send };
@@ -566,6 +548,33 @@ function cardChat(state: State, c: Card): ChatItem | undefined {
 
 export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHooks {
   return {
+    changed: () => { paintInbox(state); if (state.home) renderChrome(state); refreshSoon(state); },
+    publishedBody: async (a) => {
+      if (a.source === "drafts" && drafts && a.action.repository.toLowerCase() === drafts.tracker.toLowerCase()) {
+        return draftCard(state.gh, drafts, render, await loadDraftIssue(state.gh, drafts, a.action.number), (sent) => {
+          if (sent) (state.completedAsks ??= new Map()).set(a.key, decisionKey(a));
+          paintInbox(state);
+          refreshSoon(state);
+        });
+      }
+      const target = DECISIONS_CONFIG.document;
+      const id = /\/decision-([1-9]\d*)$/.exec(a.key)?.[1];
+      if (a.source !== "decisions" || !target || !id || a.action.repository.toLowerCase() !== target.repo.toLowerCase() || a.action.number !== target.number) throw new Error("Inspect this published request on GitHub; no matching local writer is configured.");
+      const body = (await state.gh.get<{ body: string }>(documentPath(target))).data.body;
+      const entry = parseDocument(body).find((e) => e.id === `D${id}` && !e.done);
+      if (!entry) throw new Error("This decision left the document; reload the inbox.");
+      state.inbox!.document = { body, marks: new Map() };
+      const hooks = inboxHooks(state, drafts);
+      return cardEl({ kind: "document", key: `document:${entry.id}`, title: entry.title, where: a.item, entry }, { ...hooks,
+        answerEntry: async (shown, letter, reply) => {
+          singleAsk(state, a);
+          await hooks.answerEntry(shown, letter, reply);
+          (state.completedAsks ??= new Map()).set(a.key, decisionKey(a));
+          paintInbox(state);
+          renderChrome(state);
+        },
+      });
+    },
     writes: state.cardWrites ??= new Map(),
     now: Date.now(),
     render,
@@ -600,6 +609,7 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
       const result = await approveAt(state.gh, ref, head, found && { ref: found.ref, head: found.target.head });
       if (result.status === "approved" && result.url) reviewed(state, ref, head, "approve", result.url, found);
       if (result.status === "approved" || result.status === "already-approved") rebuildEntries(state);
+      if (result.status === "approved" || result.status === "already-approved") (state.completedAsks ??= new Map()).set(a.key, decisionKey(a));
       return result;
     }),
     member: (ref) => readMember(state.gh, ref),
@@ -616,7 +626,16 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
         .filter((a) => !a.group && a.kind === "digest-approve").map((a) => `${a.action.repository}#${a.action.number}@${a.action.head}`.toLowerCase()));
       const live = items.filter((it) => listed.has(`${refText(it.pr)}@${it.head}`.toLowerCase()));
       const left = items.filter((it) => !live.includes(it)).map((it): ApproveResult => ({ pr: it.pr, status: "skipped", note: `${refText(it.pr)} left the digest or was grouped; inspect it` }));
-      return [...left, ...(live.length ? await approveSelected(state.gh, live) : [])];
+      const results = [...left, ...(live.length ? await approveSelected(state.gh, live) : [])];
+      for (const result of results) {
+        if (result.status !== "approved" && result.status !== "already-approved") continue;
+        for (const ask of state.published.asks.filter((a) => !a.group && `${a.action.repository}#${a.action.number}`.toLowerCase() === refText(result.pr).toLowerCase() && live.some((it) => it.pr === result.pr && it.head === a.action.head))) {
+          (state.completedAsks ??= new Map()).set(ask.key, decisionKey(ask));
+        }
+      }
+      paintInbox(state);
+      refreshSoon(state);
+      return results;
     }),
     ...(drafts ? { draftBody: (c) => draftCard(state.gh, drafts, render, c.draft) } : {}),
     ...(ACTION_CONFIG ? {
@@ -658,7 +677,7 @@ function answerEntry(state: State, shown: DocumentEntry, letter: string, reply: 
     }
   });
   inbox.writes = run.catch(() => {});
-  return run;
+  return run.finally(() => refreshSoon(state));
 }
 
 /** Redraw the inbox's cards that changed; with `force` (he reloaded), those holding unsent text too. */
@@ -667,66 +686,26 @@ function paintInbox(state: State, force = false): void {
   const home = state.home;
   // A redraw while a proposal executes could replace the card showing its progress.
   if (!inbox || !home || state.closed || inbox.busy) return;
-  let document: { entries: ReturnType<typeof parseDocument>; marks: Map<string, Mark> } | undefined;
-  try {
-    if (inbox.document) document = { entries: parseDocument(inbox.document.body), marks: inbox.document.marks };
-    inboxNote(inbox, "document", "");
-  } catch (e) {
-    inboxNote(inbox, "document", `The decisions document can't be read: ${message(e)}`);
-  }
-  const cards = inboxCards({ published: state.published, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}) });
-  const savedChoice = state.inboxChoice?.login === state.login ? state.inboxChoice?.value : undefined;
-  const deepLink = /^#epic-[1-9]\d{0,9}$/.test(window.location.hash);
-  const choice = deepLink ? epicChoice(state.login, window.location.hash) : savedChoice ?? epicChoice(state.login, "");
-  if (deepLink && choice !== savedChoice) saveEpicChoice(state.login, choice);
-  state.inboxChoice = { login: state.login, value: choice };
-  const epics = state.published.unavailable ? undefined : state.published.list?.epics;
-  const selection = epicSelection(cards, epics, choice);
-  const focused = inbox.filters.ownerDocument.activeElement;
-  const focusedChoice = focused && inbox.filters.contains(focused) ? focused.getAttribute("data-epic-choice") : null;
-  inbox.filters.replaceChildren(epicChips(selection, choice, epics !== undefined, (next) => {
-    state.inboxChoice = { login: state.login, value: next };
-    saveEpicChoice(state.login, next);
-    if (window.location.hash.startsWith("#epic-")) window.history.replaceState(null, "", "#inbox");
-    inbox.list.removeAttribute("data-limit");
-    paintInbox(state);
-  }));
-  // Polls and selection redraw the chips; keep keyboard users on the same
-  // choice, or on the first filter if that epic is no longer active.
-  if (focusedChoice) {
-    const chips = [...inbox.filters.querySelectorAll<HTMLButtonElement>("button[data-epic-choice]")];
-    (chips.find((b) => b.getAttribute("data-epic-choice") === focusedChoice) ?? chips[0])?.focus({ preventScroll: true });
-  }
-  // Counted as drawn: a card kept for his unsent text after it left is still on the page.
-  const total = fillInbox(inbox.list, epics ? selection.ordered : cards, inboxHooks(state), force,
-    choice === "all" || (choice === "active" && !epics) ? undefined : new Set(selection.selected.map((c) => c.key)));
+  const cards = inboxCards({ published: state.published });
+  fillInbox(inbox.list, cards, inboxHooks(state), force);
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
   const { text, settled } = publishedNote(state.published, Date.now());
-  inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text, ` Hidden by cap: ${state.published.list?.omitted ?? "unknown"}; hidden by filter: ${selection.hidden}.`), passLine(state.active?.holds, state.active?.local, Date.now()) ?? "");
-  const waiting = selection.selected.filter((c) => !c.answered).length;
+  const list = state.published.list;
+  const { known, completed, outstanding: waiting } = inboxCounts(state.published, state.completedAsks);
+  inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text),
+    h("p", { class: "note" }, `${known} published decisions · ${list?.counts?.groups ?? "unknown"} groups · ${list?.counts?.members ?? "unknown"} members · ${completed} locally completed. ${list?.detailsOmitted ?? 0} details omitted; ${list?.omitted ?? "unknown"} identities omitted.`));
+  const contextOpen = inbox.filters.querySelector<HTMLDetailsElement>("details")?.open;
+  const context = publishedContext(list?.context);
+  if (contextOpen) context.open = true;
+  inbox.filters.replaceChildren(context);
   // Empty says nothing waits only when the pass's list is complete and current.
-  inbox.empty.hidden = total > 0 || !settled;
-  inbox.empty.textContent = selection.hidden ? "No cards match this filter. Show everything to see the rest." : "All caught up: nothing needs you right now.";
+  inbox.empty.hidden = known > 0 || !settled;
+  inbox.empty.textContent = "All caught up: nothing needs you right now.";
   const count = home.sections.needs.count;
-  count.textContent = String(total);
-  count.title = `${waiting} of ${total} cards waiting on you${settled ? "" : "; the pass's list is not complete and current, so more may wait"}`;
+  count.textContent = String(waiting);
+  count.title = `${waiting} outstanding decisions; ${completed} local sent receipts excluded; retained drafts excluded${settled ? "" : "; the pass's list is not complete and current, so more may wait"}`;
   count.classList.toggle("hot", waiting > 0);
   markSelected(state, false);
-}
-
-/** Re-read the open review drafts for the Send cards; false if nothing was read (see SourceDef.read). */
-async function refreshDrafts(state: State): Promise<boolean> {
-  const inbox = state.inbox;
-  if (!inbox || !REVIEW_DRAFT_CONFIG) return false;
-  try {
-    inbox.drafts = await loadDraftIssues(state.gh, REVIEW_DRAFT_CONFIG);
-    inboxNote(inbox, "drafts", "");
-    paintInbox(state);
-    return true;
-  } catch (e) {
-    inboxNote(inbox, "drafts", `Couldn't read the review drafts: ${message(e)}`);
-    return false;
-  }
 }
 
 function renderHome(state: State): void {
@@ -734,7 +713,7 @@ function renderHome(state: State): void {
   // A view in the hash is shown; a bare # shows the last one.
   if (r.route === "home" && r.view) state.view = r.view;
   // Drawn once while the page stays: a redraw of it must not take half-typed answers away.
-  const fresh = !state.home?.el.isConnected;
+  const fresh = !state.home;
   const home = mountHome(state);
   showView(home.el, state.view);
   renderChrome(state);
@@ -746,7 +725,7 @@ function renderHome(state: State): void {
 }
 
 function currentNeeds(state: State): Need[] {
-  return snapshot(state).people.filter((need) => DECISIONS_CONFIG.legacyQuestions || need.action !== "answer");
+  return state.published.asks.filter((a) => githubTarget(a) && state.completedAsks?.get(a.key) !== decisionKey(a)).map((a) => ({ key: a.key, action: "review", title: a.ask, where: a.item, href: askHref(a.action), inPlace: false }));
 }
 
 function snapshot(state: State): PageState {
@@ -812,26 +791,25 @@ function paintActive(state: State): void {
 
 /**
  * The sources of the state `get` returns (a getter: the state holds the
- * layer), and the views that show them. The queue (board items and the
- * bot's PRs) is the poll loop's own read, on every view and behind an
- * entry too, as the header's counts and moving on after an action come
- * from it. Board context, heartbeat and holds support the inbox cards;
- * project status supplies the published Status page. People's asks are
- * read only while their opt-in fold is open.
- * A poll asked for early (after an action) re-reads the
- * queue only: the others wait for their cadence, which the usual poll
- * interval meets. A refresh he asked for from another view than the
- * inbox doesn't force the decisions' redraw over his unsent picks there.
+ * layer), and the views that show them. The publication is the poll
+ * loop's own read, including behind an entry for header counts. Status
+ * is read only on its page, people only with their opt-in fold open.
  */
 function newLayer(get: () => State): SourceLayer<ViewId> {
   return new SourceLayer<ViewId>(
     [
-      { name: "queue", path: "the Workstream board's items; search of the bot's PRs", cadence: POLL_INTERVAL_MS, views: VIEWS },
-      { name: "active", path: "the board, heartbeat, the pass's holds and needs-you list, and project status", cadence: OPS_POLL_INTERVAL_MS, views: VIEWS, read: () => refreshActive(get()) },
-      { name: "decisions", path: "the decisions document and tracker questions", cadence: POLL_INTERVAL_MS, views: VIEWS, read: (force) => refreshDecisions(get(), force && get().view === SECTION_VIEW.needs) },
+      { name: "inbox", path: "the pass's published inbox", cadence: POLL_INTERVAL_MS, views: VIEWS },
+      { name: "status", path: "published project status", cadence: OPS_POLL_INTERVAL_MS, views: ["status"], read: async () => {
+        const state = get();
+        const status = await readSource(state.sources, "status", () => loadProjectStatus(state.gh));
+        if (state.closed) return false;
+        state.active ??= { at: Date.now(), warnings: [] };
+        if (status !== undefined) state.active.status = status;
+        else state.active.statusError = state.sources.status?.error ?? "Status unavailable";
+        paintActive(state);
+        return status !== undefined;
+      } },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
-      // The inbox's own reads, only while it is on (DECISIONS_CONFIG.inbox).
-      { name: "drafts", path: "the open review-draft issues", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshDrafts(get()), when: () => get().inbox !== undefined && REVIEW_DRAFT_CONFIG !== undefined },
     ],
     () => (get().closed ? undefined : visibleView(document, HOME_CLASS)),
   );
@@ -840,14 +818,8 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
 /** Read inbox context without the CLI's usage and operations telemetry. */
 async function loadInboxContext(gh: GitHub): Promise<Active> {
   const sources: Sources = {};
-  const [board, local, holds] = await Promise.all([
-    readSource(sources, "board", (source) => loadWholeBoard(source).then((q) => q.items), gh),
-    readSource(sources, "heartbeat", (source) => loadHeartbeat(source), gh),
-    readSource(sources, "holds", (source) => loadHolds(source), gh),
-  ]);
+  const holds = await readSource(sources, "holds", (source) => loadHolds(source), gh);
   const active: Active = { at: Date.now(), sources, warnings: Object.entries(sources).flatMap(([name, source]) => source.error ? [`Couldn't read ${name}: ${source.error}`] : []) };
-  if (board) active.board = board;
-  if (local !== undefined) active.local = local;
   if (holds) active.holds = holds;
   return active;
 }
@@ -887,7 +859,7 @@ async function refreshActive(state: State): Promise<boolean> {
     if (!state.active) {
       const cached = state.gh.cacheOnly();
       const active = await loadInboxContext(cached);
-      if (!state.active && (active.board || active.local !== undefined)) {
+      if (!state.active && active.holds) {
         active.at = cached.oldest ?? active.at;
         active.fromCache = true;
         state.active = active;
@@ -897,15 +869,13 @@ async function refreshActive(state: State): Promise<boolean> {
         paintNeeds(state);
       }
     }
-    const [active, status] = await Promise.all([loadInboxContext(state.gh), readSource(state.sources, "status", () => loadProjectStatus(state.gh))]);
+    const active = await loadInboxContext(state.gh);
     if (state.closed) return false;
-    state.active = active;
+    state.active = { ...active, ...(state.active?.status === undefined ? {} : { status: state.active.status }) };
     state.published = readPublished(state.published, active);
-    if (status !== undefined) state.active.status = status;
-    else state.active.statusError = state.sources.status?.error ?? "Status unavailable";
     paintActive(state);
     paintNeeds(state);
-    return status !== undefined && Object.values(active.sources ?? {}).every((s) => s.state !== "unavailable");
+    return Object.values(active.sources ?? {}).every((s) => s.state !== "unavailable");
   } finally {
     state.activeRunning = false;
   }
@@ -1342,218 +1312,6 @@ function needsOrigin(state: State, hash: string): Origin {
   return { hash, stops: needStops(state.needs), live: () => needStops(currentNeeds(state)) };
 }
 
-interface DecisionsRead {
-  decisions: Decision[];
-  answered: Set<string>;
-}
-
-/**
- * Re-read the open decisions and which he answered, and show them among
- * the rows of "Needs you" if they changed; with an answer half written,
- * only say so, unless `force` (he asked to reload). False if the
- * questions couldn't be read (see SourceDef.read).
- */
-async function refreshDecisions(state: State, force = false): Promise<boolean> {
-  const inbox = state.inbox;
-  if (inbox && DECISIONS_CONFIG.document) {
-    try {
-      inbox.document = await readDocument(state.gh, DECISIONS_CONFIG.document);
-      inboxNote(inbox, "document", "");
-    } catch (e) {
-      inboxNote(inbox, "document", e instanceof GitHubError && e.status === 404 ? "Cannot read the decisions issue: it may be private and this viewer's token has no access, or the issue does not exist." : `Couldn't read the decisions document: ${message(e)}`);
-    }
-    paintInbox(state, force);
-  }
-  if (!DECISIONS_CONFIG.legacyQuestions) return true;
-  const read = async (gh: GitHub) => {
-    const q = await loadDecisions(gh);
-    const answered = await loadAnswered(gh, q.items);
-    return { changed: q.changed, decisions: sortDecisions(q.items.map(parseDecision)), answered };
-  };
-  state.decisionsRefresh ??= new DecisionsRefresh({
-    closed: () => state.closed,
-    hasValue: () => state.decisions !== undefined,
-    cached: async () => {
-      const cached = state.gh.cacheOnly();
-      const r = await read(cached);
-      return { ...r, at: cached.oldest ?? Date.now() };
-    },
-    read: () => read(state.gh),
-    applyCached: (r) => {
-      state.sources.decisions = { state: "cached", fetchedAt: r.at };
-      state.decisions = r.decisions;
-      state.decisionsAnswered = r.answered;
-      state.decisionsCachedAt = r.at;
-      paintNeeds(state);
-    },
-    applyLive: (r, force) => {
-      state.sources.decisions = { state: "ok", checkedAt: Date.now(), fetchedAt: Date.now() };
-      delete state.decisionsCachedAt;
-      state.decisions = r.decisions;
-      state.decisionsAnswered = r.answered;
-      paintNeeds(state, force);
-    },
-    error: (e) => {
-      state.sources.decisions = { ...state.sources.decisions, state: "unavailable", checkedAt: Date.now(), error: message(e) };
-      state.error = `Couldn't read the decisions: ${message(e)}`;
-      renderChrome(state);
-    },
-  });
-  await state.decisionsRefresh.refresh(force);
-  return state.sources.decisions?.state !== "unavailable";
-}
-
-/** Re-search the forge when due; true if its list of PRs changed. Verdicts follow in the background. */
-async function pollForge(state: State): Promise<boolean> {
-  const wait = state.forceForge ? FORGE_MIN_INTERVAL_MS : FORGE_POLL_INTERVAL_MS;
-  if (Date.now() - state.lastForgePoll < wait) return false;
-  state.forceForge = false;
-  try {
-    // One search of the bot's PRs serves both lists. Settled apart: a failed
-    // search of the requests keeps the other PRs as they were, and the drafts still refresh.
-    const all = await searchBotPrs(state.gh);
-    const [forge, others] = await Promise.allSettled([loadForgePrs(state.gh, all), loadOtherPrs(state.gh, all)]);
-    if (forge.status === "rejected") throw forge.reason;
-    const prs = forge.value;
-    state.lastForgePoll = Date.now();
-    state.sources.forge = { state: "ok", checkedAt: Date.now(), fetchedAt: Date.now() };
-    state.forgeKnown = true;
-    delete state.forgeError;
-    const sig = (p: readonly ForgePr[]) => JSON.stringify(p.map((x) => [refKey(x.ref), x.updatedAt]));
-    const changed = sig(prs) !== sig(state.prs);
-    state.prs = prs;
-    void pollVerdicts(state);
-    if (others.status === "fulfilled") {
-      state.sources.otherPrs = { state: "ok", checkedAt: Date.now(), fetchedAt: Date.now() };
-      state.others = others.value;
-      void pollWaiting(state);
-    } else {
-      state.sources.otherPrs = { state: "unavailable", checkedAt: Date.now(), error: message(others.reason) };
-      state.forgeError = `Couldn't search the bot's other PRs: ${message(others.reason)}`;
-    }
-    return changed;
-  } catch (e) {
-    state.forgeError = `Couldn't search the bot's PRs: ${message(e)}`;
-    state.sources.forge = { ...state.sources.forge, state: "unavailable", checkedAt: Date.now(), error: message(e) };
-    // The same search serves the other PRs: they weren't refreshed either.
-    state.sources.otherPrs = { ...state.sources.otherPrs, state: "unavailable", checkedAt: Date.now(), error: message(e) };
-    return false;
-  }
-}
-
-/** Whose turn each PR other than a forge draft is, re-read every forge poll (check runs move without the PR; the rest only when it moved); update the view if that changed. */
-async function pollWaiting(state: State): Promise<void> {
-  if (state.waitingRunning) return;
-  state.waitingRunning = true;
-  try {
-    // A PR reviewed from here is read afresh until its review stops applying, as search may lag it.
-    const known = new Map([...state.waitingReads].filter(([k]) => !state.pending.has(k)));
-    const { prs: read, errors, failed, reads } = await loadWaiting(state.gh, state.others, known);
-    state.waitingReads = reads;
-    // A PR that couldn't be read this time keeps its last standing rather than flicker out;
-    // one reviewed from here keeps the review's effect over a read that started before it or lags it.
-    const prs = overlayWaiting([...read, ...state.waiting.filter((w) => failed.has(refKey(w.pr.ref)))], state.pending, Date.now());
-    const sig = (w: readonly WaitingPr[]) => JSON.stringify(w.map((x) => [refKey(x.pr.ref), x.pr.title, x.pr.body, x.pr.draft, x.head, x.wait, x.verdict]));
-    const changed = sig(prs) !== sig(state.waiting);
-    state.waiting = prs;
-    if (errors.length) {
-      state.sources.otherPrs = { ...state.sources.otherPrs, state: "unavailable", checkedAt: Date.now(), error: errors.join("; ") };
-      state.forgeError = `Couldn't read ${errors.length} of the bot's PRs: ${errors.join("; ")}`;
-      renderChrome(state);
-    }
-    if (changed && state.loaded) update(state, false, false);
-  } finally {
-    state.waitingRunning = false;
-  }
-}
-
-/** Re-read the verdicts of PRs that changed, and update the view if any moved. */
-async function pollVerdicts(state: State): Promise<void> {
-  // One at a time; the next forge poll catches up on what this one missed.
-  if (state.verdictsRunning) return;
-  state.verdictsRunning = true;
-  try {
-    const verdicts = await refreshVerdicts(state.gh, state.prs, state.verdicts);
-    // Until a read confirms his review from here, read its PR again every
-    // time: search may have moved on while the reviews API still lagged.
-    for (const k of state.pending.keys()) {
-      const v = verdicts.get(k);
-      if (v) verdicts.set(k, { ...v, updatedAt: "" });
-    }
-    const sig = (v: ReadonlyMap<string, VerdictEntry>) => JSON.stringify([...v].map(([k, e]) => [k, e.head, e.verdict.state, e.botReplied === true]).sort());
-    const changed = sig(verdicts) !== sig(state.verdicts);
-    state.verdicts = verdicts;
-    if (changed && state.loaded) update(state, false, false);
-  } catch (e) {
-    state.forgeError = `Couldn't read the forge PRs' reviews: ${message(e)}`;
-    state.sources.forge = { ...state.sources.forge, state: "unavailable", checkedAt: Date.now(), error: message(e) };
-    renderChrome(state);
-  } finally {
-    state.verdictsRunning = false;
-  }
-}
-
-/**
- * Show the queue as the cache last saw it, before GitHub answers: the
- * board, the forge's PRs and their verdicts, and which questions are
- * answered, all read by the same loaders from a cache-only client, so
- * the first render already has its labels and nothing shifts when the
- * fresh answer replaces it. Does nothing if the board isn't cached or
- * the network was faster.
- */
-async function showCached(state: State): Promise<void> {
-  // The label's age is the board's and the search's: verdicts of PRs
-  // that haven't changed are reused without re-reading them.
-  const queueReads = state.gh.cacheOnly();
-  const otherReads = state.gh.cacheOnly();
-  let items: Item[];
-  let linked: Item[];
-  try {
-    ({ items, linked } = await loadQueue(queueReads));
-  } catch {
-    return;
-  }
-  const all = await searchBotPrs(queueReads).catch(() => undefined);
-  const prs = all && (await loadForgePrs(queueReads, all));
-  const others = all && (await loadOtherPrs(queueReads, all).catch(() => undefined));
-  const waiting = others ? (await loadWaiting(otherReads, others)).prs : [];
-  const verdicts = new Map<string, VerdictEntry>();
-  const parts = await mapLimit(prs ?? [], FETCH_CONCURRENCY, (p) => refreshVerdicts(otherReads, [p], new Map()).catch(() => new Map<string, VerdictEntry>()));
-  for (const part of parts) for (const [k, v] of part) verdicts.set(k, v);
-  const answered = await loadAnswered(otherReads, items);
-  if (state.loaded || state.closed) return;
-  state.items = items;
-  state.linked = linked;
-  if (prs) {
-    state.prs = prs;
-    state.forgeKnown = true;
-  }
-  if (others) {
-    state.others = others;
-    state.waiting = waiting;
-  }
-  state.verdicts = verdicts;
-  state.answered = answered;
-  state.loaded = true;
-  state.cachedAt = queueReads.oldest ?? Date.now();
-  state.sources.queue = { state: "cached", fetchedAt: state.cachedAt };
-  update(state, true, true);
-}
-
-/**
- * Re-read which questions he answered, after the queue is on screen (one
- * request per open question with comments, so it shouldn't hold up the
- * first render), and update the view if that changed.
- */
-async function refreshAnswered(state: State, items: readonly Item[]): Promise<void> {
-  const seq = ++state.answeredSeq;
-  const answered = await loadAnswered(state.gh, items);
-  if (seq !== state.answeredSeq) return;
-  const same = answered.size === state.answered.size && [...answered].every((id) => state.answered.has(id));
-  state.answered = answered;
-  if (!same) update(state, false, false);
-}
-
 function rebuildEntries(state: State): void {
   const { verdicts, pending } = overlayVerdicts(state.verdicts, state.pending, Date.now());
   state.pending = pending;
@@ -1642,49 +1400,19 @@ async function poll(state: State, current: () => boolean): Promise<void> {
   if (state.closed) return;
   void confirmLogin(state);
   state.layer.tick();
-  // The board and the forge load side by side; whichever answers first shows first.
-  const forge = pollForge(state);
-  try {
-    const q = await loadQueue(state.gh);
-    if (!current()) return;
+  const ok = await refreshActive(state);
+  if (!current()) return;
+  state.loaded = true;
+  if (ok) {
     state.lastPoll = new Date();
-    state.sources.queue = { state: "ok", checkedAt: Date.now(), fetchedAt: Date.now() };
-    state.layer.checked("queue");
-    delete state.error;
-    const first = !state.loaded;
-    // The first answer after showing the cached queue: re-read what the
-    // cache decided (which questions are answered) even if the board is unchanged.
-    const revalidated = state.cachedAt !== undefined;
-    delete state.cachedAt;
-    if (q.changed || first || revalidated) {
-      state.items = q.items;
-      state.linked = q.linked;
-      // Keep "sent" only for items still waiting on the bot.
-      const ids = new Set(q.items.map((i) => i.nodeId));
-      for (const s of state.sent) if (!ids.has(s)) state.sent.delete(s);
-      state.context.clear();
-      state.loaded = true;
-      update(state, true, first);
-      refreshAnswered(state, q.items).catch((e: unknown) => {
-        // The answered labels stay as they were; the next board change retries.
-        console.error("review: couldn't update which questions are answered:", e);
-      });
-    } else {
-      renderChrome(state);
-    }
-  } catch (e) {
-    if (!current()) return;
-    state.error = `Couldn't read the board: ${message(e)}`;
-    state.sources.queue = { ...state.sources.queue, state: "unavailable", checkedAt: Date.now(), error: message(e) };
-    if (state.loaded || state.shown || state.shownPr) renderChrome(state);
-    else renderRoute(state);
+    state.layer.checked("inbox");
   }
-  if ((await forge) && current() && state.loaded) update(state, false, false);
+  if (route().route === "home" && !state.home?.el.isConnected) renderRoute(state);
+  else renderChrome(state);
 }
 
-/** Re-read the board and the forge now, not at the next poll: an action changed them. */
+/** Revalidate the publication now after an action, without target discovery. */
 function refreshSoon(state: State): void {
-  state.forceForge = true;
   state.poller.now();
 }
 
@@ -1948,7 +1676,7 @@ async function start(source: TokenSource): Promise<void> {
   // This token was used here before: show what it saw last time, as the
   // login it had then, while GitHub confirms it.
   if (session.knownLogin) state.login = session.knownLogin;
-  const cached = session.knownLogin ? showCached(state) : Promise.resolve();
+  const cached = Promise.resolve();
   try {
     state.login = await viewer(state.gh);
   } catch (e) {

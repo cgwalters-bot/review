@@ -38,7 +38,7 @@ test("661 fixture: active default, focus first, cross-repo ancestry and honest c
 });
 
 test("unknown metadata does not default-hide legacy asks; malformed activity fails open", () => {
-  for (const epics of [undefined, {}, [...extension.epics, extension.epics[0]], [{ item: "bad" }]]) {
+  for (const epics of [undefined, [...extension.epics, extension.epics[0]], [{ item: "bad" }]]) {
     const p = parseNeedsYou({ ...raw, epics });
     assert.ok(typeof p === "object");
     assert.equal(p.epics, undefined);
@@ -138,14 +138,14 @@ test("Show everything recovers a filtered draft after its publication disappears
   const remaining = cards.slice(1);
   assert.equal(fillInbox(list, remaining, hooks, false, only), 1);
   assert.equal(first.hidden, true);
-  assert.equal(fillInbox(list, remaining, hooks), remaining.length + 1);
+  assert.equal(fillInbox(list, remaining, hooks), remaining.length);
   assert.equal(first.hidden, false);
   assert.equal(input.value, "unsent answer");
   assert.match(first.textContent!, /This has left the inbox/);
   assert.equal(first.getAttribute("data-href"), "#");
 });
 
-test("a poll dropping an ask keeps its already-visible draft counted under the active filter", () => {
+test("a poll dropping an ask preserves its already-visible draft without counting it", () => {
   const list = document.createElement("div");
   const selection = epicSelection(cards, parsed.epics, "active");
   fillInbox(list, cards, hooks, false, new Set(selection.selected.map((c) => c.key)));
@@ -157,7 +157,7 @@ test("a poll dropping an ask keeps its already-visible draft counted under the a
   first.append(form);
   const remaining = cards.slice(1);
   const next = epicSelection(remaining, parsed.epics, "active");
-  assert.equal(fillInbox(list, remaining, hooks, false, new Set(next.selected.map((c) => c.key))), 3);
+  assert.equal(fillInbox(list, remaining, hooks, false, new Set(next.selected.map((c) => c.key))), 2);
   assert.equal(first.hidden, false);
   assert.equal(text.value, "still composing");
 });

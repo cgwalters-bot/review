@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it, type TestContext } from "node:test";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { pathToFileURL } from "node:url";
+import { performance } from "node:perf_hooks";
 import { usagePath } from "../src/github/usage.ts";
-import { fields, fixture, holdsComment, rawAsk, rawNeedsYou } from "./helpers.ts";
+import { fields, holdsComment, rawAsk, rawNeedsYou, realNeedsYouSnapshot } from "./helpers.ts";
 
 const T0 = Date.parse("2026-10-30T12:00:00Z");
 const MINUTE = 60_000;
@@ -17,7 +19,7 @@ const proposalComment = (n: number) => ({ id: `IC_${n}`, databaseId: n, updatedA
   body: `\`\`\`agent-board-action\n${JSON.stringify({ schema: "agent-board/operator-action/v1", title: `Decision ${n}`, why: `Reason ${n}`, actions: [{ type: "add_label", repo: "cgwalters-forge/tracker", number: 1013, label: `choice-${n}` }] })}\n\`\`\`` });
 
 /** What the holds comment read answers next: a status, the comments, and whether an unchanged one is a 304. */
-interface Holds { status: number; comments: unknown[]; etag: string; gate?: Promise<void>; approvals?: Record<number, string[]>; fail?: number; labels?: string[]; reviewError?: number; writeGate?: Promise<void> }
+interface Holds { status: number; comments: unknown[]; etag: string; gate?: Promise<void>; approvals?: Record<number, string[]>; fail?: number; labels?: string[]; reviewError?: number; writeGate?: Promise<void>; document?: string }
 
 let runs = 0;
 
@@ -33,13 +35,14 @@ async function boot(t: TestContext, holds: Holds) {
   const { window } = dom;
   window.scrollTo = () => {};
   window.confirm = () => true;
-  const reads = { holds: [] as (string | null)[], writes: [] as string[], reviews: [] as number[] };
+  const reads = { all: [] as { method: string; path: string; at: number }[], holds: [] as (string | null)[], writes: [] as string[], reviews: [] as number[] };
   Object.assign(globalThis, {
     window, document: window.document, Node: window.Node, HTMLElement: window.HTMLElement,
     ResizeObserver: class { observe() {} disconnect() {} },
     fetch: async (input: string, init?: RequestInit) => {
       const url = new URL(input);
       const method = init?.method ?? "GET";
+      reads.all.push({ method, path: url.pathname, at: performance.now() });
       const json = (body: unknown, status = 200, headers: Record<string, string> = {}) => new Response(status === 304 ? null : JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
       if (method !== "GET" && url.pathname !== "/graphql") reads.writes.push(`${method} ${url.pathname}`);
       if (url.pathname === HOLDS) {
@@ -66,7 +69,10 @@ async function boot(t: TestContext, holds: Holds) {
       }
       if (url.pathname.endsWith("/fields")) return json(fields());
       if (url.pathname === "/search/issues") return json({ items: [], total_count: 0 });
-      if (url.pathname === "/repos/cgwalters-forge/operator/issues/1") return json({ body: "" });
+      if (url.pathname === "/repos/cgwalters-forge/operator/issues/1") {
+        if (method === "PATCH") holds.document = (JSON.parse(String(init?.body)) as { body: string }).body;
+        return json({ body: holds.document ?? "" });
+      }
       if (url.pathname.startsWith("/repos/cgwalters-forge/tracker/issues/") && /\/issues\/\d+$/.test(url.pathname)) {
         const n = url.pathname.split("/").at(-1);
         return json({ title: `Issue ${n}`, body: `Q: Ask ${n}?`, state: "open", html_url: `https://github.com/cgwalters-forge/tracker/issues/${n}`, labels: (holds.labels ?? ["needs-human"]).map((name) => ({ name })) });
@@ -80,7 +86,7 @@ async function boot(t: TestContext, holds: Holds) {
       return json([]);
     },
   });
-  await import(`../src/github/main.ts?needsyou=${runs++}`);
+  await import(`${process.env.REPLAY_ENTRY ? pathToFileURL(process.env.REPLAY_ENTRY).href : "../src/github/main.ts"}?needsyou=${runs++}`);
   const doc = window.document;
   const until = async (check: () => boolean, what: string) => {
     for (let i = 0; i < 300; i++) {
@@ -94,6 +100,7 @@ async function boot(t: TestContext, holds: Holds) {
   doc.querySelector(".signin")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   const app = {
     window, doc, reads, until,
+    inspect: () => { for (const d of doc.querySelectorAll<HTMLDetailsElement>(".card-full")) { d.open = true; d.dispatchEvent(new window.Event("toggle")); } },
     note: () => doc.querySelector(".published")?.textContent ?? "",
     keys: () => [...doc.querySelectorAll(".inbox-cards > .card")].map((c) => c.getAttribute("data-key")),
     count: () => doc.querySelector("#sec-needs summary .count, #sec-needs summary [class*=count]")?.textContent ?? "",
@@ -127,78 +134,97 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 const listed = (at: number, items: unknown[], over: Record<string, unknown> = {}) => [holdsComment(iso(at), rawNeedsYou(items, iso(at), over))];
 
 describe("Needs you from the pass's published list", () => {
-  it("661 fixture through sign-in: default, chips, deep link, approval and separate hidden counts", async (t) => {
-    const extension = fixture<{ epics: unknown[]; items: Record<string, unknown>[] }>("needs-you-661.json");
-    const app = await boot(t, { status: 200, etag: '"epics"', comments: listed(T0,
-      extension.items.map((item, i) => rawAsk(i + 1, item)), { epics: extension.epics, omitted: 123, complete: false }) });
+  const decision = () => rawAsk(1, { key: "cgwalters-forge/operator#1/decision-12", item: "cgwalters-forge/operator#1", source: "decisions", kind: "document-decision", action: { type: "issue", repository: "cgwalters-forge/operator", number: 1 } });
+
+  it("excludes a successfully answered document decision immediately, before the publication changes", async (t) => {
+    const app = await boot(t, { status: 200, etag: '"decision"', comments: listed(T0, [decision()]), document: "### D12 Pick one\n- [ ] A) Yes\nReply:\n" });
     try {
-      const visible = () => [...app.doc.querySelectorAll<HTMLElement>(".inbox-cards > .card")].filter((c) => !c.hidden);
-      const chip = (text: string) => [...app.doc.querySelectorAll<HTMLButtonElement>(".epic-chips button")].find((b) => b.textContent!.startsWith(text))!;
-      assert.equal(app.count(), "3");
-      assert.equal(visible().length, 3);
-      assert.ok(visible()[0]!.classList.contains("c-approve"));
-      assert.match(app.note(), /Hidden by cap: 123; hidden by filter: 3/);
-      assert.equal(app.empty(), false);
-      chip("No epic").click();
       assert.equal(app.count(), "1");
-      assert.equal(visible().length, 1);
-      chip("Show everything").click();
-      assert.equal(app.count(), "6");
-      assert.match(app.note(), /Hidden by cap: 123; hidden by filter: 0/);
-      app.window.location.hash = "#epic-976";
-      await app.until(() => app.count() === "2", "epic deep link");
-      assert.equal(visible().length, 2);
-      visible()[0]!.querySelector<HTMLButtonElement>("button.primary")!.click();
-      await app.until(() => !!app.doc.querySelector("[data-sent]"), "approval receipt");
-      assert.deepEqual(app.reads.writes, ["POST /repos/cgwalters-forge/tracker/pulls/1261/reviews"]);
-      assert.match(app.doc.querySelector(".c-approve")!.textContent!, /merge policy still decide/);
-      chip("In progress").click();
-      assert.equal(app.window.location.hash, "#inbox");
+      assert.equal(app.reads.all.filter((r) => r.path.includes("/operator/issues/")).length, 0);
+      app.inspect();
+      await app.until(() => !!app.doc.querySelector(".entry-answer"), "inspected decision");
+      app.doc.querySelector<HTMLInputElement>('.entry-answer input[type=radio]')!.checked = true;
+      app.doc.querySelector(".entry-answer")!.dispatchEvent(new app.window.Event("submit", { bubbles: true, cancelable: true }));
+      await app.until(() => app.count() === "0", "immediate completed count");
+      assert.match(app.doc.querySelector("#menu-meta")!.textContent!, /0/);
+      assert.match(app.doc.querySelector(".inbox-pass")?.textContent ?? app.doc.querySelector("#sec-needs")!.textContent!, /1 locally completed/);
+      assert.deepEqual(app.reads.writes, ["PATCH /repos/cgwalters-forge/operator/issues/1"]);
+      await app.reload();
+      assert.equal(app.count(), "0", "the unchanged publication must not resurrect a local receipt");
+    } finally { await app.close(); }
+  });
+
+  it("explicit refresh rereads a changed decision only when inspected again", async (t) => {
+    const holds = { status: 200, etag: '"decision"', comments: listed(T0, [decision()]), document: "### D12 Pick one\n- [ ] A) Old option\nReply:\n" };
+    const app = await boot(t, holds);
+    try {
+      app.inspect();
+      await app.until(() => !!app.doc.querySelector(".entry-answer"), "old decision");
+      holds.document = holds.document.replace("Old option", "New option");
+      const before = app.reads.all.filter((r) => r.path.includes("/operator/issues/")).length;
+      await app.reload();
+      assert.equal(app.reads.all.filter((r) => r.path.includes("/operator/issues/")).length, before, "r does not fan out target reads");
+      app.inspect();
+      await app.until(() => !!app.doc.querySelector(".entry-answer")?.textContent?.includes("New option"), "fresh decision");
+      assert.equal(app.reads.all.filter((r) => r.path.includes("/operator/issues/")).length, before + 1);
+      assert.deepEqual(app.reads.writes, []);
+    } finally { await app.close(); }
+  });
+
+  it("renders compact identities without discovering missing details, with explicit group totals and context", async (t) => {
+    const identities = [1, 2, 3].map((n) => ({ item: `cgwalters-forge/tracker#${n}`, source: "reviews", kind: "review-promote", waiting_since: iso(T0), epic: "unknown", ...(n === 2 ? { detail_key: "cgwalters-forge/tracker#1" } : {}) }));
+    const context = { observed_at: iso(T0), wip: { in_flight: 2, limit: 3 }, sources: { step: "complete", run: "unread", usage: "partial" }, omitted: 2,
+      items: [{ source: "step", item: "o/r#1", kind: "waiting", reason: "Checks pending", observed_at: iso(T0), since: null, url: "https://untrusted.invalid/" }], limits: { pool: { reason: "pace", used_percent: 80, limit_percent: 40 } } };
+    const app = await boot(t, { status: 200, etag: '"inventory"', comments: listed(T0, [], { identities, count: 3, counts: { decisions: 3, groups: 1, members: 3 }, details_omitted: 3, context }) });
+    try {
       assert.equal(app.count(), "3");
+      assert.deepEqual(app.keys(), ["cgwalters-forge/tracker#1", "cgwalters-forge/tracker#3"]);
+      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, /3 published decisions · 1 groups · 3 members/);
+      const fold = app.doc.querySelector<HTMLDetailsElement>(".published-context")!;
+      assert.equal(fold.open, false);
+      assert.match(fold.textContent!, /WIP 2\/3.*run unread.*Checks pending/s);
+      assert.equal(fold.querySelector("a,button"), null);
+      assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS]);
+      await app.wake(2 * MINUTE);
+      assert.equal(app.reads.all.length, 3);
+      assert.equal(app.reads.holds.at(-1), '"inventory"');
     } finally { await app.close(); }
   });
 
   const approval = (n: number, digest = false) => rawAsk(n, { key: `up/proj#${n}${digest ? "/digest" : ""}`, item: `up/proj#${n}`, kind: digest ? "digest-approve" : "review-approve", source: digest ? "digest" : "reviews", action: { type: "approve_pull_request", repository: "up/proj", number: n, head: "a".repeat(40) } });
 
-  it("keeps a deep-linked epic on return navigation even with blocked storage", async (t) => {
-    const extension = fixture<{ epics: unknown[]; items: Record<string, unknown>[] }>("needs-you-661.json");
-    const app = await boot(t, { status: 200, etag: '"epics"', comments: listed(T0,
-      extension.items.map((item, i) => rawAsk(i + 1, item)), { epics: extension.epics }) });
+  it("hourly renewal advances validation without changing the change clock", async (t) => {
+    const changedAt = iso(T0 - 2 * 60 * MINUTE);
+    const holds: Holds = { status: 200, etag: '"old"', comments: listed(T0 - 71 * MINUTE, [], { changed_at: changedAt }) };
+    const app = await boot(t, holds);
     try {
-      Object.defineProperty(app.window, "localStorage", { configurable: true, get() { throw new Error("blocked"); } });
-      app.window.location.hash = "#epic-976";
-      await app.until(() => app.count() === "2", "epic deep link");
-      app.window.location.hash = "#issue/cgwalters-forge/tracker/7";
-      await app.until(() => !app.doc.querySelector(".inbox-cards"), "issue navigation");
-      app.window.location.hash = "#inbox";
-      await app.until(() => !!app.doc.querySelector(".inbox-cards"), "return to inbox");
-      assert.equal(app.count(), "2");
-      assert.match(app.doc.querySelector(".epic-filter")!.textContent!, /Selected cgwalters-forge\/tracker#976/);
+      assert.equal(app.empty(), false);
+      t.mock.timers.setTime(T0 + MINUTE);
+      holds.etag = '"renewed"';
+      holds.comments = listed(Date.now(), [], { changed_at: changedAt });
+      await app.wake(2 * MINUTE);
+      assert.equal(app.empty(), true);
+      assert.match(app.note(), /confirmed 2m ago, changed 2h ago/);
     } finally { await app.close(); }
   });
 
-  it("retains chip focus across selection and polls without stealing focus elsewhere", async (t) => {
-    const extension = fixture<{ epics: unknown[]; items: Record<string, unknown>[] }>("needs-you-661.json");
-    const holds = { status: 200, etag: '"epics"', comments: listed(T0,
-      extension.items.map((item, i) => rawAsk(i + 1, item)), { epics: extension.epics }) };
-    const app = await boot(t, holds);
+  it("real snapshot replay request and timing measurements", async (t) => {
+    const raw = realNeedsYouSnapshot();
+    const started = performance.now();
+    const app = await boot(t, { status: 200, etag: '"real-replay"', comments: [{ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${JSON.stringify(raw)}\n\`\`\`` }] });
     try {
-      const chip = (text: string) => [...app.doc.querySelectorAll<HTMLButtonElement>(".epic-chips button")].find((b) => b.textContent!.startsWith(text))!;
-      chip("Show everything").focus();
-      chip("Show everything").click();
-      assert.equal(app.doc.activeElement, chip("Show everything"));
-      await app.reload();
-      assert.equal(app.doc.activeElement, chip("Show everything"));
-      chip("Focus:").focus();
-      holds.etag = '"no-epics"';
-      holds.comments = listed(T0, extension.items.map((item, i) => rawAsk(i + 1, item)), { epics: [] });
-      await app.reload();
-      assert.equal(app.doc.activeElement, chip("In progress"), "removed chip falls back to the first filter");
-      const elsewhere = app.doc.createElement("input");
-      app.doc.body.append(elsewhere);
-      elsewhere.focus();
+      const cold = { requests: app.reads.all.length, elapsedMs: performance.now() - started, paths: app.reads.all.map((r) => r.path) };
+      const before = app.reads.all.length;
+      const pollAt = performance.now();
       await app.wake(2 * MINUTE);
-      assert.equal(app.doc.activeElement, elsewhere);
+      const poll = { requests: app.reads.all.length - before, elapsedMs: performance.now() - pollAt, paths: app.reads.all.slice(before).map((r) => r.path) };
+      t.diagnostic(JSON.stringify({ cold, poll }));
+      if (!process.env.REPLAY_ENTRY) {
+        assert.equal(cold.requests, 2);
+        assert.equal(poll.requests, 1);
+        assert.deepEqual(poll.paths, [HOLDS]);
+        assert.equal(app.reads.writes.length, 0);
+      }
     } finally { await app.close(); }
   });
 
@@ -228,6 +254,9 @@ describe("Needs you from the pass's published list", () => {
       assert.match(results, /Skipped: up\/proj#7 already approved at HEAD/);
       assert.match(results, /Approved up\/proj#8/);
       assert.match(results, /Failed or uncertain: up\/proj#9/);
+      assert.equal(app.count(), "1", "only the uncertain member remains outstanding");
+      await app.reload();
+      assert.equal(app.count(), "1", "unchanged publication does not restore completed decisions");
       assert.deepEqual(app.reads.writes, ["POST /repos/up/proj/pulls/8/reviews", "POST /repos/up/proj/pulls/9/reviews"]);
       assert.deepEqual([...app.doc.querySelectorAll<HTMLInputElement>(".maintain-sec input[type=checkbox]")].map((b) => [b.checked, b.disabled]), [[false, true], [false, true], [false, true]]);
     } finally { await app.close(); }
@@ -267,6 +296,7 @@ describe("Needs you from the pass's published list", () => {
     const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [rawAsk(7, { kind: "review-needs-human", action: { type: "pull_request", repository: "cgwalters-forge/tracker", number: 7 } })]), labels: removed ? ["needs-human"] : [] };
     const app = await boot(t, holds);
     try {
+      app.inspect();
       await app.until(() => !!app.doc.querySelector(".card textarea"), "answer form");
       holds.labels = [];
       app.doc.querySelector<HTMLTextAreaElement>(".card textarea")!.value = "Proceed";
@@ -374,7 +404,8 @@ describe("Needs you from the pass's published list", () => {
   it("gives each proposal its own card, each read again from its comment", async (t) => {
     const app = await boot(t, { status: 200, etag: '"a"', comments: listed(T0, [proposal(1), proposal(2)]) });
     try {
-      await app.until(() => app.doc.querySelectorAll(".card button").length >= 2, "both proposals' Run buttons");
+      app.inspect();
+      await app.until(() => [1, 2].every((n) => app.doc.querySelector(`[data-key="cgwalters-forge/tracker#1013/comment-${n}"]`)?.textContent?.includes(`Reason ${n}`)), "both inspected proposals");
       assert.deepEqual(app.keys(), ["cgwalters-forge/tracker#1013/comment-1", "cgwalters-forge/tracker#1013/comment-2"]);
       for (const n of [1, 2]) assert.match(app.doc.querySelector(`[data-key="cgwalters-forge/tracker#1013/comment-${n}"]`)!.textContent!, new RegExp(`Reason ${n}`));
       assert.deepEqual(app.reads.writes, [], "nothing written");
@@ -389,10 +420,11 @@ describe("Needs you from the pass's published list", () => {
     } finally { await app.close(); }
   });
 
-  it("keeps a card with unsent text after the pass drops it, counted as shown, and a late read doesn't take it", async (t) => {
+  it("keeps unsent text after its card disappears without counting it outstanding", async (t) => {
     const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [rawAsk(1), rawAsk(2)]) };
     const app = await boot(t, holds);
     try {
+      app.inspect();
       await app.until(() => !!app.doc.querySelector('[data-key="cgwalters-forge/tracker#1"] textarea'), "the answer form");
       const text = app.doc.querySelector<HTMLTextAreaElement>('[data-key="cgwalters-forge/tracker#1"] textarea')!;
       text.value = "Half an answer";
@@ -410,7 +442,7 @@ describe("Needs you from the pass's published list", () => {
       assert.deepEqual(app.keys().sort(), ["cgwalters-forge/tracker#1", "cgwalters-forge/tracker#2"], "kept where it was, the rest placed around it");
       assert.equal(app.doc.querySelector('[data-key="cgwalters-forge/tracker#1"] textarea'), text);
       assert.equal(text.value, "Half an answer");
-      assert.equal(app.count(), "2", "the heading counts the kept card");
+      assert.equal(app.count(), "1", "departed drafts do not inflate outstanding decisions");
       assert.equal(app.doc.querySelector(".inbox-more"), null);
       delete holds.gate;
       await app.reload();
@@ -418,27 +450,27 @@ describe("Needs you from the pass's published list", () => {
     } finally { await app.close(); }
   });
 
-  it("Show everything restores a filtered draft removed by the next publication", async (t) => {
+  it("keeps a draft through Status navigation and removes its write authority when it departs", async (t) => {
     const epics = [{ item: "cgwalters-forge/tracker#976", title: "Inbox", active: true, activeWhy: ["focus"], focus: true }];
     const items = [rawAsk(1, { epic: epics[0]!.item, topEpic: epics[0]!.item }), rawAsk(2, { epic: "none", topEpic: "none" })];
     const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, items, { epics }) };
     const app = await boot(t, holds);
     try {
+      app.inspect();
       await app.until(() => !!app.doc.querySelector(".card textarea"), "the answer form");
       const text = app.doc.querySelector<HTMLTextAreaElement>(".card textarea")!;
       const row = text.closest<HTMLElement>(".card")!;
       text.value = "Half an answer";
-      const chip = (label: string) => [...app.doc.querySelectorAll<HTMLButtonElement>(".epic-chips button")].find((b) => b.textContent!.startsWith(label))!;
-      chip("No epic").click();
-      assert.equal(row.hidden, true);
+      app.window.location.hash = "#status";
+      await app.until(() => app.doc.querySelector(".home")?.getAttribute("data-view") === "status", "Status");
       holds.comments = listed(T0, items.slice(1), { epics });
       holds.etag = '"b"';
       await app.wake(2 * MINUTE);
-      assert.equal(row.hidden, true);
       assert.equal(app.count(), "1");
-      chip("Show everything").click();
+      app.window.location.hash = "#inbox";
+      await app.until(() => app.doc.querySelector(".home")?.getAttribute("data-view") === "inbox", "inbox");
       assert.equal(row.hidden, false);
-      assert.equal(app.count(), "2");
+      assert.equal(app.count(), "1");
       assert.equal(text.value, "Half an answer");
       assert.match(row.textContent!, /This has left the inbox/);
       assert.equal(row.querySelector<HTMLButtonElement>("button")!.disabled, true);
@@ -456,7 +488,7 @@ describe("Needs you from the pass's published list", () => {
       const fallback = app.doc.querySelector<HTMLElement>('[data-key="cgwalters-forge/tracker#2"]')!;
       assert.ok(fallback);
       assert.equal(fallback.hidden, false);
-      assert.match(app.doc.querySelector(".epic-filter")!.textContent!, /activity unavailable/);
+      assert.equal(app.doc.querySelector(".epic-filter"), null, "no browser ranking or hidden fallback holds");
     } finally { await app.close(); }
   });
 

@@ -37,13 +37,14 @@ function setup(route: (method: string, path: string) => Scripted | undefined, lo
   const f = scriptedFetch((method, url) => new URL(url).pathname === "/user" ? { body: { login } } : route(method, new URL(url).pathname) ?? (new URL(url).pathname === "/graphql" ? { body: { data: { repository: { issueOrPullRequest: { comments: { nodes: [] } } } } } } : undefined));
   const state = { gh: new GitHub(async () => "test", f.fetchImpl) } as Parameters<typeof inboxHooks>[0];
   state.items = [];
-  Object.assign(state, { reviewed: new Map(), pending: new Map(), verdicts: new Map(), waiting: [], details: new Map(), prs: [], forgeKnown: new Set(), answered: new Set(), sent: new Set(), linked: new Set() });
+  Object.assign(state, { poller: { now() {} }, reviewed: new Map(), pending: new Map(), verdicts: new Map(), waiting: [], details: new Map(), prs: [], forgeKnown: new Set(), answered: new Set(), sent: new Set(), linked: new Set() });
   let list = document.createElement("div");
   document.body.append(list);
   const paint = (card: Card, force = false, remount = false, listed: Ask[] = "ask" in card ? [card.ask] : []) => {
     state.published = { asks: listed, unavailable: false };
     if (remount) { list.remove(); list = document.createElement("div"); document.body.append(list); }
     fillInbox(list, [card], inboxHooks(state, drafts), force);
+    for (const fold of list.querySelectorAll<HTMLDetailsElement>(".card-full")) { fold.open = true; fold.dispatchEvent(new dom.window.Event("toggle")); }
   };
   return { ...f, state, paint, get list() { return list; }, writes: () => f.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/graphql")) };
 }

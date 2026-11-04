@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parseDocument } from "../src/github/decisiondocument.ts";
 import { askCard, type Card, documentCard, publishedCards, publishedNote } from "../src/github/inbox.ts";
-import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, CARD_UNAVAILABLE_CLASS, fillInbox, holdsDraft, INBOX_PAGE, type InboxHooks, passLine } from "../src/github/inboxview.ts";
+import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, CARD_UNAVAILABLE_CLASS, fillInbox as drawInbox, holdsDraft, INBOX_PAGE, type InboxHooks, passLine } from "../src/github/inboxview.ts";
 import { ACTION_CONFIG, loadOffer } from "../src/github/actions.ts";
 import { GitHub } from "../src/github/api.ts";
 import { CHAT_CONFIG } from "../src/github/chatconfig.ts";
@@ -16,6 +16,13 @@ import { fixture, installDom, rawAsk, rawNeedsYou, REAL_NEEDS_YOU_AT, REAL_NEEDS
 
 const win = installDom();
 const render = createRenderer(win as unknown as Parameters<typeof createRenderer>[0]);
+
+// Existing action tests inspect the cards; cold-load laziness is tested separately.
+function fillInbox(...args: Parameters<typeof drawInbox>): number {
+  const count = drawInbox(...args);
+  for (const fold of args[0].querySelectorAll<HTMLDetailsElement>(".card-full")) { fold.open = true; fold.dispatchEvent(new win.Event("toggle")); }
+  return count;
+}
 
 const sent: string[] = [];
 const hooks: InboxHooks = {
@@ -140,7 +147,7 @@ describe("fillInbox", () => {
     assert.ok(typeof l === "object");
     assert.equal(l.refused, malformed ? 1 : 0);
     assert.deepEqual(l.items.map((a) => a.key), REAL_NEEDS_YOU_KEYS.slice(malformed ? 1 : 0));
-    assert.equal(fillInbox(list, publishedCards(l.items), replayHooks), 12);
+    assert.equal(fillInbox(list, publishedCards(l.items), replayHooks), malformed ? 11 : 12);
     if (malformed) {
       assert.equal(form.querySelector("button")!.disabled, true);
       assert.equal(card.querySelector("a[href]"), null);
@@ -312,7 +319,7 @@ describe("fillInbox", () => {
     });
   }
 
-  it("keeps a half-written answer to an ask the same way, and counts it while it is kept", async () => {
+  it("keeps a half-written answer without counting a departed ask as outstanding", async () => {
     const list = document.createElement("div");
     const q = question();
     assert.equal(fillInbox(list, [q, question(2)], hooks), 2);
@@ -322,8 +329,8 @@ describe("fillInbox", () => {
     assert.equal(fillInbox(list, [{ ...q, title: "Which way now?" }, question(2)], hooks), 2);
     assert.equal(cardOf(list, "cgwalters-forge/tracker#1"), card);
     assert.equal(card.querySelector("textarea")!.value, "Left, because");
-    // The pass dropped it: still on the page under his text, so still counted.
-    assert.equal(fillInbox(list, [question(2)], hooks), 2);
+    // The pass dropped it: retain his text, not the outstanding decision.
+    assert.equal(fillInbox(list, [question(2)], hooks), 1);
     assert.equal(card.querySelector(".card-stale-note")?.textContent, CARD_GONE_NOTE);
     assert.equal(fillInbox(list, [question(2)], hooks, true), 1, "r drops it");
   });
@@ -404,7 +411,9 @@ describe("fillInbox", () => {
     const more = box.querySelector<HTMLButtonElement>(".inbox-more")!;
     assert.equal(more.textContent, `Show 2 more · ${INBOX_PAGE} of ${INBOX_PAGE + 2} shown`);
     more.click();
-    assert.deepEqual([keys(list).length, read.length, box.querySelector(".inbox-more")], [INBOX_PAGE + 2, INBOX_PAGE + 2, null]);
+    assert.deepEqual([keys(list).length, read.length, box.querySelector(".inbox-more")], [INBOX_PAGE + 2, INBOX_PAGE, null], "new cards do not inspect themselves");
+    for (const fold of list.querySelectorAll<HTMLDetailsElement>(".card-full")) { fold.open = true; fold.dispatchEvent(new win.Event("toggle")); }
+    assert.equal(read.length, INBOX_PAGE + 2);
   });
 });
 

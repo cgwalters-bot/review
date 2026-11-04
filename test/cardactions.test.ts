@@ -59,6 +59,7 @@ function cardHooks(gh: GitHub, refreshed: string[]): InboxHooks {
 function draw(cards: Card[], hooks: InboxHooks): HTMLElement {
   const list = document.createElement("div");
   fillInbox(list, cards, hooks);
+  for (const fold of list.querySelectorAll<HTMLDetailsElement>(".card-full")) { fold.open = true; fold.dispatchEvent(new win.Event("toggle")); }
   return list;
 }
 

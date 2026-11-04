@@ -836,7 +836,7 @@ function answerCard(opts: { login?: string; askChanges?: boolean; release?: numb
     if (method === "DELETE") return { status: opts.release ?? 204 };
     return undefined;
   });
-  const state = { gh: new GitHub(async () => "test", f.fetchImpl) } as Parameters<typeof inboxHooks>[0];
+  const state = { gh: new GitHub(async () => "test", f.fetchImpl), poller: { now() {} } } as Parameters<typeof inboxHooks>[0];
   const list = parseNeedsYou(rawNeedsYou([rawAsk(50, { kind: opts.kind ?? "needs-human", ask: "Which way?" })], "2026-10-30T00:00:00Z"));
   assert.ok(typeof list === "object");
   state.published = { asks: list.items, unavailable: false };
@@ -860,7 +860,7 @@ it("constructed publication contract cases revoke an open chat's answer authorit
     assert.equal(l.refused, numbers.some((n) => n === 0) ? 1 : 0);
     assert.equal(l.items.length, l.refused ? 11 : 12);
     r.state.published = { asks: l.items, list: l, unavailable: false };
-    await assert.rejects(captured.send("Go left"), /Ask left or grouped/);
+    await assert.rejects(captured.send("Go left"), /Ask left, changed, grouped or became unavailable/);
     assert.deepEqual(r.writes(), []);
     if (!l.refused) {
       const grouped = publishedCards(r.state.published.asks)[0]!;
