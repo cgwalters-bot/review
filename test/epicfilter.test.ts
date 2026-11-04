@@ -3,10 +3,11 @@ import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { epicChips, epicChoice, epicSelection, saveEpicChoice } from "../src/github/epicfilter.ts";
 import { parseNeedsYou } from "../src/github/holds.ts";
-import { publishedCards } from "../src/github/inbox.ts";
+import { documentCard, publishedCards } from "../src/github/inbox.ts";
 import { fillInbox, type InboxHooks } from "../src/github/inboxview.ts";
 import { parseRoute } from "../src/github/keys.ts";
 import { createRenderer } from "../src/markdown.ts";
+import { parseDocument } from "../src/github/decisiondocument.ts";
 import { fixture, installDom, rawAsk, rawNeedsYou } from "./helpers.ts";
 
 const win = installDom();
@@ -44,6 +45,25 @@ test("unknown metadata does not default-hide legacy asks; malformed activity fai
     assert.equal(epicSelection(cards, p.epics, "active").selected.length, 6);
   }
   assert.equal(epicSelection(cards, [], "active").selected.length, 0);
+});
+
+test("epic sorting keeps pending published asks before local cards and completed cards last", () => {
+  const entry = documentCard(parseDocument("### D1 Pick one\n- [ ] A) Yes\nReply:\n")[0]!, undefined)!;
+  const done = { ...entry, key: "done", answered: true };
+  const ordered = epicSelection([done, entry, cards[3]!, cards[2]!, cards[0]!], parsed.epics, "all").ordered;
+  assert.deepEqual(ordered.map((c) => c.key), [cards[0]!.key, cards[2]!.key, cards[3]!.key, entry.key, "done"]);
+});
+
+test("approval evidence admits large diffs and retains valid fields independently", () => {
+  for (const additions of [10001, Number.MAX_SAFE_INTEGER, -1, Number.MAX_SAFE_INTEGER + 1, "42", undefined]) {
+    const p = parseNeedsYou({ ...raw, items: [rawAsk(1, { approval: { additions, deletions: 0, ci: "success", reviewAgent: "approved" } })] });
+    assert.ok(typeof p === "object");
+    const evidence = p.items[0]!.approval!;
+    assert.equal(evidence.additions, typeof additions === "number" && Number.isSafeInteger(additions) && additions >= 0 ? additions : undefined);
+    assert.equal(evidence.deletions, 0);
+    assert.equal(evidence.ci, "success");
+    assert.equal(evidence.reviewAgent, "approved");
+  }
 });
 
 test("bare epic links and viewer-specific choices survive blocked storage", () => {
@@ -101,4 +121,43 @@ test("filter changes preserve unsent forms without counting or retiring filtered
   assert.equal(first.hidden, false);
   assert.equal(input.value, "unsent");
   host.remove();
+});
+
+test("Show everything recovers a filtered draft after its publication disappears", () => {
+  const list = document.createElement("div");
+  fillInbox(list, cards, hooks);
+  const first = list.firstElementChild as HTMLElement;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = "unsent answer";
+  const form = document.createElement("form");
+  form.append(input);
+  first.append(form);
+  const only = new Set([cards[1]!.key]);
+  fillInbox(list, cards, hooks, false, only);
+  const remaining = cards.slice(1);
+  assert.equal(fillInbox(list, remaining, hooks, false, only), 1);
+  assert.equal(first.hidden, true);
+  assert.equal(fillInbox(list, remaining, hooks), remaining.length + 1);
+  assert.equal(first.hidden, false);
+  assert.equal(input.value, "unsent answer");
+  assert.match(first.textContent!, /This has left the inbox/);
+  assert.equal(first.getAttribute("data-href"), "#");
+});
+
+test("a poll dropping an ask keeps its already-visible draft counted under the active filter", () => {
+  const list = document.createElement("div");
+  const selection = epicSelection(cards, parsed.epics, "active");
+  fillInbox(list, cards, hooks, false, new Set(selection.selected.map((c) => c.key)));
+  const first = list.firstElementChild as HTMLElement;
+  const form = document.createElement("form");
+  const text = document.createElement("textarea");
+  text.value = "still composing";
+  form.append(text);
+  first.append(form);
+  const remaining = cards.slice(1);
+  const next = epicSelection(remaining, parsed.epics, "active");
+  assert.equal(fillInbox(list, remaining, hooks, false, new Set(next.selected.map((c) => c.key))), 3);
+  assert.equal(first.hidden, false);
+  assert.equal(text.value, "still composing");
 });

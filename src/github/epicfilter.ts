@@ -34,12 +34,18 @@ export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[
   const selected = cards.filter((c) => matches(c, choice));
   // Approvals first within each epic, then priority and oldest wait. Unknowns
   // remain distinct from explicit none and are reachable through Other / All.
-  const group = (c: Card): string => active.find((e) => refs(c).includes(e.item))?.item ?? refs(c)[0] ?? "~";
-  const rank = (c: Card): number => active.findIndex((e) => e.item === group(c));
+  const epicRanks = new Map(active.map((e, i) => [e.item, i]));
+  const groups = new Map(cards.map((c) => {
+    const ids = refs(c);
+    const rank = Math.min(...ids.map((id) => epicRanks.get(id) ?? active.length), active.length);
+    return [c, { rank, item: active[rank]?.item ?? ids[0] ?? "~" }];
+  }));
+  const local = (c: Card) => c.kind === "document" || c.kind === "send";
   const ordered = [...cards].sort((a, b) => {
-    const ar = rank(a), br = rank(b);
-    return (ar < 0 ? active.length : ar) - (br < 0 ? active.length : br)
-      || group(a).localeCompare(group(b)) || Number(a.answered === true) - Number(b.answered === true)
+    const ag = groups.get(a)!, bg = groups.get(b)!;
+    return Number(a.answered === true) - Number(b.answered === true)
+      || Number(local(a)) - Number(local(b)) || ag.rank - bg.rank
+      || ag.item.localeCompare(bg.item)
       || Number(b.kind === "approve") - Number(a.kind === "approve")
       || (a.priority ?? "P9").localeCompare(b.priority ?? "P9") || (a.since ?? "~").localeCompare(b.since ?? "~");
   });
