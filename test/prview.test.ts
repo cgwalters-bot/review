@@ -648,8 +648,8 @@ describe("pane helpers", () => {
   });
 });
 
-// Exercise the real entry point with a PR ready before the queue, not just prView.
-for (const fails of [false, true]) it(`preserves unsent PR reviews when the initial queue ${fails ? "fails" : "loads"} late`, async () => {
+// Exercise the real entry point with a PR ready before the publication, not just prView.
+for (const fails of [false, true]) it(`preserves unsent PR reviews when the publication ${fails ? "fails" : "loads"} late`, async () => {
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error: Error) => {
     if (!error.message.startsWith("Not implemented: navigation")) throw error;
@@ -669,7 +669,7 @@ for (const fails of [false, true]) it(`preserves unsent PR reviews when the init
     fetch: async (input: string) => {
       const path = new URL(input).pathname;
       requests.push(path);
-      if (path.endsWith("/items")) {
+      if (path === "/repos/cgwalters-forge/bot-ops/issues/1/comments") {
         await queueReady;
         queueFinished = true;
         if (fails) return Response.json({ message: "Queue unavailable" }, { status: 503 });
@@ -712,13 +712,14 @@ for (const fails of [false, true]) it(`preserves unsent PR reviews when the init
     assert.ok(inline);
     inline.value = "Keep this unsent inline comment";
     releaseQueue();
-    await until(() => queueFinished && (fails ? !!window.document.querySelector("#notice")?.textContent?.includes("Couldn't read the board") : !!window.document.querySelector("#meta")?.textContent?.includes("checked")));
+    await until(() => queueFinished);
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(window.document.querySelector("form.review textarea"), review);
     assert.equal(review.value, "Keep this unsent review");
     assert.equal(window.document.querySelector("tr.composer textarea"), inline);
     assert.equal(inline.value, "Keep this unsent inline comment");
     assert.ok(!requests.some((path) => path.includes("/actions/") || path.endsWith("/events")), "no removed workflow or activity polling");
+    assert.ok(!requests.some((path) => path.endsWith("/items") || path === "/search/issues"), "no background board or search discovery");
   } finally {
     releaseQueue();
     window.document.querySelector<HTMLButtonElement>("#signout")?.click();

@@ -12,7 +12,7 @@ import { type Heartbeat, isStale } from "./heartbeat.ts";
 import type { MemberPr } from "./backend.ts";
 import type { IssueRef } from "./board.ts";
 import { refKey } from "./forge.ts";
-import type { Ask, Holds } from "./holds.ts";
+import type { Ask, Holds, InboxContext } from "./holds.ts";
 import { askHref, type Card, CARD_LABEL, githubTarget, members, refusal } from "./inbox.ts";
 import { approvalKey, type ApproveItem, type ApproveResult } from "./maintain.ts";
 import { approveGroup, KEEP_ATTR, KEEP_BUSY } from "./maintainview.ts";
@@ -32,6 +32,8 @@ export const CARD_CHANGED_NOTE = "This changed since it was drawn; send or clear
 export const CARD_GONE_NOTE = "This has left the inbox; your unsent text is kept until you clear it or press r.";
 
 export interface InboxHooks {
+  changed?(): void;
+  publishedBody?(a: Ask): Promise<HTMLElement>;
   /** Session receipts, keyed by target and ask, not visual card metadata. */
   writes?: Map<string, HTMLElement>;
   /** An Answer card's body: its target and question read now, with the form that answers it. */
@@ -102,7 +104,7 @@ function writeButton(hooks: InboxHooks, key: string, label: string, question: st
       status.textContent = e instanceof Error && e.name === "MaybeSentError" ? failed(e) : `Not sent: ${e instanceof Error ? e.message : String(e)}`;
       if (e instanceof Error && e.name === "MaybeSentError") status.setAttribute("data-sent", "");
       else button.disabled = reread;
-    });
+    }).finally(() => hooks.changed?.());
   });
   const el = h("div", { class: "card-body actions" }, button, status);
   hooks.writes?.set(key, el);
@@ -235,6 +237,7 @@ function entryForm(c: Card & { kind: "document" }, hooks: InboxHooks): HTMLEleme
       return;
     }
     button.disabled = true;
+    status.setAttribute(KEEP_ATTR, KEEP_BUSY);
     status.textContent = "Sending…";
     hooks.answerEntry(c.entry, picked, reply.value).then(() => {
       form.dataset.sent = "true";
@@ -243,7 +246,7 @@ function entryForm(c: Card & { kind: "document" }, hooks: InboxHooks): HTMLEleme
     }, (e: unknown) => {
       status.textContent = `Not sent: ${e instanceof Error ? e.message : String(e)}`;
       button.disabled = false;
-    });
+    }).finally(() => status.removeAttribute(KEEP_ATTR));
   });
   return form;
 }
@@ -263,6 +266,7 @@ function action(c: Card, hooks: InboxHooks): HTMLElement | null {
     return body;
   }
   if ("ask" in c && (c.ask.group || c.kind === "promote")) return memberList(c, hooks);
+  if ("ask" in c && (c.ask.source === "decisions" || c.ask.source === "drafts") && hooks.publishedBody) return bodySlot(hooks.publishedBody(c.ask));
   switch (c.kind) {
     case "answer": if (hooks.answerBody && hooks.mayAct) return bodySlot(hooks.answerBody(c.ask)); break;
     case "approve": if (hooks.approve && hooks.mayAct) return approveBody(c.ask, hooks); break;
@@ -287,7 +291,21 @@ export function passLine(holds: Holds | undefined, heartbeat: Heartbeat | null |
   return h("p", { class: `note pass-holds${stale ? " warn" : ""}` }, `New runs wait: ${pass.join("; ")}`, stale ? " · the pass's heartbeat is stale" : "");
 }
 
-/** A slot filled with `body` when it arrives (it reads its targets on drawing). */
+/** Published facts only: never new human asks or write controls. */
+export function publishedContext(context: InboxContext | undefined): HTMLDetailsElement {
+  const fold = h("details", { class: "published-context" }, h("summary", {}, "Published context"));
+  if (!context) {
+    fold.append(h("p", { class: "note" }, "Context not published."));
+    return fold;
+  }
+  fold.append(h("p", { class: "note" }, `Observed ${context.observedAt ?? "unknown"} · WIP ${context.wip?.inFlight ?? "unknown"}/${context.wip?.limit ?? "unknown"} · ${context.omitted} facts omitted.`,
+    ` Sources: ${Object.entries(context.sources).map(([name, state]) => `${name} ${state}`).join(", ") || "not published"}. Unread sources are unknown, not empty.`),
+    h("ul", {}, ...context.items.map((f) => h("li", {}, `${f.source} · ${f.item ?? "all new runs"} · ${f.kind}: ${f.reason} · observed ${f.observedAt ?? "unknown"}${f.since ? ` · since ${f.since}` : ""}`))),
+    ...Object.entries(context.limits).map(([name, fields]) => h("p", { class: "note" }, `${name}: ${Object.entries(fields).map(([key, value]) => `${key} ${value}`).join(" · ")}`)));
+  return fold;
+}
+
+/** A slot filled with `body` when it arrives. */
 function bodySlot(body: Promise<HTMLElement>): HTMLElement {
   const slot = h("div", { class: "card-body" }, h("p", { class: "note" }, "Reading…"));
   body.then((b) => slot.replaceChildren(b), (e: unknown) => slot.replaceChildren(h("p", { class: "warn" }, String(e))));
@@ -317,6 +335,9 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   c.unavailable ? h("p", { class: "card-note warn" }, "Unavailable: from the last list read; the pass's list can't be read now.") : null,
    c.note ? h("details", { class: "card-note" }, h("summary", {}, "Context"), h("p", {}, c.note)) : null);
   if (ask?.requests?.some((r) => r.quality !== "decision")) el.append(h("small", { class: "note" }, [...new Set(ask.requests.map((r) => r.quality).filter((q) => q !== "decision"))].join(" · ")));
+  const descriptions = ask?.requests?.filter((r) => r.detail);
+  if (descriptions?.length) el.append(h("details", { class: "request-context" }, h("summary", {}, "Published decision context"),
+    ...descriptions.map((r) => h("dl", {}, ...Object.entries(r.detail!).flatMap(([key, value]) => [h("dt", {}, key), h("dd", {}, value)])))));
   if (c.kind === "approve") {
     const evidence = c.ask.approval;
     el.append(h("div", { class: "approval-evidence" },
@@ -325,9 +346,20 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
       h("span", { class: "pill" }, `Review agent: ${evidence?.reviewAgent ?? "unknown"}`)));
   }
   if (c.kind === "document" && c.entry.text.trim()) el.append(h("details", { class: "dec-body" }, h("summary", {}, "The whole entry"), h("div", { class: "md" }, hooks.render(c.entry.text, c.entry.about?.repo))));
-  // Read on drawing (the target and its ask, the PR's head, the proposal's facts, the draft's PR): filled in when it arrives.
-  const act = action(c, hooks);
-  if (act) el.append(c.kind === "answer" || c.kind === "send" || c.kind === "do" || c.kind === "document" ? h("details", { class: "card-full" }, h("summary", {}, "Details and action"), act) : act);
+  // Cold load and polls read the publication alone. Target reads are lazy;
+  // action-time preflight remains independent of these inspection reads.
+  if (((c.kind === "answer" && hooks.mayAct) || c.kind === "send" || c.kind === "do" || (ask && ["decisions", "drafts"].includes(ask.source))) && !(ask && refusal(ask))) {
+    const fold = h("details", { class: "card-full" }, h("summary", {}, "Details and action"));
+    fold.addEventListener("toggle", () => {
+      if (!fold.open || fold.children.length > 1 || retired.has(el)) return;
+      const act = action(c, hooks);
+      if (act) fold.append(act);
+    });
+    el.append(fold);
+  } else {
+    const act = action(c, hooks);
+    if (act) el.append(act);
+  }
   const off = ask && !c.answered ? notOffered({ ...c, ask }) : null;
   if (off) el.append(off);
   // After the card's own action: chatting never stands in for it.
@@ -382,8 +414,7 @@ function moreButton(list: HTMLElement, drawn: number, total: number, more: () =>
  * it: the other cards are placed around it. Only the first INBOX_PAGE cards
  * (more after "Show more") are drawn, so the ones further down read
  * nothing; a drawn card holding a draft stays however far it moved.
- * Returns how many cards the list holds, drawn or not: those of `cards`
- * and those kept for a draft though they left, as the heading counts them.
+ * Returns the matching published card count, excluding departed drafts.
  */
 export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: InboxHooks, force = false, selected?: ReadonlySet<string>): number {
   const shown = new Map([...list.querySelectorAll<HTMLElement>(`:scope > .${CARD_CLASS}`)].map((el) => [el.getAttribute(ROW_KEY_ATTR)!, el]));
@@ -406,7 +437,7 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     shown.delete(c.key);
     // r clears a write's kept report too, reading the card's state again.
     const report = force && el?.querySelector(`[${KEEP_ATTR}=""]`);
-    if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS) && !report && !(force && "ask" in c && (c.kind === "promote" || c.ask.group))) return el;
+    if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS) && !report && !(force && "ask" in c && (c.kind === "promote" || c.ask.group || ["decisions", "drafts"].includes(c.ask.source)))) return el;
     // A newly published group revokes the representative's old single-item form.
     if (el && keep(el) && !("ask" in c && (c.ask.group || c.kind === "promote"))) {
       if (el.getAttribute(POLICY_ATTR) !== policySignature(c)) retireActions(el);
@@ -452,5 +483,5 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     }
     cursor = el;
   }
-  return matching.length + gone;
+  return matching.length;
 }

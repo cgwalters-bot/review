@@ -90,6 +90,8 @@ export interface RequestAction {
 }
 
 export interface Request {
+  /** Optional published explanation; text only, never a write precondition. */
+  detail?: Record<string, string>;
   /** The forge host the target is on, a Forgejo instance's with its scheme, port and path. */
   forge: string;
   /** decision, missing-concrete-decision, unknown-request or unverified-carried. */
@@ -99,6 +101,12 @@ export interface Request {
 
 /** The pass's ranked list of what waits on the operator. */
 export interface NeedsYou {
+  count?: number;
+  counts?: { decisions: number; groups: number; members: number };
+  identities?: InboxIdentity[];
+  detailsOmitted?: number;
+  omittedSources?: Record<string, number>;
+  context?: InboxContext;
   /** Absent on older publishers or malformed metadata: do not default-filter. */
   epics?: InboxEpic[];
   /** Every source read whole (or off), nothing omitted, and every item read here: only then is an empty list "nothing waits". */
@@ -116,6 +124,28 @@ export interface NeedsYou {
   items: Ask[];
   /** Items left out here as malformed. */
   refused: number;
+}
+
+export interface InboxIdentity {
+  key: string;
+  detailKey: string;
+  item: string;
+  source: string;
+  kind: string;
+  priority: string | null;
+  waitingSince: string;
+  carried: boolean;
+  epic?: string;
+  topEpic?: string;
+}
+
+export interface InboxContext {
+  wip?: Wip;
+  observedAt?: string;
+  sources: Record<string, string>;
+  omitted: number;
+  items: { source: string; item?: string; kind: string; reason: string; since?: string; observedAt?: string }[];
+  limits: Record<string, Record<string, string | number>>;
 }
 
 export interface InboxEpic {
@@ -185,7 +215,7 @@ function parseHold(raw: unknown): Hold | undefined {
 
 const NEEDS_YOU_SCHEMA = "agent-board/needs-you/v2";
 const READS = ["complete", "partial", "unread", "off"];
-const KEY_RE = /^[a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9]\d{0,9}(?:\/comment-[1-9]\d{0,19}|\/digest)?$/;
+const KEY_RE = /^[a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9]\d{0,9}(?:\/comment-[1-9]\d{0,19}|\/digest|\/decision-[1-9]\d{0,9}|\/draft)?$/;
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const HEAD_RE = /^[0-9a-f]{40}$/;
 /** The pass cuts every text to its first line and this many characters. */
@@ -233,9 +263,11 @@ function parseAsk(raw: unknown): Ask | undefined {
   return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true, ...(group ? { group } : {}), ...(epic ? { epic } : {}), ...(topEpic ? { topEpic } : {}), ...(approval ? { approval } : {}) };
 }
 
-const epicRef = (v: unknown): string | undefined => v === "none" ? v : str(v, ITEM_RE)?.toLowerCase();
+const epicRef = (v: unknown): string | undefined => v === "none" || v === "unknown" ? v : str(v, ITEM_RE)?.toLowerCase();
 
 function parseEpics(raw: unknown): InboxEpic[] | undefined {
+  // The shipped publisher uses a map, not the earlier provisional array.
+  if (isObject(raw)) raw = Object.entries(raw).map(([item, e]) => isObject(e) ? { ...e, item, title: item, focus: Array.isArray(e.activeWhy) && e.activeWhy.includes("focus") } : undefined);
   // A broken or oversized activity index must not silently hide decisions.
   if (!Array.isArray(raw) || raw.length > MAX_COUNT) return undefined;
   const epics: InboxEpic[] = [];
@@ -244,6 +276,39 @@ function parseEpics(raw: unknown): InboxEpic[] | undefined {
     epics.push({ item: (e.item as string).toLowerCase(), title: text(e.title)!, active: e.active, focus: e.focus, activeWhy: e.activeWhy.map((why) => text(why)!) });
   }
   return new Set(epics.map((e) => e.item)).size === epics.length ? epics : undefined;
+}
+
+function parseIdentity(raw: unknown): InboxIdentity | undefined {
+  if (!isObject(raw)) return undefined;
+  const item = str(raw.item, ITEM_RE);
+  const key = str(raw.key ?? item?.toLowerCase(), KEY_RE);
+  const detailKey = str(raw.detail_key ?? key, KEY_RE);
+  const waitingSince = time(raw.waiting_since);
+  const epic = epicRef(raw.epic);
+  const topEpic = epicRef(raw.topEpic ?? raw.epic);
+  if (!item || !key || !detailKey || !waitingSince || !str(raw.source, MODE_RE) || !str(raw.kind, KIND_RE) || (raw.priority != null && !str(raw.priority, PRIORITY_RE)) || (raw.carried !== undefined && typeof raw.carried !== "boolean")) return undefined;
+  return { item, key, detailKey, waitingSince, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null ?? null, carried: raw.carried === true, ...(epic ? { epic } : {}), ...(topEpic ? { topEpic } : {}) };
+}
+
+function parseContext(raw: unknown): InboxContext | undefined {
+  if (!isObject(raw) || !Array.isArray(raw.items) || raw.items.length > 40 || !isCount(raw.omitted) || !isObject(raw.sources)) return undefined;
+  const sources = Object.entries(raw.sources).filter(([k, v]) => str(k, MODE_RE) && READS.includes(v as string)) as [string, string][];
+  const items: InboxContext["items"] = raw.items.flatMap((f) => {
+    if (!isObject(f) || !["hold", "step", "run"].includes(f.source as string) || !text(f.kind) || !text(f.reason)) return [];
+    const item = str(f.item, ITEM_RE);
+    const since = time(f.since);
+    const observedAt = time(f.observed_at);
+    return [{ source: f.source as string, kind: text(f.kind)!, reason: text(f.reason)!, ...(item ? { item } : {}), ...(since ? { since } : {}), ...(observedAt ? { observedAt } : {}) }];
+  });
+  // Display values only: never retain a publisher URL or turn context into controls.
+  const limits = Object.fromEntries((isObject(raw.limits) ? Object.entries(raw.limits).slice(0, 100) : []).flatMap(([name, value]) => {
+    if (!str(name, /^[a-zA-Z0-9_.-]{1,100}$/) || !isObject(value)) return [];
+    const fields = Object.entries(value).filter(([k, v]) => ["reason", "used_percent", "limit_percent", "resets_at", "next_dispatch_at", "observed_at", "weekly_usd", "spent_usd", "since"].includes(k) && ((typeof v === "number" && Number.isFinite(v)) || typeof v === "string"));
+    return [[name, Object.fromEntries(fields.map(([k, v]) => [k, typeof v === "string" ? v.slice(0, TEXT_MAX) : v])) as Record<string, string | number>]];
+  }));
+  const wip = parseWip(raw.wip);
+  const observedAt = time(raw.observed_at);
+  return { sources: Object.fromEntries(sources), items, omitted: raw.omitted + raw.items.length - items.length, limits, ...(wip ? { wip } : {}), ...(observedAt ? { observedAt } : {}) };
 }
 
 function parseGroup(raw: unknown, action: AskRef): Ask["group"] | null {
@@ -266,7 +331,8 @@ function parseRequest(raw: unknown): [string, Request] | undefined {
   const forge = str(raw.forge, FORGE_RE);
   const actions = raw.actions.map((a) => (isObject(a) && str(a.kind, KIND_RE) && typeof a.supported === "boolean" && text(a.reason) ? { kind: a.kind as string, supported: a.supported, reason: text(a.reason)! } : undefined));
   if (!key || !forge || !QUALITIES.includes(raw.quality as string) || !actions.every((a) => a !== undefined)) return undefined;
-  return [key, { forge, quality: raw.quality as string, actions: actions as RequestAction[] }];
+  const detail = Object.fromEntries(["identity", "revision", "question", "recommendation", "requested_operator", "requester", "ownership_evidence", "facts", "resolution", "observed_at", "source_time"].flatMap((field) => typeof raw[field] === "string" ? [[field, (raw[field] as string).slice(0, TEXT_MAX)]] : []));
+  return [key, { forge, quality: raw.quality as string, actions: actions as RequestAction[], ...(Object.keys(detail).length ? { detail } : {}) }];
 }
 
 /** The snapshot's needs-you list; a string says why it can't be used. A malformed item is left out and makes the list incomplete, not the others unread. */
@@ -277,7 +343,9 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
   const changedAt = time(raw.changed_at);
   const sources = isObject(raw.sources) ? Object.entries(raw.sources).filter(([k, v]) => str(k, MODE_RE) && READS.includes(v as string)) as [string, string][] : [];
   if (!validatedAt || !changedAt || !Array.isArray(raw.items) || !isCount(raw.omitted) || !READS.includes(raw.summaries as string) || !sources.length) return "the needs-you list is malformed";
+  if (raw.items.length > MAX_COUNT || (raw.identities !== undefined && (!Array.isArray(raw.identities) || raw.identities.length > MAX_COUNT))) return "the needs-you inventory exceeds the reader's bound";
   const items = raw.items.map(parseAsk).filter((a) => a !== undefined);
+  const identities = Array.isArray(raw.identities) ? raw.identities.map(parseIdentity).filter((i) => i !== undefined) : undefined;
   // Only an absent descriptor field gets legacy behavior. A bound we cannot
   // read, or a malformed descriptor with no usable key, may affect any ask.
   const requests = Array.isArray(raw.requests) ? raw.requests.slice(0, REQUESTS_MAX).map(parseRequest).filter((r) => r !== undefined) : [];
@@ -294,10 +362,14 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
     if (mine.length) a.requests = mine;
     if (allUnreadable || unreadable.has(a.key) || (raw.requests !== undefined && !mine.length)) a.requestsUnreadable = true;
   }
-  const refused = raw.items.length - items.length;
-  const complete = raw.complete === true && refused === 0 && !items.some((a) => a.requestsUnreadable) && raw.count === raw.items.length && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
+  const refused = raw.items.length - items.length + (Array.isArray(raw.identities) ? raw.identities.length - identities!.length : 0);
+  if (identities && new Set(identities.map((i) => i.key)).size !== identities.length) return "the needs-you inventory has duplicate identities";
+  const counts = isObject(raw.counts) && isCount(raw.counts.decisions) && isCount(raw.counts.groups) && isCount(raw.counts.members) ? { decisions: raw.counts.decisions, groups: raw.counts.groups, members: raw.counts.members } : undefined;
+  const complete = raw.complete === true && (raw.counts === undefined || counts !== undefined) && refused === 0 && !items.some((a) => a.requestsUnreadable) && raw.count === (identities?.length ?? raw.items.length) && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
   const epics = parseEpics(raw.epics);
-  return { complete, validatedAt, changedAt, sources: Object.fromEntries(sources), summaries: raw.summaries as string, omitted: raw.omitted, items, refused, ...(epics ? { epics } : {}) };
+  const context = parseContext(raw.context);
+  const omittedSources = isObject(raw.omitted_sources) ? Object.fromEntries(Object.entries(raw.omitted_sources).filter(([k, v]) => str(k, MODE_RE) && isCount(v))) as Record<string, number> : undefined;
+  return { complete, validatedAt, changedAt, sources: Object.fromEntries(sources), summaries: raw.summaries as string, omitted: raw.omitted, items, refused, ...(isCount(raw.count) ? { count: raw.count } : {}), ...(counts ? { counts } : {}), ...(identities ? { identities } : {}), ...(isCount(raw.details_omitted) ? { detailsOmitted: raw.details_omitted } : {}), ...(omittedSources ? { omittedSources } : {}), ...(context ? { context } : {}), ...(epics ? { epics } : {}) };
 }
 
 /** The holds in a comment's body, or undefined if it isn't a well-formed snapshot. */

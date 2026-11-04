@@ -87,6 +87,15 @@ export const githubTarget = (a: Ask): boolean => !a.requestsUnreadable && (a.req
 /** The PRs an ask stands for: a group's members, else its own. */
 export const members = (a: Ask): number[] => a.group?.numbers ?? [a.action.number];
 
+/** Local receipts track a decision, not changes to its display metadata. */
+export const decisionKey = (a: Ask): string => JSON.stringify([a.kind, a.action, a.action.head ? undefined : a.ask]);
+
+export function inboxCounts(p: Published, completed: ReadonlyMap<string, string> = new Map()): { known: number; completed: number; outstanding: number } {
+  const done = p.asks.filter((a) => completed.get(a.key) === decisionKey(a)).length;
+  const known = p.list?.counts?.decisions ?? p.list?.count ?? p.asks.length;
+  return { known, completed: done, outstanding: Math.max(0, known - done) };
+}
+
 /**
  * Why a card writes nothing in place, though its kind would: its request
  * is on another forge, or the pass says its step (review-at-head for
@@ -108,7 +117,7 @@ export function refusal(a: Ask, step?: string): string | undefined {
 export function askCard(a: Ask, unavailable = false): Card {
   const type = a.action.type;
   // A group's answer would land on its representative alone: its members are read and opened one by one.
-  const kind = a.kind === "review-promote" ? "promote" : a.group ? "open" : type === "operator_action" ? "do" : type === "approve_pull_request" || (a.kind === "digest-approve" && a.action.head) ? "approve" : type === "issue" || type === "pull_request" ? "answer" : "open";
+  const kind = a.source === "decisions" || a.source === "drafts" ? "open" : a.kind === "review-promote" ? "promote" : a.group ? "open" : type === "operator_action" ? "do" : type === "approve_pull_request" || (a.kind === "digest-approve" && a.action.head) ? "approve" : type === "issue" || type === "pull_request" ? "answer" : "open";
   const diagnostic = a.requests?.find((r) => r.quality !== "decision")?.quality;
   const note = [
     a.group && `${a.group.numbers.length} PRs: ${a.group.reason}`,
@@ -237,7 +246,24 @@ export function inboxCards(input: InboxInput): Card[] {
     ...(input.drafts ?? []).map(sendCard),
   ].filter((c): c is Card => c !== undefined);
   const holds = input.published?.holds ?? [];
-  return [...publishedCards((input.published?.asks ?? []).filter((a) => !holds.some((h) => h.key === a.key)), input.published?.unavailable), ...publishedCards(holds), ...local.filter((c) => !c.answered), ...local.filter((c) => c.answered)];
+  const p = input.published;
+  let asks = (p?.asks ?? []).filter((a) => !holds.some((h) => h.key === a.key));
+  if (p?.list?.identities) {
+    // Inventory order is producer policy. A missing detail is not a missing
+    // decision; show a read-only placeholder without discovering its target.
+    const details = new Map(asks.map((a) => [a.key, a]));
+    const seen = new Set<string>();
+    asks = p.list.identities.flatMap((i): Ask[] => {
+      if (seen.has(i.detailKey)) return [];
+      seen.add(i.detailKey);
+      const detail = details.get(i.detailKey);
+      if (detail) return [detail];
+      const [repository = "", n = ""] = i.item.split("#");
+      return [{ ...i, key: i.detailKey, ask: `${i.item}: ${i.kind}`, recommendation: "Detail was not published; inspect the source before acting.", action: { type: "issue", repository, number: Number(n) }, requestsUnreadable: true }];
+    });
+  }
+  const published = p?.list?.identities ? asks.map((a) => askCard(a, p.unavailable)) : publishedCards(asks, p?.unavailable);
+  return [...published, ...publishedCards(holds), ...local.filter((c) => !c.answered), ...local.filter((c) => c.answered)];
 }
 
 /** Whether `login` may act on the inbox's cards: the operator, or a token GitHub hasn't named yet. */

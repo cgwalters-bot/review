@@ -5,7 +5,7 @@ import { it } from "node:test";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { fields } from "./helpers.ts";
 
-for (const queue of ["loads", "fails", "delayed", "delayed failure", "delayed item"]) it(`opens out-of-queue links and keeps read errors visible across chrome refreshes (queue ${queue})`, async () => {
+for (const queue of ["loads", "fails", "delayed", "delayed failure"]) it(`opens deep links and keeps read errors visible across chrome refreshes (publication ${queue})`, async () => {
   const id = "PVTI_lADOE9oHIs4BlJLczhENIh0";
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error: Error) => {
@@ -25,10 +25,11 @@ for (const queue of ["loads", "fails", "delayed", "delayed failure", "delayed it
       author: { login: "cgwalters-bot" },
     } : {}),
   };
-  const status = queue === "delayed item" ? "Needs human" : "In Progress";
+  const status = "In Progress";
   const board = { id, project: { number: 1, owner: { login: "cgwalters-forge" } }, fieldValues: { nodes: [{ name: status, field: { name: "Status" } }] } };
   let reads = 0;
   let queueFailures = 0;
+  let publicationFinished = false;
   let releaseQueue = () => {};
   const queueReady = new Promise<void>((resolve) => { releaseQueue = resolve; });
   let missing = false;
@@ -37,18 +38,15 @@ for (const queue of ["loads", "fails", "delayed", "delayed failure", "delayed it
     ResizeObserver: class { observe() {} disconnect() {} },
     fetch: async (input: string, init?: RequestInit) => {
       const url = new URL(input);
-      if (queue === "delayed failure" && url.pathname.endsWith("/items")) await queueReady;
-      if ((queue === "fails" || queue === "delayed failure") && url.pathname.endsWith("/items")) {
+      const publication = url.pathname === "/repos/cgwalters-forge/bot-ops/issues/1/comments";
+      if (publication && queue.startsWith("delayed")) await queueReady;
+      if (publication) publicationFinished = true;
+      if ((queue === "fails" || queue === "delayed failure") && publication) {
         queueFailures++;
         return new Response(JSON.stringify({ message: "Queue unavailable" }), { status: 503 });
       }
-      if (queue === "delayed" && url.pathname.endsWith("/items")) await queueReady;
       let body: unknown = [];
-      if (queue === "delayed item" && url.pathname.endsWith("/items")) body = [{
-        id: 1, node_id: id, content_type: "Issue",
-        content: { node_id: content.id, title: content.title, body: content.body, html_url: content.url, state: "open", user: { login: "cgwalters-bot" }, labels: [{ name: "question" }], assignees: [{ login: "cgwalters" }] },
-        fields: [{ name: "Status", value: status }],
-      }];
+      assert.ok(!url.pathname.endsWith("/items"), "deep links do not discover the board");
       if (url.pathname === "/user") body = { login: "viewer" };
       else if (url.pathname.endsWith("/fields")) body = fields();
       else if (url.pathname === "/search/issues") body = { items: [], total_count: 0 };
@@ -56,7 +54,6 @@ for (const queue of ["loads", "fails", "delayed", "delayed failure", "delayed it
         const request = JSON.parse(String(init?.body)) as { query: string };
         if (request.query.includes("node(id:$id)")) {
           reads++;
-          if (queue === "delayed item" && reads === 1) await queueReady;
           body = { data: { node: missing ? null : { ...board, content } } };
         } else if (request.query.includes("issue(number:$number)")) {
           reads++;
@@ -87,7 +84,7 @@ for (const queue of ["loads", "fails", "delayed", "delayed failure", "delayed it
     assert.equal(reads, 1);
     assert.equal(window.document.querySelector("#sec-needs"), null, "not the Inbox");
     if (queue === "fails") {
-      await until(() => queueFailures > 0 && !!window.document.querySelector("#notice")?.textContent?.includes("Couldn't read the board"));
+      await until(() => queueFailures > 0);
       assert.match(text(), /Epic context/, "queue failure doesn't replace the readable item");
     }
     if (queue.startsWith("delayed")) {
@@ -95,15 +92,12 @@ for (const queue of ["loads", "fails", "delayed", "delayed failure", "delayed it
       assert.ok(answer, "the item offers an answer before the queue finishes");
       answer.value = "Keep this unsent answer";
       releaseQueue();
-      if (queue === "delayed failure") await until(() => !!window.document.querySelector("#notice")?.textContent?.includes("Couldn't read the board"));
-      else await until(() => !!window.document.querySelector("#meta")?.textContent?.includes("checked"));
+      await until(() => publicationFinished);
       // Allow the released read and its render callbacks to finish.
       await new Promise((resolve) => setTimeout(resolve, 20));
       assert.equal(window.document.querySelector("form.answer textarea"), answer, "late reads preserve the form");
       assert.equal(answer.value, "Keep this unsent answer");
     }
-
-    if (queue === "delayed item") return; // The queue keeps this item available on subsequent routes.
 
     window.location.hash = "#issue/cgwalters-forge/tracker/786";
     await until(() => reads === 2 && text().includes("In Progress"));

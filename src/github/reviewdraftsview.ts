@@ -2,6 +2,7 @@ import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import type { GitHub } from "./api.ts";
 import { asOperator } from "./backend.ts";
+import { KEEP_ATTR, KEEP_BUSY } from "./maintainview.ts";
 import { dispatchFailed, EVENTS, readPr, refText, sendDraft, startDraft, type DraftIssue, type Excerpt, type ReviewDraftConfig } from "./reviewdrafts.ts";
 
 /** Draft review: create a PR's draft issue and start its drafting run, then `started` (to read the drafts again). */
@@ -31,7 +32,7 @@ function excerptView(e: Excerpt): HTMLElement {
 }
 
 /** A draft as its review will look, flagged where it can't be sent, with Send; the inbox's Send card shows it too. */
-export async function draftCard(gh: GitHub, c: ReviewDraftConfig, render: Renderer, d: DraftIssue): Promise<HTMLElement> {
+export async function draftCard(gh: GitHub, c: ReviewDraftConfig, render: Renderer, d: DraftIssue, changed?: (sent: boolean) => void): Promise<HTMLElement> {
   const card = h("section", { class: "review-draft" }, h("h3", {}, link(d.issue.html_url, d.issue.title)));
   const flags = h("ul", { class: "review-draft-flags" });
   const flag = (text: string) => flags.append(h("li", {}, text));
@@ -67,8 +68,10 @@ export async function draftCard(gh: GitHub, c: ReviewDraftConfig, render: Render
     if (send.disabled || !window.confirm(`Approve sending this review of ${draft ? refText(draft.pr) : "this PR"}?`)) return;
     send.disabled = true; status.textContent = "Ticking the send box…";
     card.dataset.sent = "sending";
-    void asOperator(gh, () => sendDraft(gh, c, d)).then(() => { status.textContent = "Ticked: the tracker's workflow sends it."; })
-      .catch((e: unknown) => { status.textContent = `Not sent or uncertain: ${String(e)}. Check GitHub; do not retry here.`; });
+    status.setAttribute(KEEP_ATTR, KEEP_BUSY);
+    void asOperator(gh, () => sendDraft(gh, c, d)).then(() => { status.textContent = "Ticked: the tracker's workflow sends it."; changed?.(true); })
+      .catch((e: unknown) => { status.textContent = `Not sent or uncertain: ${String(e)}. Check GitHub; do not retry here.`; changed?.(false); })
+      .finally(() => status.removeAttribute(KEEP_ATTR));
   });
   card.append(send, status);
   return card;
