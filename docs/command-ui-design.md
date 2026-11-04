@@ -45,7 +45,7 @@ navigation and quick health/attention scan. Do not copy its entire company
 administration tree. Research covered written walkthroughs and the screenshot;
 **the full-tour.webm video could not be watched**, so no timing, animation or
 interaction claims are inferred from it. These are source observations, not
-an independently exercised Paperclip installation.
+results from independently testing a Paperclip installation.
 
 **Observed in homegit.** Its [README](https://github.com/cgwalters-bot/homegit)
 puts the forge board, issues and PRs in charge. The
@@ -123,7 +123,7 @@ boards; selecting one must not claim exclusive ownership of its issues.
 
 ## 2. Navigation and exact read contract
 
-**Proposal.** The sidebar's **Projects** list consists literally of forge
+**Proposal.** The sidebar's **Projects** list contains only forge
 project boards, not repositories, themes or epics. Show approximately five
 board links, then **View all**. Within the selected board show five destinations:
 **Command** (status + Decisions), **Epics / focus areas**, **Agents / runs**,
@@ -169,7 +169,8 @@ owner, board number and view; old hashes default to Workstream. Back and
 forward work. Keep an unsent form mounted or explicitly resolve navigation
 before replacing it. Key all in-memory results and existing caches/snapshots
 by viewer + forge + board; ignore late responses from a previous selection.
-Selection itself lives in the URL; no new storage service or durable UI model.
+The selection is stored in the URL; it doesn't need a new storage service
+or durable UI model.
 
 ### Reads by destination
 
@@ -255,8 +256,8 @@ No new server storage is needed for any destination in the recommended browser
 client. The conditional server-held-token design in section 3 adds operational
 credentials and session state, even without an application work database;
 the forge remains authoritative for work. Reuse visibility-aware
-polling, ETags where offered, rate-limit backoff and sign-out cache deletion;
-GraphQL/search reads need explicit cadence rather than assumed conditional
+polling, ETags where offered, rate-limit backoff and sign-out cache deletion.
+Set an explicit schedule for GraphQL/search reads rather than assuming conditional
 caching. Render last-confirmed times, stale/partial/access errors and empty
 states independently. Board polling, searches and runs remain about
 60s while visible; discovering boards is on selection/refresh, not every tick.
@@ -309,8 +310,8 @@ streaming element/signal patches over SSE. The optional
 [Rust SDK](https://data-star.dev/reference/sdks#rust) helps format those events;
 axum is our proposed server choice, not an evaluated integration here. The
 server would read the same forge records and render fragments, not become a
-second work store. This trades browser API/rendering logic for native Rust
-sharing and server operations; it does not justify migrating the initial UI.
+second work store. This replaces browser API/rendering logic with shared native
+Rust code and server operations; it does not justify migrating the initial UI.
 
 Unlike WASM, axum can keep the forge token out of the browser, but the browser
 session still authorizes actions with that token. Authenticate sessions,
@@ -369,8 +370,8 @@ Pages publishes `dist/` with no work data or secrets. A Rust trial adds a pinned
 Rust toolchain, `wasm32-unknown-unknown`, locked dependencies and pinned
 wasm-bindgen/asset tooling, core tests plus browser tests and a release WASM
 build before Pages upload. Keep relative asset URLs valid at `/review/` and
-keep CLI output out of the Pages artifact. No Rust CI is implemented by this
-design document.
+keep CLI output out of the Pages artifact. This design document doesn't
+implement Rust CI.
 
 ## 4. Forgejo and standalone deployment
 
@@ -408,7 +409,7 @@ artifact volumes, static server, trusted controller and separate runners).
 **Kubernetes** suits multiple runner pools: separate controller and agent
 service accounts/namespaces, per-run workspaces, broker access and network
 policy. Neither orchestration choice alone provides the agent sandbox.
-The forge owns persistent work/storage; the recommended static UI needs no
+The forge owns persistent work/storage; the recommended static UI doesn't need a
 server-side work database. A conditional axum/Datastar deployment would also
 operate forge credentials and authenticated session state, even without that
 database; deploy it as a separate service, not on static Pages. Serve
@@ -537,8 +538,8 @@ removes a requested reviewer, approves a head or answers a bot question.
 **local acknowledgement for the new provider slice**, keeping it read-only.
 Do not silently change the existing GitHub behavior. A local dismissal stores
 only viewer/origin/object/reason plus observed update/head; a newer event/head
-resurfaces it, with an undo/show-dismissed affordance. It is disposable browser
-state, not work completion; search-only review requests remain discoverable.
+resurfaces it, with a control to undo or show dismissed items. It is disposable
+browser state, not work completion; search-only review requests remain discoverable.
 
 | Forge | Proposal: forge-write alternative (explicit opt-in, off by default) | Proposal: local-only alternative |
 | --- | --- | --- |
