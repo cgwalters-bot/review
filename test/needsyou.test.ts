@@ -376,6 +376,48 @@ describe("Needs you from the pass's published list", () => {
     } finally { await app.close(); }
   });
 
+  it("Show everything restores a filtered draft removed by the next publication", async (t) => {
+    const epics = [{ item: "cgwalters-forge/tracker#976", title: "Inbox", active: true, activeWhy: ["focus"], focus: true }];
+    const items = [rawAsk(1, { epic: epics[0]!.item, topEpic: epics[0]!.item }), rawAsk(2, { epic: "none", topEpic: "none" })];
+    const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, items, { epics }) };
+    const app = await boot(t, holds);
+    try {
+      await app.until(() => !!app.doc.querySelector(".card textarea"), "the answer form");
+      const text = app.doc.querySelector<HTMLTextAreaElement>(".card textarea")!;
+      const row = text.closest<HTMLElement>(".card")!;
+      text.value = "Half an answer";
+      const chip = (label: string) => [...app.doc.querySelectorAll<HTMLButtonElement>(".epic-chips button")].find((b) => b.textContent!.startsWith(label))!;
+      chip("No epic").click();
+      assert.equal(row.hidden, true);
+      holds.comments = listed(T0, items.slice(1), { epics });
+      holds.etag = '"b"';
+      await app.wake(2 * MINUTE);
+      assert.equal(row.hidden, true);
+      assert.equal(app.count(), "1");
+      chip("Show everything").click();
+      assert.equal(row.hidden, false);
+      assert.equal(app.count(), "2");
+      assert.equal(text.value, "Half an answer");
+      assert.match(row.textContent!, /This has left the inbox/);
+      assert.equal(row.querySelector<HTMLButtonElement>("button")!.disabled, true);
+    } finally { await app.close(); }
+  });
+
+  it("a missing current list does not use retained epic activity to hide fallback holds", async (t) => {
+    const epics = [{ item: "cgwalters-forge/tracker#976", title: "Inbox", active: true, activeWhy: ["focus"], focus: true }];
+    const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [rawAsk(1, { epic: epics[0]!.item, topEpic: epics[0]!.item })], { epics }) };
+    const app = await boot(t, holds);
+    try {
+      holds.comments = [holdsComment(iso(T0), undefined, [{ item: "cgwalters-forge/tracker#2", url: "https://github.com/cgwalters-forge/tracker/issues/2", epic: false, kind: "needs-human", reason: "Choose", operator: true, priority: "P0", question: "Which path?" }])];
+      holds.etag = '"b"';
+      await app.wake(2 * MINUTE);
+      const fallback = app.doc.querySelector<HTMLElement>('[data-key="cgwalters-forge/tracker#2"]')!;
+      assert.ok(fallback);
+      assert.equal(fallback.hidden, false);
+      assert.match(app.doc.querySelector(".epic-filter")!.textContent!, /activity unavailable/);
+    } finally { await app.close(); }
+  });
+
   it("draws nothing from a read that lands after sign-out", async (t) => {
     const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [rawAsk(1)]) };
     const app = await boot(t, holds);

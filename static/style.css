@@ -365,7 +365,8 @@ details.dec-body summary, details.not-offered summary, details.member summary { 
 .card-full > summary, .card-note > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .row.card.c-approve { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; }
 .c-approve > .card-head, .c-approve > .card-where, .c-approve > .approval-evidence { grid-column: 1; }
-.c-approve > .actions { grid-column: 2; grid-row: 1 / span 3; align-self: center; }
+.c-approve > .card-body.actions { grid-column: 2; grid-row: 1 / span 3; align-self: center; }
+.c-approve > .actions:not(.card-body) { grid-column: 2; grid-row: 4; }
 .c-approve > .card-note, .c-approve > .not-offered { grid-column: 1 / -1; }
 .c-approve > .actions .status:empty { display: none; }
 @media (max-width: 600px) {

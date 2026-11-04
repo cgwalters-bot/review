@@ -681,7 +681,7 @@ function paintInbox(state: State, force = false): void {
     else delete inbox.choiceLogin;
   }
   const choice = /^#epic-[1-9]\d{0,9}$/.test(window.location.hash) ? epicChoice(state.login, window.location.hash) : inbox.choice ?? epicChoice(state.login, "");
-  const epics = state.published.list?.epics;
+  const epics = state.published.unavailable ? undefined : state.published.list?.epics;
   const selection = epicSelection(cards, epics, choice);
   inbox.filters.replaceChildren(epicChips(selection, choice, epics !== undefined, (next) => {
     inbox.choice = next;
@@ -691,7 +691,8 @@ function paintInbox(state: State, force = false): void {
     paintInbox(state);
   }));
   // Counted as drawn: a card kept for his unsent text after it left is still on the page.
-  const total = fillInbox(inbox.list, epics ? selection.ordered : cards, inboxHooks(state), force, new Set(selection.selected.map((c) => c.key)));
+  const total = fillInbox(inbox.list, epics ? selection.ordered : cards, inboxHooks(state), force,
+    choice === "all" || (choice === "active" && !epics) ? undefined : new Set(selection.selected.map((c) => c.key)));
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
   const { text, settled } = publishedNote(state.published, Date.now());
   inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text, ` Hidden by cap: ${state.published.list?.omitted ?? "unknown"}; hidden by filter: ${selection.hidden}.`), passLine(state.active?.holds, state.active?.local, Date.now()) ?? "");

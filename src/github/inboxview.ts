@@ -303,7 +303,7 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   if (c.kind === "approve") {
     const evidence = c.ask.approval;
     el.append(h("div", { class: "approval-evidence" },
-      h("span", {}, evidence ? `+${evidence.additions} −${evidence.deletions}` : "Diff size unknown"),
+      h("span", {}, evidence?.additions !== undefined && evidence.deletions !== undefined ? `+${evidence.additions} −${evidence.deletions}` : "Diff size unknown"),
       h("span", { class: "pill" }, `CI: ${evidence?.ci ?? "unknown"}`),
       h("span", { class: "pill" }, `Review agent: ${evidence?.reviewAgent ?? "unknown"}`)));
   }
@@ -416,6 +416,9 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
       // with. Keep its report/text, never its obsolete approval handlers.
       retireActions(el);
       staleNote(el, CARD_GONE_NOTE);
+      // A poll must not hide an already-visible draft when its key leaves
+      // the publication. Show everything also recovers drafts hidden earlier.
+      if (!selected) el.hidden = false;
       if (!el.hidden) gone++;
     } else el.remove();
   }

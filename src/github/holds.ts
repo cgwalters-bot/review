@@ -56,7 +56,7 @@ export interface Ask {
   epic?: string;
   topEpic?: string;
   /** Display evidence only; never authority to approve. */
-  approval?: { additions: number; deletions: number; ci: string; reviewAgent: string };
+  approval?: { additions?: number; deletions?: number; ci?: string; reviewAgent?: string };
   /** The same from pass to pass: `owner/repo#n`, with `/comment-ID` or `/digest`. */
   key: string;
   /** OWNER/REPO#N it is on. */
@@ -221,8 +221,15 @@ function parseAsk(raw: unknown): Ask | undefined {
   const epic = epicRef(raw.epic);
   const topEpic = epicRef(raw.topEpic);
   const p = raw.approval;
-  const approval = isObject(p) && isCount(p.additions) && isCount(p.deletions) && text(p.ci) && text(p.reviewAgent)
-    ? { additions: p.additions, deletions: p.deletions, ci: text(p.ci)!, reviewAgent: text(p.reviewAgent)! } : undefined;
+  // Diff statistics are not item counts: generated changes can exceed the
+  // publication's item cap. Independent evidence remains useful if one field
+  // is missing or malformed; none of it authorizes a write.
+  const lines = (v: unknown): number | undefined => Number.isSafeInteger(v) && (v as number) >= 0 ? v as number : undefined;
+  const additions = isObject(p) ? lines(p.additions) : undefined;
+  const deletions = isObject(p) ? lines(p.deletions) : undefined;
+  const ci = isObject(p) ? text(p.ci) : undefined;
+  const reviewAgent = isObject(p) ? text(p.reviewAgent) : undefined;
+  const approval = isObject(p) ? { ...(additions === undefined ? {} : { additions }), ...(deletions === undefined ? {} : { deletions }), ...(ci ? { ci } : {}), ...(reviewAgent ? { reviewAgent } : {}) } : undefined;
   return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true, ...(group ? { group } : {}), ...(epic ? { epic } : {}), ...(topEpic ? { topEpic } : {}), ...(approval ? { approval } : {}) };
 }
 

@@ -52,6 +52,9 @@ and `topEpic` are `owner/repo#N` strings or `none`; `epics` entries contain
 `item`, `title`, `active`, `activeWhy` (strings) and `focus`. Optional item
 `approval` contains `additions`, `deletions`, `ci`, and `reviewAgent`.
 Reconcile these exact field encodings with the publisher before deployment.
+On 2026-11-04, #661 was still open and agent-board main at
+`3cc9a1955ac748a41456af0efbc6f077fb6fcaef` had no epic activity wire schema;
+these encodings remain a fixture contract, not verified publisher compatibility.
 Default filtering is inactive for missing or malformed epic activity; it
 does not infer activity or issue extra reads. Malformed metadata must not
 silently hide decisions. Activity parsing accepts at most 10,000 entries
