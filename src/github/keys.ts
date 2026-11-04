@@ -118,6 +118,7 @@ export function parseRoute(hash: string): RouteInfo {
     return pr[1] === "pr" ? { route: "pr", ref } : { route: "item", id: `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase(), ref };
   }
   const token = hash.slice(1);
+  if (/^epic-[1-9]\d{0,9}$/.test(token)) return { route: "home", view: "inbox" };
   if (isView(token)) return { route: "home", view: token };
   if (["maintain", "chat"].includes(token)) return { route: "home", view: "inbox" };
   if (["agents", "board", "activity", "usage", "ops", "dashboard"].includes(token)) return { route: "home", view: "status" };

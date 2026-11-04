@@ -55,6 +55,7 @@ import { chatPanel, type ChatPanel } from "./chat.ts";
 import { CHAT_CONFIG } from "./chatconfig.ts";
 import { type ChatAnswer, chatItem, type ChatItem, startChatButton } from "./chatitem.ts";
 import { CARD_CLASS, CARD_DONE_CLASS, fillInbox, type InboxHooks, passLine } from "./inboxview.ts";
+import { epicChips, epicChoice, epicSelection, saveEpicChoice, type EpicFilter } from "./epicfilter.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
@@ -426,6 +427,9 @@ function mountHome(state: State): Home {
 }
 
 interface Inbox {
+  filters: HTMLElement;
+  choice?: EpicFilter;
+  choiceLogin?: string;
   list: HTMLElement;
   /** What holds every new run, if anything (passLine). */
   pass: HTMLElement;
@@ -454,14 +458,14 @@ function mountInbox(state: State, home: Home): void {
   const status = h("p", { class: "note", role: "status" });
   const empty = h("p", { class: "empty", hidden: "" }, "All caught up: nothing needs you right now.");
   const tail = h("div", { class: "inbox-tail" });
-  const inbox: Inbox = { list, pass: h("div"), status, notes: new Map(), empty, writes: Promise.resolve(), busy: false, startChat: startChatButton() };
+  const inbox: Inbox = { list, filters: h("div"), pass: h("div"), status, notes: new Map(), empty, writes: Promise.resolve(), busy: false, startChat: startChatButton() };
   state.inbox = inbox;
   if (inbox.startChat) {
     inbox.startChat.hidden = !state.chat;
     tail.append(inbox.startChat);
   }
   if (REVIEW_DRAFT_CONFIG) tail.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => void refreshDrafts(state)));
-  home.sections.needs.body.prepend(inbox.pass, status, list, empty, tail);
+  home.sections.needs.body.prepend(inbox.filters, inbox.pass, status, list, empty, tail);
 }
 
 /** Say (or, with "", stop saying) why `what` can't be shown. */
@@ -671,14 +675,30 @@ function paintInbox(state: State, force = false): void {
     inboxNote(inbox, "document", `The decisions document can't be read: ${message(e)}`);
   }
   const cards = inboxCards({ published: state.published, ...(document ? { document } : {}), ...(inbox.drafts ? { drafts: inbox.drafts } : {}) });
+  if (inbox.choiceLogin !== state.login) {
+    delete inbox.choice;
+    if (state.login) inbox.choiceLogin = state.login;
+    else delete inbox.choiceLogin;
+  }
+  const choice = /^#epic-[1-9]\d{0,9}$/.test(window.location.hash) ? epicChoice(state.login, window.location.hash) : inbox.choice ?? epicChoice(state.login, "");
+  const epics = state.published.list?.epics;
+  const selection = epicSelection(cards, epics, choice);
+  inbox.filters.replaceChildren(epicChips(selection, choice, epics !== undefined, (next) => {
+    inbox.choice = next;
+    saveEpicChoice(state.login, next);
+    if (window.location.hash.startsWith("#epic-")) window.history.replaceState(null, "", "#inbox");
+    inbox.list.removeAttribute("data-limit");
+    paintInbox(state);
+  }));
   // Counted as drawn: a card kept for his unsent text after it left is still on the page.
-  const total = fillInbox(inbox.list, cards, inboxHooks(state), force);
+  const total = fillInbox(inbox.list, epics ? selection.ordered : cards, inboxHooks(state), force, new Set(selection.selected.map((c) => c.key)));
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
   const { text, settled } = publishedNote(state.published, Date.now());
-  inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text), passLine(state.active?.holds, state.active?.local, Date.now()) ?? "");
-  const waiting = cards.filter((c) => !c.answered).length;
+  inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text, ` Hidden by cap: ${state.published.list?.omitted ?? "unknown"}; hidden by filter: ${selection.hidden}.`), passLine(state.active?.holds, state.active?.local, Date.now()) ?? "");
+  const waiting = selection.selected.filter((c) => !c.answered).length;
   // Empty says nothing waits only when the pass's list is complete and current.
   inbox.empty.hidden = total > 0 || !settled;
+  inbox.empty.textContent = selection.hidden ? "No cards match this filter. Show everything to see the rest." : "All caught up: nothing needs you right now.";
   const count = home.sections.needs.count;
   count.textContent = String(total);
   count.title = `${waiting} of ${total} cards waiting on you${settled ? "" : "; the pass's list is not complete and current, so more may wait"}`;

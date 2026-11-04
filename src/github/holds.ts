@@ -52,6 +52,11 @@ export interface AskRef {
 
 /** One thing that waits on the operator, as the pass lists it. */
 export interface Ask {
+  /** Provisional agent-board#661 identity fields; absent is unknown, not none. */
+  epic?: string;
+  topEpic?: string;
+  /** Display evidence only; never authority to approve. */
+  approval?: { additions: number; deletions: number; ci: string; reviewAgent: string };
   /** The same from pass to pass: `owner/repo#n`, with `/comment-ID` or `/digest`. */
   key: string;
   /** OWNER/REPO#N it is on. */
@@ -94,6 +99,8 @@ export interface Request {
 
 /** The pass's ranked list of what waits on the operator. */
 export interface NeedsYou {
+  /** Absent on older publishers or malformed metadata: do not default-filter. */
+  epics?: InboxEpic[];
   /** Every source read whole (or off), nothing omitted, and every item read here: only then is an empty list "nothing waits". */
   complete: boolean;
   /** When the pass last wrote the list, if only to confirm it: its age, whatever a 304 says of the comment. */
@@ -109,6 +116,14 @@ export interface NeedsYou {
   items: Ask[];
   /** Items left out here as malformed. */
   refused: number;
+}
+
+export interface InboxEpic {
+  item: string;
+  title: string;
+  active: boolean;
+  activeWhy: string[];
+  focus: boolean;
 }
 
 /** The WIP limit, and the runs holding a slot (null where the pass did not count them). */
@@ -203,7 +218,25 @@ function parseAsk(raw: unknown): Ask | undefined {
   // A group read as its representative alone would answer for the others: a malformed one is no ask.
   const group = raw.group === undefined ? undefined : parseGroup(raw.group, action);
   if (group === null) return undefined;
-  return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true, ...(group ? { group } : {}) };
+  const epic = epicRef(raw.epic);
+  const topEpic = epicRef(raw.topEpic);
+  const p = raw.approval;
+  const approval = isObject(p) && isCount(p.additions) && isCount(p.deletions) && text(p.ci) && text(p.reviewAgent)
+    ? { additions: p.additions, deletions: p.deletions, ci: text(p.ci)!, reviewAgent: text(p.reviewAgent)! } : undefined;
+  return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true, ...(group ? { group } : {}), ...(epic ? { epic } : {}), ...(topEpic ? { topEpic } : {}), ...(approval ? { approval } : {}) };
+}
+
+const epicRef = (v: unknown): string | undefined => v === "none" ? v : str(v, ITEM_RE)?.toLowerCase();
+
+function parseEpics(raw: unknown): InboxEpic[] | undefined {
+  // A broken or oversized activity index must not silently hide decisions.
+  if (!Array.isArray(raw) || raw.length > MAX_COUNT) return undefined;
+  const epics: InboxEpic[] = [];
+  for (const e of raw) {
+    if (!isObject(e) || !str(e.item, ITEM_RE) || !text(e.title) || typeof e.active !== "boolean" || typeof e.focus !== "boolean" || !Array.isArray(e.activeWhy) || e.activeWhy.length > 8 || !e.activeWhy.every((why) => text(why))) return undefined;
+    epics.push({ item: (e.item as string).toLowerCase(), title: text(e.title)!, active: e.active, focus: e.focus, activeWhy: e.activeWhy.map((why) => text(why)!) });
+  }
+  return new Set(epics.map((e) => e.item)).size === epics.length ? epics : undefined;
 }
 
 function parseGroup(raw: unknown, action: AskRef): Ask["group"] | null {
@@ -256,7 +289,8 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
   }
   const refused = raw.items.length - items.length;
   const complete = raw.complete === true && refused === 0 && !items.some((a) => a.requestsUnreadable) && raw.count === raw.items.length && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
-  return { complete, validatedAt, changedAt, sources: Object.fromEntries(sources), summaries: raw.summaries as string, omitted: raw.omitted, items, refused };
+  const epics = parseEpics(raw.epics);
+  return { complete, validatedAt, changedAt, sources: Object.fromEntries(sources), summaries: raw.summaries as string, omitted: raw.omitted, items, refused, ...(epics ? { epics } : {}) };
 }
 
 /** The holds in a comment's body, or undefined if it isn't a well-formed snapshot. */
