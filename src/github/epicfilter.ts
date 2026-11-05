@@ -22,7 +22,7 @@ const refs = (c: Card): string[] => "ask" in c ? [c.ask.epic, c.ask.topEpic].fil
 
 /** Kinds that wait only on the operator's approving review, even as a placeholder without its detail. */
 const APPROVALS = ["review-approve", "review-withheld", "digest-approve"];
-const approval = (c: Card): boolean => c.kind === "approve" || ("ask" in c && APPROVALS.includes(c.ask.kind));
+const approval = (c: Card): boolean => c.kind === "approve" || c.kind === "digest" || ("ask" in c && APPROVALS.includes(c.ask.kind));
 
 export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[] | undefined, choice: EpicFilter) {
   const active = (epics ?? []).filter((e) => e.active).sort((a, b) => Number(b.focus) - Number(a.focus));
@@ -36,14 +36,14 @@ export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[
     const ids = refs(c);
     // With no epic in progress, the default hides nothing.
     if (f === "all" || (f === "active" && !active.length)) return true;
-    if (f === "active") return inProgress(c, ids) || uncertain(c, ids);
+    if (f === "active") return approval(c) || inProgress(c, ids) || uncertain(c, ids);
     if (f === "none") return "ask" in c && c.ask.epic === "none" && c.ask.topEpic === "none";
     if (f === "other") return !ids.some((id) => activeIds.has(id)) && !matches(c, "none");
     return ids.includes(f.slice(5));
   };
   const selected = cards.filter((c) => matches(c, choice));
-  // Approvals first within each epic, then priority and oldest wait. Unknowns
-  // remain distinct from explicit none and are reachable through Other / All.
+  // Full approvals first across epics, other full rows next, placeholders last.
+  // Unknowns remain distinct from explicit none and reachable through Other / All.
   const epicRanks = new Map(active.map((e, i) => [e.item, i]));
   const groups = new Map(cards.map((c) => {
     const ids = refs(c);
@@ -54,11 +54,13 @@ export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[
   const ordered = [...cards].sort((a, b) => {
     const ag = groups.get(a)!, bg = groups.get(b)!;
     return Number(a.answered === true) - Number(b.answered === true)
-      || Number(local(a)) - Number(local(b)) || ag.rank - bg.rank
+      || Number(local(a)) - Number(local(b))
+      || Number("ask" in a && !!a.ask.detailMissing) - Number("ask" in b && !!b.ask.detailMissing)
+      || Number(approval(b)) - Number(approval(a))
+      || (epics === undefined ? 0 : ag.rank - bg.rank
       // Code point order: "~" (no epic) sorts after every OWNER/REPO#N and "unknown".
       || Number(ag.item > bg.item) - Number(ag.item < bg.item)
-      || Number(approval(b)) - Number(approval(a))
-      || (a.priority ?? "P9").localeCompare(b.priority ?? "P9") || (a.since ?? "~").localeCompare(b.since ?? "~");
+      || (a.priority ?? "P9").localeCompare(b.priority ?? "P9") || (a.since ?? "~").localeCompare(b.since ?? "~"));
   });
   const unsure = active.length ? cards.filter((c) => !inProgress(c, refs(c)) && uncertain(c, refs(c))).length : 0;
   return { active, unsure, selected, ordered, hidden: cards.length - selected.length, count: (f: EpicFilter) => cards.filter((c) => matches(c, f)).length };
@@ -78,10 +80,10 @@ export function epicChips(model: ReturnType<typeof epicSelection>, choice: EpicF
   const name = (item: string): string => model.active.filter((e) => short(e.item) === short(item)).length > 1 ? item : short(item);
   const why = model.active.map((e) => `${name(e.item)} (${e.activeWhy.map((w) => WHY[w] ?? w).join(", ") || "no reason published"})`).join(", ");
   return h("div", { class: "epic-filter" },
-    h("p", { class: "note" }, model.active.length ? `${model.active.length} epic${model.active.length === 1 ? "" : "s"} in progress: ${why}. Shown by default` : "No epic is in progress: everything is shown.",
+    h("p", { class: "note" }, model.active.length ? `${model.active.length} epic${model.active.length === 1 ? "" : "s"} in progress: ${why}. Shown by default, plus approvals` : "No epic is published as in progress. The default shows all published rows.",
       model.active.length ? (model.unsure ? `, with ${model.unsure} whose epic is unknown or not read whole.` : ".") : ""),
-    h("div", { class: "epic-chips", role: "group", "aria-label": "Filter by epic" }, chip("active", "In progress"),
+    h("div", { class: "epic-chips", role: "group", "aria-label": "Filter by epic" }, chip("active", model.active.length ? "In progress + approvals" : "Default (all)"),
       ...model.active.map((e) => chip(`epic:${e.item}`, `${e.focus ? "Focus: " : ""}${name(e.item)}`, e.item)),
       chip("other", "Other epics", "Inactive epics, and items whose epic the pass could not read"), chip("none", "No epic"), chip("all", "Show everything")),
-    choice.startsWith("epic:") && !model.active.some((e) => choice === `epic:${e.item}`) ? h("p", { class: "note" }, `Showing ${choice.slice(5)}`) : null);
+    choice !== "active" ? h("p", { class: "note" }, `Selected: ${choice.startsWith("epic:") ? choice.slice(5) : choice === "all" ? "all published rows" : choice === "none" ? "no epic" : "other epics"}.`) : null);
 }
