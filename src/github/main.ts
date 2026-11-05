@@ -46,7 +46,7 @@ import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from 
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, sendDocumentEdit } from "./decisiondocument.ts";
 import { epicChips, epicChoice, epicSelection, saveEpicChoice, type EpicFilter } from "./epicfilter.ts";
-import { type Card, askHref, decisionKey, githubTarget, inboxCards, inboxCounts, mayAct, members, type Published, publishedNote, refusal } from "./inbox.ts";
+import { type Card, askHref, cardOutstanding, decisionKey, githubTarget, inboxCards, inboxCounts, mayAct, members, type Published, publishedNote, refusal } from "./inbox.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { CHAT_CONFIG } from "./chatconfig.ts";
 import { type ChatAnswer, chatItem, type ChatItem, startChatButton } from "./chatitem.ts";
@@ -702,7 +702,8 @@ function paintInbox(state: State, force = false): void {
   state.inboxChoice = { login: state.login, value: choice };
   // Activity from a list that can't be read now, or none published, hides nothing.
   const epics = state.published.unavailable ? undefined : state.published.list?.epics;
-  const selection = epicSelection(cards, epics, epics ? choice : "all");
+  const waits = (c: Card) => cardOutstanding(c, state.published.asks, state.completedAsks);
+  const selection = epicSelection(cards, epics, epics ? choice : "all", waits);
   const filtered = !!selection?.hidden;
   fillInbox(inbox.list, selection?.ordered ?? cards, inboxHooks(state), force, filtered ? new Set(selection.selected.map((c) => c.key)) : undefined);
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
@@ -710,8 +711,7 @@ function paintInbox(state: State, force = false): void {
   const list = state.published.list;
   const { known, completed, outstanding } = inboxCounts(state.published, state.completedAsks);
   // The heading counts what the filter shows; cap and filter are told apart.
-  const done = (c: Card) => "ask" in c && state.completedAsks?.get(c.ask.key) === decisionKey(c.ask);
-  const waiting = selection.selected.filter((c) => !done(c)).length;
+  const waiting = selection.selected.filter(waits).length;
   inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text),
     h("p", { class: "note" }, `${known} reported decisions · ${cards.length} published rows · ${list?.counts?.groups ?? "unknown"} groups · ${list?.counts?.members ?? "unknown"} members · ${completed} locally completed. ${list?.detailsOmitted ?? 0} without details. Hidden: ${list?.omitted ?? "unknown"} by the pass's cap, ${selection.hidden} by the epic filter.`));
   const contextOpen = inbox.filters.querySelector<HTMLDetailsElement>(".published-context")?.open;
