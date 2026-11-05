@@ -76,7 +76,7 @@ import { type ApproveResult, approveSelected } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { type Need, needStops } from "./needs.ts";
 import { type Ask, holdAsks, loadHolds, readHoldAsk } from "./holds.ts";
-import { passView } from "./passview.ts";
+import { type PassView, passView, retainPassView } from "./passview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -182,6 +182,8 @@ interface State {
   /** Published status and the board, heartbeat and holds used as inbox context. */
   active?: Active;
   activeRunning: boolean;
+  /** The last pass view read, kept while a refresh of the publication fails. */
+  passView?: PassView | undefined;
   /** The page's sections, while it is shown. */
   home?: Home;
   /** The rows of "Needs you" as last drawn, and a signature of them. */
@@ -814,7 +816,10 @@ function paintActive(state: State): void {
   if (!state.home) return;
   const model = snapshot(state);
   const source = model.sources.holds;
-  state.home.slots.passes.replaceChildren(passView(state.active?.holds?.passView, Date.now(), source && source.state !== "ok" ? source.error ?? source.state : undefined));
+  const unavailable = source && source.state !== "ok" ? source.error ?? source.state : undefined;
+  const pass = retainPassView(state.passView, state.active?.holds?.passView, !!unavailable);
+  state.passView = typeof pass === "object" ? pass : undefined;
+  state.home.slots.passes.replaceChildren(passView(pass, Date.now(), unavailable));
   fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError, Date.now(), state.active?.board);
   fillState(state.home, model);
 }
