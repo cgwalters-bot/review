@@ -702,7 +702,7 @@ function paintInbox(state: State, force = false): void {
   state.inboxChoice = { login: state.login, value: choice };
   // Activity from a list that can't be read now, or none published, hides nothing.
   const epics = state.published.unavailable ? undefined : state.published.list?.epics;
-  const selection = epics && epicSelection(cards, epics, choice);
+  const selection = epicSelection(cards, epics, epics ? choice : "all");
   const filtered = !!selection?.hidden;
   fillInbox(inbox.list, selection?.ordered ?? cards, inboxHooks(state), force, filtered ? new Set(selection.selected.map((c) => c.key)) : undefined);
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
@@ -711,15 +711,15 @@ function paintInbox(state: State, force = false): void {
   const { known, completed, outstanding } = inboxCounts(state.published, state.completedAsks);
   // The heading counts what the filter shows; cap and filter are told apart.
   const done = (c: Card) => "ask" in c && state.completedAsks?.get(c.ask.key) === decisionKey(c.ask);
-  const waiting = filtered ? selection.selected.filter((c) => !done(c)).length : outstanding;
+  const waiting = selection.selected.filter((c) => !done(c)).length;
   inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text),
-    h("p", { class: "note" }, `${known} published decisions · ${list?.counts?.groups ?? "unknown"} groups · ${list?.counts?.members ?? "unknown"} members · ${completed} locally completed. ${list?.detailsOmitted ?? 0} without details. Hidden: ${list?.omitted ?? "unknown"} by the pass's cap, ${selection?.hidden ?? 0} by the epic filter.`));
+    h("p", { class: "note" }, `${known} reported decisions · ${cards.length} published rows · ${list?.counts?.groups ?? "unknown"} groups · ${list?.counts?.members ?? "unknown"} members · ${completed} locally completed. ${list?.detailsOmitted ?? 0} without details. Hidden: ${list?.omitted ?? "unknown"} by the pass's cap, ${selection.hidden} by the epic filter.`));
   const contextOpen = inbox.filters.querySelector<HTMLDetailsElement>(".published-context")?.open;
   const context = publishedContext(list?.context);
   if (contextOpen) context.open = true;
   const focused = inbox.filters.ownerDocument.activeElement;
   const focusedChoice = focused && inbox.filters.contains(focused) ? focused.getAttribute("data-epic-choice") : null;
-  inbox.filters.replaceChildren(selection ? epicChips(selection, choice, (next) => {
+  inbox.filters.replaceChildren(epics ? epicChips(selection, choice, (next) => {
     state.inboxChoice = { login: state.login, value: next };
     saveEpicChoice(state.login, next);
     if (deepLink) window.history.replaceState(null, "", "#inbox");
@@ -735,7 +735,7 @@ function paintInbox(state: State, force = false): void {
   inbox.empty.textContent = filtered ? "Nothing here matches this filter: Show everything to see the rest." : "All caught up: nothing needs you right now.";
   const count = home.sections.needs.count;
   count.textContent = String(waiting);
-  count.title = `${waiting} outstanding decisions${filtered ? ` in this filter; ${selection.hidden} hidden by it` : ""}; ${completed} local sent receipts excluded; retained drafts excluded${settled ? "" : "; the pass's list is not complete and current, so more may wait"}`;
+  count.title = `${waiting} outstanding published rows; ${outstanding} reported decisions outstanding${filtered ? `; ${selection.hidden} rows hidden by this filter` : ""}; ${completed} local sent receipts excluded; retained drafts excluded${settled ? "" : "; the pass's list is not complete and current, so more may wait"}`;
   count.classList.toggle("hot", waiting > 0);
   markSelected(state, false);
 }

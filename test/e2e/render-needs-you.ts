@@ -8,7 +8,8 @@
 //
 // The checkout needs node_modules (a symlink to this one's will do). The
 // data is `real` (the redacted 3 Nov capture), `661` (the published
-// shape) or `group` (661 plus a #680 promote group with review buckets).
+// shape), `174` / `174-capped` (synthetic operator-path approval), or
+// `group` (661 plus a #680 promote group with review buckets).
 // CARD_KEY opens that card's details and its first two members. Writes
 // are refused; PR reads answer a draft with green CI.
 
@@ -16,15 +17,17 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { needsYou174 } from "../fixtures/needs-you-174.ts";
 
 const [checkout, data, out, open] = process.argv.slice(2);
-if (!checkout || !data || !out) throw new Error("usage: render-needs-you.ts CHECKOUT real|661|group OUT.html [CARD_KEY]");
+if (!checkout || !data || !out) throw new Error("usage: render-needs-you.ts CHECKOUT real|661|group|174|174-capped OUT.html [CARD_KEY]");
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`../fixtures/${name}`, import.meta.url), "utf8"));
 const SETTLE_MS = 200;
 const at = new Date(Date.now() - 60_000).toISOString();
 
 /** The pass's needs_you for `data`, confirmed a minute ago. */
 function needsYou(): Record<string, unknown> {
+  if (data === "174" || data === "174-capped") return { ...needsYou174(data === "174-capped"), validated_at: at, changed_at: at };
   if (data === "real") return { ...fixture("needs-you-real-2026-11-03.json").needs_you, validated_at: at, changed_at: at };
   const published = { ...fixture("needs-you-661.json"), validated_at: at, changed_at: at };
   if (data === "661") return published;

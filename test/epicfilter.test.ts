@@ -38,15 +38,15 @@ test("661 publication: in-progress default, focus first, approvals first, honest
   assert.deepEqual([model.hidden, model.unsure], [2, 2]);
   // tracker#1261 waits only on an approval: first, ahead of the five-day-old P0 asks outside the epics in progress.
   assert.deepEqual(model.ordered.map((c) => c.key), [
-    key("tracker#1261"), key("agent-board#650"), key("agentic-job#2900"), key("tracker#1310"),
-    key("agentic-job#2110"), key("tracker#1300"), key("composefs-rs#33"), key("bot-ops#5/comment-21"),
+    key("tracker#1261"), key("agentic-job#2900"), key("tracker#1300"), key("agent-board#650"),
+    key("agentic-job#2110"), key("composefs-rs#33"), key("bot-ops#5/comment-21"), key("tracker#1310"),
   ]);
   assert.deepEqual(["other", "none", "all", `epic:${key("tracker#976")}`, `epic:${key("tracker#1100")}`].map((f) => model.count(f as never)), [2, 2, 8, 2, 2]);
   let chosen = "";
   const chips = epicChips(model, "active", (f) => { chosen = f; });
-  assert.match(chips.textContent!, /2 epics in progress: tracker#976 \(focus, the operator's comment this week\), tracker#1100 \(a run in 48 hours, an open PR\)\. Shown by default, with 2 whose epic is unknown or not read whole\./);
+  assert.match(chips.textContent!, /2 epics in progress: tracker#976 \(focus, the operator's comment this week\), tracker#1100 \(a run in 48 hours, an open PR\)\. Shown by default, plus approvals, with 2 whose epic is unknown or not read whole\./);
   const labels = [...chips.querySelectorAll("button")].map((b) => b.textContent);
-  assert.deepEqual(labels, ["In progress · 6", "Focus: tracker#976 · 2", "tracker#1100 · 2", "Other epics · 2", "No epic · 2", "Show everything · 8"]);
+  assert.deepEqual(labels, ["In progress + approvals · 6", "Focus: tracker#976 · 2", "tracker#1100 · 2", "Other epics · 2", "No epic · 2", "Show everything · 8"]);
   chips.querySelectorAll<HTMLButtonElement>("button")[5]!.click();
   assert.equal(chosen, "all");
   const twin = epicChips(epicSelection(cards, [...parsed.epics!, { item: "other/tracker#976", active: true, activeWhy: ["open-pr"], complete: true, focus: false }], "active"), "active", () => {});
@@ -61,7 +61,7 @@ test("a capped publication: placeholders only, approvals still first, the cap co
   const placeholders = inboxCards({ published: { asks: [], list: capped, unavailable: false } });
   assert.ok(placeholders.every((c) => "ask" in c && c.ask.requestsUnreadable));
   const model = epicSelection(placeholders, capped.epics, "active");
-  assert.deepEqual(model.ordered.slice(0, 4).map((c) => c.key), [key("tracker#1261"), key("agent-board#650"), key("agentic-job#2900"), key("tracker#1310")]);
+  assert.deepEqual(model.ordered.slice(0, 4).map((c) => c.key), [key("tracker#1261"), key("agentic-job#2900"), key("tracker#1310"), key("tracker#1300")]);
 });
 
 test("missing or malformed activity hides nothing, and neither does a list with no epic in progress", () => {
@@ -76,7 +76,11 @@ test("missing or malformed activity hides nothing, and neither does a list with 
   for (const epics of [[], idle]) {
     const model = epicSelection(cards, epics, "active");
     assert.deepEqual([model.selected.length, model.hidden], [8, 0]);
-    assert.match(epicChips(model, "active", () => {}).textContent!, /No epic is in progress: everything is shown/);
+    const chips = epicChips(model, "other", () => {});
+    assert.match(chips.textContent!, /No epic is published as in progress\. The default shows all published rows/);
+    assert.match(chips.textContent!, /Default \(all\) · 8/);
+    assert.doesNotMatch(chips.textContent!, /In progress ·/);
+    assert.match(chips.textContent!, /Selected: other epics/);
   }
 });
 

@@ -26,7 +26,7 @@ pass's `holds.needsYou`): holds that only he can release, followed PRs waiting
 on his approval or answer (broker PRs included), operator-action proposals
 and maintain digest asks, including configured decisions-document entries
 and review drafts. The producer's ranked `identities` inventory determines
-order and membership; `detail_key` joins its optional detailed cards. Missing
+membership; `detail_key` joins its optional detailed cards. Missing
 details produce read-only two-line placeholders ("Detail not published"),
 not target discovery. The browser
 does not search the board, decisions or draft issues to assemble this list.
@@ -35,9 +35,11 @@ Each identity and card carries agent-board#661's `epic` (nearest live epic)
 and `topEpic`, `none` or `unknown`, and `epics` maps each live epic to
 `active`, `activeWhy` (`focus`, `recent-run`, `open-pr`,
 `operator-comment`) and `complete`. By default the inbox shows the
-in-progress epics' cards, the focus epic's first, and within each epic
-approvals first (placeholders by their kind), then Priority and the oldest
-wait. Cards whose chain is `unknown`, or whose inactive epic's activity was
+in-progress epics' cards plus approval waits from every epic. Full approvals
+come first across epics, then other full rows, then read-only placeholders;
+within these tiers the focus epic comes first, then Priority and the oldest
+wait. Explicit epic filters still select only their named rows.
+Cards whose chain is `unknown`, or whose inactive epic's activity was
 not read whole, stay in the default too: the pass says neither proves
 inactivity. One line names the epics in progress and why; chips count each
 epic, **Other epics** (inactive or `unknown`), **No epic** (`none`), and
@@ -45,12 +47,14 @@ epic, **Other epics** (inactive or `unknown`), **No epic** (`none`), and
 chips name the epic's `repo#N`. A chip choice is remembered per viewer where
 storage works; `#epic-N` selects tracker epic N, matching the nearest or top
 epic, until the page reloads, without changing the remembered choice. With no epic in progress, or no usable `epics`
-map, nothing is hidden. The heading counts outstanding
-decisions from `counts.decisions`, or under a filter that hides something,
-the cards it shows; either way excluding successful local completions and
+map, the default hides nothing. With no active epic published, the default
+chip says **Default (all)**, not **In progress**; the text describes the default,
+and a separate line names any explicit selection. The heading and chips count
+published rows matching the filter, excluding successful local completions and
 departed cards retained for unsent text. The line over the cards gives the
 number hidden by the pass's cap (`omitted`) and the number hidden by the
-filter separately, beside group and member totals, local completions and
+filter separately, beside the producer's **reported decisions**, the number of
+published rows, group and member totals, local completions and
 omitted details. Uncertain writes remain outstanding.
 Five cards are drawn initially; **Show more** draws the rest without inspecting
 their targets. **Details and action** explicitly opens a card's lazy inspection.
@@ -62,6 +66,41 @@ diff. The pass publishes no diff size or check state, so the row says so;
 `review-withheld` is marked as the review agent withholding approval. The
 list's question and recommendation are display text, not instructions;
 links are made from its typed action references, never read from it.
+
+### Approval publication dependency (#251)
+
+The app cannot recover approvals absent from the publication. The synthetic
+`test/fixtures/needs-you-174.ts` models 174 decisions including tracker#1367,
+an operator-path approval in an inactive epic. Its capped variant publishes
+12 other rows plus that full approval, reporting 161 omitted decisions.
+Both render the approval first without a missing-detail/cap warning on it;
+the heading/chips count 174 or 13 published rows respectively, while the
+summary keeps the 174 reported decisions distinct. This is offline replay,
+not proof of a deployed producer fix. No new option, permission or target
+read is added; the existing `holds.needsYou` publication remains opt-in.
+
+Required follow-up in **cgwalters-forge/agent-board**, not implemented here:
+in `crates/board-forge/src/pass/holds.rs`, change `needs_you`, `NeedsYou::cut`,
+`fit` and `cap` together. Rank approval-only asks (including the poll's
+`pr.operatorPaths` approval waits) before other decisions, then rank the
+others before truncation. Preserve each approval's full `Ask`, compact
+identity and matching `requests` descriptor/source records through both detail
+eviction and identity eviction; do not let `cap` clear their descriptors.
+Evict lowest-ranked non-approval detail/descriptor pairs first, then their
+identities if necessary; update `details_omitted`, `omitted`,
+`omitted_sources` and `complete` for exactly what was dropped. Keep canonical
+`counts` unchanged. The existing 60,000-character comment bound still applies:
+if protected approvals alone cannot fit, report publication failure explicitly
+rather than silently omit them or claim a complete list. Supporting arbitrarily
+many full approvals would require a separate bounded publication design.
+Add producer regression tests at the old 100-row boundary and the comment-size
+boundary, including an operator-path approval ranked after 173 other decisions,
+and round-trip the resulting publication through this app's fixture tests.
+
+This run cannot file an issue in another repository; the exact producer handoff
+above must be filed there before claiming #251's publishing half complete.
+Generate a phone replay with `node test/e2e/render-needs-you.ts . 174-capped
+/tmp/opencode/needs-you-174.html`, then capture it with Chromium at 390px width.
 
 The parser accepts the producer's compact identities and epic map, and the
 older detailed-only publication. `test/fixtures/needs-you-661.json` is a

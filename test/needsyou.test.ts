@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import { usagePath } from "../src/github/usage.ts";
 import { fields, fixture, holdsComment, rawAsk, rawNeedsYou, realNeedsYouSnapshot } from "./helpers.ts";
+import { needsYou174 } from "./fixtures/needs-you-174.ts";
 
 const T0 = Date.parse("2026-10-30T12:00:00Z");
 const MINUTE = 60_000;
@@ -209,9 +210,9 @@ describe("Needs you from the pass's published list", () => {
       items: [{ source: "step", item: "o/r#1", kind: "waiting", reason: "Checks pending", observed_at: iso(T0), since: null, url: "https://untrusted.invalid/" }], limits: { pool: { reason: "pace", used_percent: 80, limit_percent: 40 } } };
     const app = await boot(t, { status: 200, etag: '"inventory"', comments: listed(T0, [], { identities, count: 3, counts: { decisions: 3, groups: 1, members: 3 }, details_omitted: 3, context }) });
     try {
-      assert.equal(app.count(), "3");
+      assert.equal(app.count(), "2", "the heading and chips count rows, not grouped decisions");
       assert.deepEqual(app.keys(), ["cgwalters-forge/tracker#1", "cgwalters-forge/tracker#3"]);
-      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, /3 published decisions · 1 groups · 3 members/);
+      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, /3 reported decisions · 2 published rows · 1 groups · 3 members/);
       const fold = app.doc.querySelector<HTMLDetailsElement>(".published-context")!;
       assert.equal(fold.open, false);
       assert.match(fold.textContent!, /WIP 2\/3.*run unread.*Checks pending/s);
@@ -508,6 +509,36 @@ describe("Needs you from the pass's published list", () => {
     } finally { await app.close(); }
   });
 
+  for (const capped of [false, true]) it(`174 decisions: operator-path approval first, consistent row counts (capped=${capped})`, async (t) => {
+    const published = needsYou174(capped);
+    const holds: Holds = { status: 200, etag: '"174"', comments: [holdsComment(iso(T0), published)] };
+    const app = await boot(t, holds);
+    try {
+      const total = capped ? 13 : 174;
+      const row = app.doc.querySelector<HTMLElement>(".inbox-cards > .card")!;
+      assert.equal(row.dataset.key, "cgwalters-forge/tracker#1367");
+      assert.ok(row.classList.contains("c-approve"));
+      assert.match(row.textContent!, /release 21 stale holds/);
+      assert.doesNotMatch(row.textContent!, /cap|Detail not published/);
+      assert.equal(row.querySelector<HTMLButtonElement>("button")!.textContent, "Approve aaaaaaa");
+      assert.equal(row.querySelector(".card-full"), null);
+      assert.equal(app.count(), String(total));
+      const chip = (choice: string) => app.doc.querySelector<HTMLButtonElement>(`[data-epic-choice="${choice}"]`)!;
+      assert.equal(chip("active").textContent, `In progress + approvals · ${total}`);
+      assert.equal(chip("all").textContent, `Show everything · ${total}`);
+      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, new RegExp(`174 reported decisions · ${total} published rows`));
+      assert.equal(app.reads.all.filter((r) => r.path !== HOLDS && r.path !== "/user").length, 0);
+      // Explicit filters still select exactly their named epic; only the default
+      // retains approval waits outside in-progress epics.
+      chip(`epic:${FOCUS}`).click();
+      assert.equal(app.count(), String(total - 1));
+      chip("all").click();
+      assert.equal(app.count(), String(total));
+      assert.equal(app.doc.querySelector<HTMLElement>(".inbox-cards > .card")!.dataset.key, row.dataset.key);
+      assert.deepEqual(app.reads.writes, []);
+    } finally { await app.close(); }
+  });
+
   it("661 publication: in-progress epics by default, one click for everything, cap and filter counted apart", async (t) => {
     const published = { ...fixture<Record<string, unknown>>("needs-you-661.json"), validated_at: iso(T0), changed_at: iso(T0) };
     const holds: Holds = { status: 200, etag: '"a"', comments: [holdsComment(iso(T0), published)] };
@@ -562,15 +593,16 @@ describe("Needs you from the pass's published list", () => {
       const cards = [...app.doc.querySelectorAll<HTMLElement>(".inbox-cards > .card:not([hidden])")];
       const card = (key: string) => cards.find((c) => c.dataset.key === key)!;
       assert.equal(app.count(), "7");
-      assert.deepEqual(cards.map((c) => c.dataset.key), ["cgwalters-forge/tracker#1261", "cgwalters-forge/agent-board#650", group, "cgwalters-forge/agentic-job#2900", "cgwalters-forge/tracker#1310"]);
-      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, /9 published decisions · 1 groups · 11 members · 0 locally completed\. 1 without details\. Hidden: 0 by the pass's cap, 2 by the epic filter\./);
+      assert.deepEqual(cards.map((c) => c.dataset.key), ["cgwalters-forge/tracker#1261", "cgwalters-forge/agentic-job#2900", "cgwalters-forge/tracker#1300", "cgwalters-forge/agent-board#650", group]);
+      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, /9 reported decisions · 9 published rows · 1 groups · 11 members · 0 locally completed\. 1 without details\. Hidden: 0 by the pass's cap, 2 by the epic filter\./);
       for (const c of cards) {
         // #237 added a "Published decision context" fold beside Context on every card.
         assert.deepEqual([...c.querySelectorAll(":scope > details:not(.card-full, .not-offered) > summary")].map((s) => s.textContent), c.querySelector(":scope > .card-note") ? ["Context"] : [], c.dataset.key);
       }
       assert.match(card("cgwalters-forge/tracker#1261").querySelector(".card-note")!.textContent!, /ownership_evidence/, "the published context is still one click away");
       // #237 drew a detail-less identity as an Answer with a refusal box.
-      const placeholder = card("cgwalters-forge/tracker#1310");
+      app.doc.querySelector<HTMLButtonElement>(".inbox-more")!.click();
+      const placeholder = app.doc.querySelector('[data-key="cgwalters-forge/tracker#1310"]')!;
       assert.deepEqual([placeholder.querySelector(".kind")!.textContent, placeholder.querySelector(".title")!.textContent], ["Act", "Detail not published: inspect the source before acting"]);
       assert.equal(placeholder.querySelector(".warn, button, a[href], details"), null);
       // #242 drew nav buttons and bucket headings on the group before any read.
