@@ -8,12 +8,14 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import { usagePath } from "../src/github/usage.ts";
-import { fields, holdsComment, rawAsk, rawNeedsYou, realNeedsYouSnapshot } from "./helpers.ts";
+import { fields, fixture, holdsComment, rawAsk, rawNeedsYou, realNeedsYouSnapshot } from "./helpers.ts";
 
 const T0 = Date.parse("2026-10-30T12:00:00Z");
 const MINUTE = 60_000;
 const iso = (t: number) => new Date(t).toISOString();
 const HOLDS = new URL(`https://api.github.com${usagePath}`).pathname;
+const FOCUS = "cgwalters-forge/tracker#976";
+const epics = { [FOCUS]: { active: true, activeWhy: ["focus"], complete: true } };
 const proposal = (comment: number) => rawAsk(1013, { key: `cgwalters-forge/tracker#1013/comment-${comment}`, source: "proposals", kind: "operator-action", ask: `Decision ${comment}`, action: { type: "operator_action", repository: "cgwalters-forge/tracker", number: 1013, comment } });
 const proposalComment = (n: number) => ({ id: `IC_${n}`, databaseId: n, updatedAt: "2026-10-29T12:00:00Z", author: { login: "cgwalters-bot" }, editor: null, lastEditedAt: null,
   body: `\`\`\`agent-board-action\n${JSON.stringify({ schema: "agent-board/operator-action/v1", title: `Decision ${n}`, why: `Reason ${n}`, actions: [{ type: "add_label", repo: "cgwalters-forge/tracker", number: 1013, label: `choice-${n}` }] })}\n\`\`\`` });
@@ -451,8 +453,7 @@ describe("Needs you from the pass's published list", () => {
   });
 
   it("keeps a draft through Status navigation and removes its write authority when it departs", async (t) => {
-    const epics = [{ item: "cgwalters-forge/tracker#976", title: "Inbox", active: true, activeWhy: ["focus"], focus: true }];
-    const items = [rawAsk(1, { epic: epics[0]!.item, topEpic: epics[0]!.item }), rawAsk(2, { epic: "none", topEpic: "none" })];
+    const items = [rawAsk(1, { epic: FOCUS, topEpic: FOCUS }), rawAsk(2, { epic: FOCUS, topEpic: FOCUS }), rawAsk(3, { epic: "none", topEpic: "none" })];
     const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, items, { epics }) };
     const app = await boot(t, holds);
     try {
@@ -477,9 +478,46 @@ describe("Needs you from the pass's published list", () => {
     } finally { await app.close(); }
   });
 
+  it("661 publication: in-progress epics by default, one click for everything, cap and filter counted apart", async (t) => {
+    const published = { ...fixture<Record<string, unknown>>("needs-you-661.json"), validated_at: iso(T0), changed_at: iso(T0) };
+    const holds: Holds = { status: 200, etag: '"a"', comments: [holdsComment(iso(T0), published)] };
+    const app = await boot(t, holds);
+    const old = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: app.window.localStorage });
+    const stored = () => app.window.localStorage.getItem("review.inbox.epic.cgwalters");
+    try {
+      const chips = () => [...app.doc.querySelectorAll<HTMLButtonElement>(".epic-chips button")];
+      const pressed = () => chips().find((b) => b.getAttribute("aria-pressed") === "true")!.getAttribute("data-epic-choice");
+      const line = () => app.doc.querySelector("#sec-needs")!.textContent!;
+      assert.equal(app.count(), "6", "the heading counts what the default filter shows");
+      assert.equal(app.keys().filter((k) => !app.doc.querySelector<HTMLElement>(`[data-key="${k}"]`)!.hidden)[0], "cgwalters-forge/tracker#1261");
+      assert.match(app.doc.querySelector(".epic-filter")!.textContent!, /2 epics in progress: tracker#976 \(focus, the operator's comment this week\), tracker#1100/);
+      assert.match(line(), /Hidden: 0 by the pass's cap, 2 by the epic filter\./);
+      assert.deepEqual(app.reads.all.filter((r) => r.path !== HOLDS && r.path !== "/user").map((r) => r.path), [], "the filter reads nothing");
+      chips().find((b) => b.textContent!.startsWith("Show everything"))!.click();
+      assert.deepEqual([app.count(), pressed(), stored()], ["8", "all", '"all"']);
+      assert.match(line(), /Hidden: 0 by the pass's cap, 0 by the epic filter\./);
+      app.window.location.hash = "#epic-1100";
+      await app.until(() => app.count() === "2", "the #epic-N deep link");
+      assert.equal(pressed(), "epic:cgwalters-forge/tracker#1100");
+      assert.equal(stored(), '"all"', "a link selects its epic for this visit, not the viewer's default");
+      // Past the cap, fit() has cut every detail card first: the two numbers stay apart.
+      holds.comments = [holdsComment(iso(T0), { ...published, complete: false, items: [], requests: undefined, omitted: 2, count: 10, counts: { decisions: 10, groups: 0, members: 10 }, details_omitted: 10 })];
+      holds.etag = '"b"';
+      chips()[0]!.click();
+      await app.reload();
+      assert.equal(app.count(), "6");
+      assert.match(line(), /Hidden: 2 by the pass's cap, 2 by the epic filter\./);
+      assert.match(app.note(), /Incomplete \(2 past the pass's cap\)/);
+    } finally {
+      if (old) Object.defineProperty(globalThis, "localStorage", old);
+      else Reflect.deleteProperty(globalThis, "localStorage");
+      await app.close();
+    }
+  });
+
   it("a missing current list does not use retained epic activity to hide fallback holds", async (t) => {
-    const epics = [{ item: "cgwalters-forge/tracker#976", title: "Inbox", active: true, activeWhy: ["focus"], focus: true }];
-    const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [rawAsk(1, { epic: epics[0]!.item, topEpic: epics[0]!.item })], { epics }) };
+    const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [rawAsk(1, { epic: FOCUS, topEpic: FOCUS })], { epics }) };
     const app = await boot(t, holds);
     try {
       holds.comments = [holdsComment(iso(T0), undefined, [{ item: "cgwalters-forge/tracker#2", url: "https://github.com/cgwalters-forge/tracker/issues/2", epic: false, kind: "needs-human", reason: "Choose", operator: true, priority: "P0", question: "Which path?" }])];

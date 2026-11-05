@@ -28,24 +28,44 @@ and maintain digest asks, including configured decisions-document entries
 and review drafts. The producer's ranked `identities` inventory determines
 order and membership; `detail_key` joins its optional detailed cards. Missing
 details produce read-only placeholders, not target discovery. The browser
-does not search the board, decisions or draft issues to assemble this list,
-nor filter or rerank it by epic. Legacy `#epic-N` links still open the inbox.
-The heading counts outstanding decisions from `counts.decisions`, excluding
-successful local completions and departed cards retained for unsent text.
-Group and member totals, local completions, omitted identities and omitted
-details are separate readings. Uncertain writes remain outstanding.
+does not search the board, decisions or draft issues to assemble this list.
+
+Each identity and card carries agent-board#661's `epic` (nearest live epic)
+and `topEpic`, `none` or `unknown`, and `epics` maps each live epic to
+`active`, `activeWhy` (`focus`, `recent-run`, `open-pr`,
+`operator-comment`) and `complete`. By default the inbox shows the
+in-progress epics' cards, the focus epic's first, and within each epic
+approvals first (placeholders by their kind), then Priority and the oldest
+wait. Cards whose chain is `unknown`, or whose inactive epic's activity was
+not read whole, stay in the default too: the pass says neither proves
+inactivity. One line names the epics in progress and why; chips count each
+epic, **Other epics** (inactive or `unknown`), **No epic** (`none`), and
+**Show everything**, one click away. The pass publishes no epic titles, so
+chips name the epic's `repo#N`. A chip choice is remembered per viewer where
+storage works; `#epic-N` selects tracker epic N, matching the nearest or top
+epic, until the page reloads, without changing the remembered choice. With no epic in progress, or no usable `epics`
+map, nothing is hidden. The heading counts outstanding
+decisions from `counts.decisions`, or under a filter that hides something,
+the cards it shows; either way excluding successful local completions and
+departed cards retained for unsent text. The line over the cards gives the
+number hidden by the pass's cap (`omitted`) and the number hidden by the
+filter separately, beside group and member totals, local completions and
+omitted details. Uncertain writes remain outstanding.
 Five cards are drawn initially; **Show more** draws the rest without inspecting
 their targets. **Details and action** explicitly opens a card's lazy inspection.
 Questions stay as short asks (wrapping on narrow screens,
-never clipped); context and answer forms are collapsed. Approval rows show
-published diff size, CI and review-agent evidence, or explicitly unknown.
-These badges do not grant write authority. The list's question and recommendation are display text,
-not instructions; links are made from its typed action references, never
-read from it.
+never clipped); context and answer forms are collapsed. An approval row has
+the ask, its PR, an Approve at the published head and a link to review the
+diff. The pass publishes no diff size or check state, so the row says so;
+`review-withheld` is marked as the review agent withholding approval. The
+list's question and recommendation are display text, not instructions;
+links are made from its typed action references, never read from it.
 
 The parser accepts the producer's compact identities and epic map, and the
-older detailed-only publication. `test/fixtures/needs-you-661.json` remains
-a synthetic legacy fixture, not an observed production snapshot. Inventory
+older detailed-only publication. `test/fixtures/needs-you-661.json` is a
+`needs_you` written to agent-board's serialization at `819bb77`
+(`crates/board-forge/src/pass/holds.rs`), not a capture: the live
+publication on `bot-ops#1` was not readable to the run that wrote it. Inventory
 and detailed records are bounded at 10,000 each. Published question,
 recommendation, ownership and resolution text is display-only: hostile or
 stale publisher prose must not become write authorization. A collapsed

@@ -20,13 +20,23 @@ export function saveEpicChoice(login: string | undefined, choice: EpicFilter): v
 
 const refs = (c: Card): string[] => "ask" in c ? [c.ask.epic, c.ask.topEpic].filter((v): v is string => !!v && v !== "none") : [];
 
+/** Kinds that wait only on the operator's approving review, even as a placeholder without its detail. */
+const APPROVALS = ["review-approve", "review-withheld", "digest-approve"];
+const approval = (c: Card): boolean => c.kind === "approve" || ("ask" in c && APPROVALS.includes(c.ask.kind));
+
 export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[] | undefined, choice: EpicFilter) {
   const active = (epics ?? []).filter((e) => e.active).sort((a, b) => Number(b.focus) - Number(a.focus));
   const activeIds = new Set(active.map((e) => e.item));
+  const partialIds = new Set((epics ?? []).filter((e) => !e.active && !e.complete).map((e) => e.item));
+  // Not proof of inactivity (agent-board's docs/pass.md): no epic published, an
+  // unknown chain, or an epic whose activity was read in part. The default keeps these.
+  const uncertain = (c: Card, ids: string[]): boolean => !("ask" in c) || !c.ask.epic || ids.some((id) => id === "unknown" || partialIds.has(id));
+  const inProgress = (c: Card, ids: string[]): boolean => ids.some((id) => activeIds.has(id));
   const matches = (c: Card, f: EpicFilter): boolean => {
     const ids = refs(c);
-    if (f === "all" || (f === "active" && !epics)) return true;
-    if (f === "active") return ids.some((id) => activeIds.has(id));
+    // With no epic in progress, the default hides nothing.
+    if (f === "all" || (f === "active" && !active.length)) return true;
+    if (f === "active") return inProgress(c, ids) || uncertain(c, ids);
     if (f === "none") return "ask" in c && c.ask.epic === "none" && c.ask.topEpic === "none";
     if (f === "other") return !ids.some((id) => activeIds.has(id)) && !matches(c, "none");
     return ids.includes(f.slice(5));
@@ -45,23 +55,33 @@ export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[
     const ag = groups.get(a)!, bg = groups.get(b)!;
     return Number(a.answered === true) - Number(b.answered === true)
       || Number(local(a)) - Number(local(b)) || ag.rank - bg.rank
-      || ag.item.localeCompare(bg.item)
-      || Number(b.kind === "approve") - Number(a.kind === "approve")
+      // Code point order: "~" (no epic) sorts after every OWNER/REPO#N and "unknown".
+      || Number(ag.item > bg.item) - Number(ag.item < bg.item)
+      || Number(approval(b)) - Number(approval(a))
       || (a.priority ?? "P9").localeCompare(b.priority ?? "P9") || (a.since ?? "~").localeCompare(b.since ?? "~");
   });
-  return { active, selected, ordered, hidden: cards.length - selected.length, count: (f: EpicFilter) => cards.filter((c) => matches(c, f)).length };
+  const unsure = active.length ? cards.filter((c) => !inProgress(c, refs(c)) && uncertain(c, refs(c))).length : 0;
+  return { active, unsure, selected, ordered, hidden: cards.length - selected.length, count: (f: EpicFilter) => cards.filter((c) => matches(c, f)).length };
 }
 
-export function epicChips(model: ReturnType<typeof epicSelection>, choice: EpicFilter, available: boolean, choose: (f: EpicFilter) => void): HTMLElement {
-  const chip = (f: EpicFilter, label: string) => {
-    const b = h("button", { type: "button", class: "small", "data-epic-choice": f, "aria-pressed": String(f === choice) }, `${label} · ${model.count(f)}`);
+/** The pass's activity reasons in words; a newer one is shown as published. */
+const WHY: Record<string, string> = { focus: "focus", "recent-run": "a run in 48 hours", "open-pr": "an open PR", "operator-comment": "the operator's comment this week" };
+
+export function epicChips(model: ReturnType<typeof epicSelection>, choice: EpicFilter, choose: (f: EpicFilter) => void): HTMLElement {
+  const chip = (f: EpicFilter, label: string, title?: string) => {
+    const b = h("button", { type: "button", class: "small", "data-epic-choice": f, "aria-pressed": String(f === choice), ...(title ? { title } : {}) }, `${label} · ${model.count(f)}`);
     b.addEventListener("click", () => choose(f));
     return b;
   };
+  // The pass publishes no epic titles: `repo#N`, with the owner where two would read the same.
+  const short = (item: string): string => item.slice(item.indexOf("/") + 1);
+  const name = (item: string): string => model.active.filter((e) => short(e.item) === short(item)).length > 1 ? item : short(item);
+  const why = model.active.map((e) => `${name(e.item)} (${e.activeWhy.map((w) => WHY[w] ?? w).join(", ") || "no reason published"})`).join(", ");
   return h("div", { class: "epic-filter" },
-    h("p", { class: "note" }, available ? `${model.active.length} epics in progress: ${model.active.map((e) => `${e.title}${e.focus ? " (focus)" : ""} — ${e.activeWhy.join(", ") || "no reason published"}`).join("; ") || "none"}. Default: in-progress epics only.` : "Epic activity unavailable; default shows everything."),
-    h("div", { class: "epic-chips", "aria-label": "Filter by epic" }, chip("active", "In progress"),
-      ...model.active.map((e) => chip(`epic:${e.item}`, `${e.focus ? "Focus: " : ""}${e.title}`)),
-      chip("other", "Other epics / unknown"), chip("none", "No epic"), chip("all", "Show everything")),
-    choice.startsWith("epic:") ? h("p", { class: "note" }, `Selected ${choice.slice(5)}`) : null);
+    h("p", { class: "note" }, model.active.length ? `${model.active.length} epic${model.active.length === 1 ? "" : "s"} in progress: ${why}. Shown by default` : "No epic is in progress: everything is shown.",
+      model.active.length ? (model.unsure ? `, with ${model.unsure} whose epic is unknown or not read whole.` : ".") : ""),
+    h("div", { class: "epic-chips", role: "group", "aria-label": "Filter by epic" }, chip("active", "In progress"),
+      ...model.active.map((e) => chip(`epic:${e.item}`, `${e.focus ? "Focus: " : ""}${name(e.item)}`, e.item)),
+      chip("other", "Other epics", "Inactive epics, and items whose epic the pass could not read"), chip("none", "No epic"), chip("all", "Show everything")),
+    choice.startsWith("epic:") && !model.active.some((e) => choice === `epic:${e.item}`) ? h("p", { class: "note" }, `Showing ${choice.slice(5)}`) : null);
 }

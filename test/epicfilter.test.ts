@@ -3,67 +3,89 @@ import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { epicChips, epicChoice, epicSelection, saveEpicChoice } from "../src/github/epicfilter.ts";
 import { parseNeedsYou } from "../src/github/holds.ts";
-import { documentCard, publishedCards } from "../src/github/inbox.ts";
+import { documentCard, inboxCards } from "../src/github/inbox.ts";
 import { fillInbox, type InboxHooks } from "../src/github/inboxview.ts";
 import { parseRoute } from "../src/github/keys.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { parseDocument } from "../src/github/decisiondocument.ts";
-import { fixture, installDom, rawAsk, rawNeedsYou } from "./helpers.ts";
+import { fixture, installDom } from "./helpers.ts";
 
 const win = installDom();
-const extension = fixture<{ epics: unknown[]; items: Record<string, unknown>[] }>("needs-you-661.json");
-const raw = { ...rawNeedsYou(extension.items.map((item: Record<string, unknown>, i: number) => rawAsk(i + 1, item)), "2026-11-04T12:00:00Z"), epics: extension.epics };
+// agent-board#661's needs_you as the publisher serializes it (see README).
+const raw = fixture<Record<string, unknown>>("needs-you-661.json");
 const parsed = parseNeedsYou(raw);
 assert.ok(typeof parsed === "object");
-const cards = publishedCards(parsed.items);
+const cards = inboxCards({ published: { asks: parsed.items, list: parsed, unavailable: false } });
+const key = (n: string) => `cgwalters-forge/${n}`;
 const hooks: InboxHooks = { now: Date.parse(parsed.validatedAt), mayAct: true, render: createRenderer(win as unknown as Parameters<typeof createRenderer>[0]), answerEntry: async () => {} };
 
-test("661 fixture: active default, focus first, cross-repo ancestry and honest chip counts", () => {
-  const model = epicSelection(cards, parsed.epics, "active");
-  assert.equal(model.selected.length, 3);
-  assert.equal(model.hidden, 3);
-  assert.equal(model.active[0]?.item, "cgwalters-forge/tracker#976");
-  assert.deepEqual(model.ordered.slice(0, 3).map((c) => c.key), [cards[1]!.key, cards[0]!.key, cards[2]!.key]);
-  assert.equal(model.count("other"), 2);
-  assert.equal(model.count("none"), 1);
-  assert.equal(model.count("all"), 6);
-  let chosen = "";
-  const chips = epicChips(model, "active", true, (f) => { chosen = f; });
-  assert.match(chips.textContent!, /2 epics in progress.*epics.focus/);
-  assert.match(chips.textContent!, /Focus: Operator inbox · 2/);
-  assert.match(chips.textContent!, /Other epics \/ unknown · 2/);
-  assert.match(chips.textContent!, /No epic · 1/);
-  chips.querySelectorAll<HTMLButtonElement>("button")[5]!.click();
-  assert.equal(chosen, "all");
+test("661 publication: epic chain, activity map and an identity without its detail", () => {
+  assert.equal(parsed.epics?.length, 4);
+  assert.deepEqual(parsed.epics?.find((e) => e.focus), { item: key("tracker#976"), active: true, complete: true, focus: true, activeWhy: ["focus", "operator-comment"] });
+  const chained = parsed.items.find((a) => a.key === key("agent-board#650"))!;
+  assert.deepEqual([chained.epic, chained.topEpic], [key("agent-board#600"), key("tracker#976")]);
+  assert.equal(parsed.items.find((a) => a.key === key("tracker#1300"))!.epic, "unknown");
+  assert.equal(cards.length, 8, "every published identity is a card, detail or not");
+  assert.equal(cards.at(-1)!.key, key("tracker#1310"));
+  assert.deepEqual([parsed.complete, parsed.count, parsed.omitted, parsed.detailsOmitted], [true, 8, 0, 1]);
 });
 
-test("unknown metadata does not default-hide legacy asks; malformed activity fails open", () => {
-  for (const epics of [undefined, [...extension.epics, extension.epics[0]], [{ item: "bad" }]]) {
+test("661 publication: in-progress default, focus first, approvals first, honest chip counts", () => {
+  const model = epicSelection(cards, parsed.epics, "active");
+  assert.deepEqual(model.active.map((e) => e.item), [key("tracker#976"), key("tracker#1100")]);
+  // An unknown chain, and an inactive epic read in part, are no proof of inactivity: kept.
+  assert.deepEqual(model.selected.map((c) => c.key).sort(), [key("agent-board#650"), key("agentic-job#2110"), key("agentic-job#2900"), key("tracker#1261"), key("tracker#1300"), key("tracker#1310")].sort());
+  assert.deepEqual([model.hidden, model.unsure], [2, 2]);
+  // tracker#1261 waits only on an approval: first, ahead of the five-day-old P0 asks outside the epics in progress.
+  assert.deepEqual(model.ordered.map((c) => c.key), [
+    key("tracker#1261"), key("agent-board#650"), key("agentic-job#2900"), key("tracker#1310"),
+    key("agentic-job#2110"), key("tracker#1300"), key("composefs-rs#33"), key("bot-ops#5/comment-21"),
+  ]);
+  assert.deepEqual(["other", "none", "all", `epic:${key("tracker#976")}`, `epic:${key("tracker#1100")}`].map((f) => model.count(f as never)), [2, 2, 8, 2, 2]);
+  let chosen = "";
+  const chips = epicChips(model, "active", (f) => { chosen = f; });
+  assert.match(chips.textContent!, /2 epics in progress: tracker#976 \(focus, the operator's comment this week\), tracker#1100 \(a run in 48 hours, an open PR\)\. Shown by default, with 2 whose epic is unknown or not read whole\./);
+  const labels = [...chips.querySelectorAll("button")].map((b) => b.textContent);
+  assert.deepEqual(labels, ["In progress · 6", "Focus: tracker#976 · 2", "tracker#1100 · 2", "Other epics · 2", "No epic · 2", "Show everything · 8"]);
+  chips.querySelectorAll<HTMLButtonElement>("button")[5]!.click();
+  assert.equal(chosen, "all");
+  const twin = epicChips(epicSelection(cards, [...parsed.epics!, { item: "other/tracker#976", active: true, activeWhy: ["open-pr"], complete: true, focus: false }], "active"), "active", () => {});
+  assert.match(twin.textContent!, /Focus: cgwalters-forge\/tracker#976 · 2.*other\/tracker#976 · 0/, "chips stay distinct without the owner");
+});
+
+test("a capped publication: placeholders only, approvals still first, the cap counted apart", () => {
+  // fit() cuts context, then every detail card with its descriptors, before any identity.
+  const capped = parseNeedsYou({ ...raw, complete: false, items: [], requests: undefined, omitted: 2, omitted_sources: { reviews: 2 }, count: 10, counts: { decisions: 10, groups: 0, members: 10 }, details_omitted: 10 });
+  assert.ok(typeof capped === "object");
+  assert.deepEqual([capped.complete, capped.omitted, capped.items.length, capped.identities?.length], [false, 2, 0, 8]);
+  const placeholders = inboxCards({ published: { asks: [], list: capped, unavailable: false } });
+  assert.ok(placeholders.every((c) => "ask" in c && c.ask.requestsUnreadable));
+  const model = epicSelection(placeholders, capped.epics, "active");
+  assert.deepEqual(model.ordered.slice(0, 4).map((c) => c.key), [key("tracker#1261"), key("agent-board#650"), key("agentic-job#2900"), key("tracker#1310")]);
+});
+
+test("missing or malformed activity hides nothing, and neither does a list with no epic in progress", () => {
+  const map = raw.epics as Record<string, Record<string, unknown>>;
+  const bad = [undefined, Object.values(map), { ...map, x: { active: true, activeWhy: [], complete: true } }, { [key("tracker#1")]: { active: true, activeWhy: ["Focus!"], complete: true } }, { [key("tracker#1")]: { active: true, activeWhy: [] } }];
+  for (const epics of bad) {
     const p = parseNeedsYou({ ...raw, epics });
     assert.ok(typeof p === "object");
-    assert.equal(p.epics, undefined);
-    assert.equal(epicSelection(cards, p.epics, "active").selected.length, 6);
+    assert.equal(p.epics, undefined, JSON.stringify(epics));
   }
-  assert.equal(epicSelection(cards, [], "active").selected.length, 0);
+  const idle = parsed.epics!.map((e) => ({ ...e, active: false, focus: false }));
+  for (const epics of [[], idle]) {
+    const model = epicSelection(cards, epics, "active");
+    assert.deepEqual([model.selected.length, model.hidden], [8, 0]);
+    assert.match(epicChips(model, "active", () => {}).textContent!, /No epic is in progress: everything is shown/);
+  }
 });
 
 test("epic sorting keeps pending published asks before local cards and completed cards last", () => {
   const entry = documentCard(parseDocument("### D1 Pick one\n- [ ] A) Yes\nReply:\n")[0]!, undefined)!;
   const done = { ...entry, key: "done", answered: true };
-  const ordered = epicSelection([done, entry, cards[3]!, cards[2]!, cards[0]!], parsed.epics, "all").ordered;
-  assert.deepEqual(ordered.map((c) => c.key), [cards[0]!.key, cards[2]!.key, cards[3]!.key, entry.key, "done"]);
-});
-
-test("approval evidence admits large diffs and retains valid fields independently", () => {
-  for (const additions of [10001, Number.MAX_SAFE_INTEGER, -1, Number.MAX_SAFE_INTEGER + 1, "42", undefined]) {
-    const p = parseNeedsYou({ ...raw, items: [rawAsk(1, { approval: { additions, deletions: 0, ci: "success", reviewAgent: "approved" } })] });
-    assert.ok(typeof p === "object");
-    const evidence = p.items[0]!.approval!;
-    assert.equal(evidence.additions, typeof additions === "number" && Number.isSafeInteger(additions) && additions >= 0 ? additions : undefined);
-    assert.equal(evidence.deletions, 0);
-    assert.equal(evidence.ci, "success");
-    assert.equal(evidence.reviewAgent, "approved");
-  }
+  const [p0, , chained, approve] = cards;
+  const ordered = epicSelection([done, entry, p0!, chained!, approve!], parsed.epics, "all").ordered;
+  assert.deepEqual(ordered.map((c) => c.key), [approve!.key, chained!.key, p0!.key, entry.key, "done"]);
 });
 
 test("bare epic links and viewer-specific choices survive blocked storage", () => {
@@ -84,19 +106,28 @@ test("bare epic links and viewer-specific choices survive blocked storage", () =
   storageWindow.close();
 });
 
-test("compact approval row submits the published head; answer body is collapsed", async () => {
+test("approve rows: one line with what the pass publishes, and Approve submits its head", async () => {
   const list = document.createElement("div");
   const calls: string[] = [];
   win.confirm = () => true;
-  fillInbox(list, cards, { ...hooks, approve: async (_a, head) => { calls.push(head); return { pr: { owner: "example", repo: "repo", number: 1 }, status: "approved", url: "https://github.com/example/repo/pull/1#review" }; }, answerBody: async () => document.createElement("form") });
-  const row = list.querySelector<HTMLElement>("article.c-approve")!;
-  assert.match(row.textContent!, /Controller: publish approval-only requests/);
-  assert.match(row.textContent!, /\+42 −8.*CI: success.*Review agent: approved/);
+  fillInbox(list, cards, { ...hooks, approve: async (_a, head) => { calls.push(head); return { pr: { owner: "cgwalters-forge", repo: "tracker", number: 1261 }, status: "approved", url: "https://github.com/cgwalters-forge/tracker/pull/1261#review" }; }, answerBody: async () => document.createElement("form") });
+  const row = list.querySelector<HTMLElement>(`[data-key="${key("tracker#1261")}"]`)!;
+  assert.ok(row.classList.contains("c-approve"));
+  assert.match(row.textContent!, /Controller PR approved by the review job.*cgwalters-forge\/tracker#1261 · review-approve/);
+  assert.match(row.querySelector(".approval-evidence")!.textContent!, /^Diff size and CI not publishedReview the diff$/);
+  assert.equal(row.querySelector<HTMLAnchorElement>(".approval-evidence a")!.getAttribute("href"), "#pr/cgwalters-forge/tracker/1261");
+  const withheld = document.createElement("div");
+  fillInbox(withheld, cards.filter((c) => c.key === key("tracker#1300")), hooks);
+  assert.match(withheld.querySelector(".approval-evidence")!.textContent!, /^Review agent withheld/);
+  assert.equal(row.querySelector(".card-full"), null, "nothing to unfold: the row is the action");
   row.querySelector<HTMLButtonElement>("button")!.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(calls, ["a".repeat(40)]);
   assert.match(row.textContent!, /checks and merge policy still decide/);
-  assert.equal(list.querySelector<HTMLDetailsElement>(".card-full")!.open, false);
+  // Compact asks: the generic ask is marked, its body is folded away.
+  const generic = list.querySelector<HTMLElement>(`[data-key="${key("agentic-job#2110")}"]`)!;
+  assert.match(generic.textContent!, /missing-concrete-decision/);
+  assert.equal(generic.querySelector<HTMLDetailsElement>(".card-full")!.open, false);
 });
 
 test("filter changes preserve unsent forms without counting or retiring filtered-out cards", () => {
@@ -149,15 +180,15 @@ test("a poll dropping an ask preserves its already-visible draft without countin
   const list = document.createElement("div");
   const selection = epicSelection(cards, parsed.epics, "active");
   fillInbox(list, cards, hooks, false, new Set(selection.selected.map((c) => c.key)));
-  const first = list.firstElementChild as HTMLElement;
+  const shown = list.querySelector<HTMLElement>(`[data-key="${key("agent-board#650")}"]`)!;
   const form = document.createElement("form");
   const text = document.createElement("textarea");
   text.value = "still composing";
   form.append(text);
-  first.append(form);
-  const remaining = cards.slice(1);
+  shown.append(form);
+  const remaining = cards.filter((c) => c.key !== key("agent-board#650"));
   const next = epicSelection(remaining, parsed.epics, "active");
-  assert.equal(fillInbox(list, remaining, hooks, false, new Set(next.selected.map((c) => c.key))), 2);
-  assert.equal(first.hidden, false);
+  assert.equal(fillInbox(list, remaining, hooks, false, new Set(next.selected.map((c) => c.key))), 5);
+  assert.equal(shown.hidden, false);
   assert.equal(text.value, "still composing");
 });
