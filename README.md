@@ -305,6 +305,28 @@ well-under-pace assessment only when that pool has zero ready work. The
 browser does not calculate scheduling policy or scrape logs.
 Header counts and the source-freshness line remain available on both pages.
 
+The read-only **Repositories** panel reads bot-authored
+`agent-board/maintainer-report/v1` fenced blocks from the same configured
+report-comment page as Poller passes. Publication is off when the producer's
+`maintainerReport` setting is absent; there is no new browser option or read.
+Each maintained repository has one row, using its newest published run: time,
+preview/apply mode, open PR counts by poll action/state, needs-you PRs and
+reasons, and the source comment link. Runs older than two hours are **stale**;
+future clocks and unavailable/cached reads are labelled separately. Undecided
+repositories have unknown coverage, not an empty inventory.
+
+The producer's [published schema](https://github.com/cgwalters-forge/agent-board/blob/main/docs/maintainer-report.schema.json)
+does **not** include merge-queue depth: the row says unknown, never counts
+queue-removal events as current queue entries. This remains a producer gap.
+The consumer ignores unknown fields, renders prose as text, and shows invalid
+blocks as error rows without losing valid reports or the pass view. To prevent
+unbounded DOM and publisher-address navigation, it bounds comments to 60,000
+characters, blocks per comment to 8, displayed repositories, records per array
+and total PR inventory to 1,000, state groups to 100 and strings to 4,096
+characters; links use validated typed components. Overflow is labelled.
+`test/fixtures/maintainer-report.json` is synthetic offline replay of the
+published v1 schema, not live publication evidence.
+
 ### Pass publication contract (producer dependency)
 
 This is an app-side proposal, **not yet published by agent-board**. The exact

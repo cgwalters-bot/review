@@ -14,6 +14,7 @@ import { isBot } from "./authors.ts";
 import { fencedJson, isObject, type RawComment, str, time } from "./heartbeat.ts";
 import { ITEM_RE, usagePath } from "./usage.ts";
 import { parsePassView, type PassView } from "./passview.ts";
+import { findMaintainerReports } from "./repositories.ts";
 
 /** The comment's first line. */
 export const HOLDS_MARKER = "<!-- agent-board-holds v1 -->";
@@ -439,8 +440,14 @@ export async function readHoldAsk(gh: GitHub, owner: string, repo: string, numbe
 
 /** The published holds, read with the viewer's token; undefined when none is published. A failed read throws, for readSource to say. */
 export async function loadHolds(gh: GitHub): Promise<Holds | undefined> {
+  return (await loadPassPublications(gh)).holds;
+}
+
+/** One existing comment read serves both Status panels and the inbox. */
+export async function loadPassPublications(gh: GitHub) {
   const { data } = await gh.get<RawComment[]>(usagePath);
-  return findHolds(Array.isArray(data) ? data : []);
+  const comments = Array.isArray(data) ? data : [];
+  return { holds: findHolds(comments), repositories: findMaintainerReports(comments) };
 }
 
 /**

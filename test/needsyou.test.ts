@@ -25,6 +25,36 @@ interface Holds { status: number; comments: unknown[]; etag: string; gate?: Prom
 
 let runs = 0;
 
+it("Repositories shares the pass read, retains unavailable facts, and replaces invalid reports visibly", async (t) => {
+  const raw = fixture<Record<string, unknown>>("maintainer-report.json");
+  raw.generated_at = iso(T0);
+  const report = { id: 42, user: { login: "cgwalters-bot" }, body: `<!-- agent-board-maintainer-report -->\n\`\`\`agent-board/maintainer-report/v1\n${JSON.stringify(raw)}\n\`\`\`` };
+  const holds: Holds = { status: 200, comments: [report], etag: '"report-1"' };
+  const app = await boot(t, holds);
+  try {
+    const panel = () => app.doc.querySelector("[aria-label='Repositories']")!;
+    await app.until(() => !!panel()?.textContent?.includes("example/project"), "repository panel");
+    assert.equal(app.reads.holds.length, 1);
+    assert.equal(app.reads.writes.length, 0);
+    await app.wake(121 * MINUTE);
+    assert.match(panel().textContent!, /stale/); // 304 does not change the run clock.
+    holds.status = 503;
+    await app.reload();
+    assert.match(panel().textContent!, /Publication unavailable/);
+    assert.match(panel().textContent!, /example\/project/);
+    holds.status = 200;
+    holds.etag = '"report-2"';
+    holds.comments = [{ ...report, body: report.body.replace('"preview"', '"invalid"') }];
+    await app.reload();
+    assert.match(panel().textContent!, /Invalid maintainer report/);
+    assert.doesNotMatch(panel().textContent!, /example\/project/);
+    holds.comments = [];
+    holds.etag = '"report-3"';
+    await app.reload();
+    assert.match(panel().textContent!, /not published/);
+  } finally { await app.close(); }
+});
+
 /** The app signed in at #inbox, its clock at T0, the holds comment answering as `holds` says. */
 async function boot(t: TestContext, holds: Holds) {
   t.mock.timers.enable({ apis: ["Date"], now: T0 });
