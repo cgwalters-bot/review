@@ -75,7 +75,8 @@ import { draftCard, draftReviewForm } from "./reviewdraftsview.ts";
 import { type ApproveResult, approveSelected } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { type Need, needStops } from "./needs.ts";
-import { type Ask, holdAsks, loadHolds, readHoldAsk } from "./holds.ts";
+import { type Ask, holdAsks, loadPassPublications, readHoldAsk } from "./holds.ts";
+import { repositoriesView, type ReportBlock } from "./repositories.ts";
 import { type PassView, passView, retainPassView } from "./passview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
@@ -184,6 +185,7 @@ interface State {
   activeRunning: boolean;
   /** The last pass view read, kept while a refresh of the publication fails. */
   passView?: PassView | undefined;
+  repositories?: ReportBlock[];
   /** The page's sections, while it is shown. */
   home?: Home;
   /** The rows of "Needs you" as last drawn, and a signature of them. */
@@ -820,6 +822,8 @@ function paintActive(state: State): void {
   const pass = retainPassView(state.passView, state.active?.holds?.passView, !!unavailable);
   state.passView = typeof pass === "object" ? pass : undefined;
   state.home.slots.passes.replaceChildren(passView(pass, Date.now(), unavailable));
+  if (state.active?.repositories) state.repositories = state.active.repositories;
+  state.home.slots.repositories.replaceChildren(repositoriesView(state.repositories ?? [], Date.now(), unavailable));
   fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError, Date.now(), state.active?.board);
   fillState(state.home, model);
 }
@@ -853,9 +857,11 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
 /** Read inbox context without the CLI's usage and operations telemetry. */
 async function loadInboxContext(gh: GitHub): Promise<Active> {
   const sources: Sources = {};
-  const holds = await readSource(sources, "holds", (source) => loadHolds(source), gh);
+  const publication = await readSource(sources, "holds", (source) => loadPassPublications(source), gh);
+  const holds = publication?.holds;
   const active: Active = { at: Date.now(), sources, warnings: Object.entries(sources).flatMap(([name, source]) => source.error ? [`Couldn't read ${name}: ${source.error}`] : []) };
   if (holds) active.holds = holds;
+  if (publication) active.repositories = publication.repositories;
   return active;
 }
 

@@ -7,6 +7,7 @@ import { isOwnOrg, itemOrg } from "./filter.ts";
 import { type Heartbeat, isStale } from "./heartbeat.ts";
 import type { UsageData } from "./usage.ts";
 import type { Holds } from "./holds.ts";
+import type { ReportBlock } from "./repositories.ts";
 import type { ProjectStatus } from "./backend.ts";
 import type { Sources } from "./freshness.ts";
 import { RUNS_POLL_MS, type RunsData } from "./runs.ts";
@@ -25,6 +26,7 @@ export interface Active {
   usage?: UsageData;
   /** The pass's published holds; undefined when none could be read. */
   holds?: Holds;
+  repositories?: ReportBlock[];
   warnings: string[];
   at: number;
   /** Read from the cache only, before GitHub answered. */

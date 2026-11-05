@@ -25,7 +25,7 @@ export interface SectionEls {
 export interface Home {
   el: HTMLElement;
   sections: Record<SectionId, SectionEls>;
-  slots: { people: HTMLElement; peopleCount: HTMLElement; freshness: HTMLElement; statusNote: HTMLElement; passes: HTMLElement };
+  slots: { people: HTMLElement; peopleCount: HTMLElement; freshness: HTMLElement; statusNote: HTMLElement; passes: HTMLElement; repositories: HTMLElement };
 }
 
 export interface HomeHooks {
@@ -47,9 +47,10 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   peopleSection.addEventListener("toggle", () => hooks.peopleToggled?.(peopleSection.open));
   const statusNote = h("section", { class: "status-note", [VIEW_ATTR]: "status", "aria-label": "Published status" });
   const passes = h("div", { [VIEW_ATTR]: "status" });
+  const repositories = h("div", { [VIEW_ATTR]: "status" });
   const freshness = h("p", { class: "source-freshness note", "aria-label": "Source freshness" });
-  const el = h("div", { class: HOME_CLASS }, details, peopleSection, passes, statusNote, freshness);
-  return { el, sections: { needs: { details, count, body } }, slots: { people, peopleCount, statusNote, passes, freshness } };
+  const el = h("div", { class: HOME_CLASS }, details, peopleSection, passes, repositories, statusNote, freshness);
+  return { el, sections: { needs: { details, count, body } }, slots: { people, peopleCount, statusNote, passes, repositories, freshness } };
 }
 
 export function fillState(home: Home, state: PageState): void {
