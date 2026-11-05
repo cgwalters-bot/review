@@ -27,7 +27,9 @@ on his approval or answer (broker PRs included), operator-action proposals
 and maintain digest asks, including configured decisions-document entries
 and review drafts. The producer's ranked `identities` inventory determines
 order and membership; `detail_key` joins its optional detailed cards. Missing
-details produce read-only placeholders, not target discovery. The browser
+details produce read-only placeholders, not target discovery. Descriptors joined
+by `detail_key` still restrict their navigation and chat; missing or unreadable
+descriptors in a descriptor-bearing publication do not restore legacy targets. The browser
 does not search the board, decisions or draft issues to assemble this list.
 
 Each identity and card carries agent-board#661's `epic` (nearest live epic)
@@ -255,7 +257,7 @@ does not close that issue or add those writes.
 
 Compact-inbox follow-up (#239, continuing draft #241): using the same LF-count
 method above, including root `src/*.ts` and excluding deleted files, all production
-TypeScript is 19,112 lines (18,781 excluding CLI). #238 at `b04aa1d` has 19,118
+TypeScript is 19,109 lines (18,778 excluding CLI). #238 at `b04aa1d` has 19,118
 (18,787 excluding CLI); #242 at `4a8d672` has 19,214 (18,883 excluding CLI).
 The follow-up removes superseded local card discovery, unused browser state and
 legacy browser snapshot derivation rather than moving production logic into tests.
@@ -263,13 +265,13 @@ The CLI's `review-state/v1` is unchanged; the browser's debugging export is now
 the smaller `review-inbox-state/v1`.
 
 Independent lockfile builds give `dist/app.js` sizes of 546,772 bytes (#238),
-529,014 (#242), and 518,923 (this follow-up): reductions of 27,849 and 10,091 bytes.
+529,014 (#242), and 519,063 (this follow-up): reductions of 27,709 and 9,951 bytes.
 The actual-main test replays the redacted 3 November publication against each
 revision (`REPLAY_ENTRY=/path/to/worktree/src/github/main.ts node --test
 --test-name-pattern='real snapshot replay request' test/needsyou.test.ts`). All
 three make two cold requests (`/user` and publication comments), one comments
 request per poll, and no target discovery. Timing is local replay timing, not a
-live latency comparison. `npm run check` passes 1,842 tests, typecheck and build.
+live latency comparison. `npm run check` passes 1,849 tests, typecheck and build.
 The dependency install still reports one high and one critical advisory.
 
 These are replay and DOM/CSS regressions, not a current signed-in capture or

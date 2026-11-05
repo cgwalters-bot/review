@@ -145,17 +145,9 @@ export interface NeedsYou {
   refused: number;
 }
 
-export interface InboxIdentity {
+export interface InboxIdentity extends Pick<Ask, "item" | "source" | "kind" | "priority" | "waitingSince" | "carried" | "epic" | "topEpic" | "requests" | "requestsUnreadable"> {
   key: string;
   detailKey: string;
-  item: string;
-  source: string;
-  kind: string;
-  priority: string | null;
-  waitingSince: string;
-  carried: boolean;
-  epic?: string;
-  topEpic?: string;
 }
 
 export interface InboxContext {
@@ -413,14 +405,18 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
         const key = `${a.action.repository}#${n}`.toLowerCase();
         return buckets[key] ? [[key, buckets[key]]] : [];
       }));
-    const mine = requests.filter(([k]) => k === a.key).map(([, r]) => r);
+  }
+  // An evicted detail must not restore GitHub navigation or chat authority.
+  for (const a of [...items, ...(identities ?? [])]) {
+    const key = "detailKey" in a ? a.detailKey : a.key;
+    const mine = requests.filter(([k]) => k === key).map(([, r]) => r);
     if (mine.length) a.requests = mine;
-    if (allUnreadable || unreadable.has(a.key) || (raw.requests !== undefined && !mine.length)) a.requestsUnreadable = true;
+    if (allUnreadable || unreadable.has(key) || (raw.requests !== undefined && !mine.length)) a.requestsUnreadable = true;
   }
   const refused = raw.items.length - items.length + (Array.isArray(raw.identities) ? raw.identities.length - identities!.length : 0);
   if (identities && new Set(identities.map((i) => i.key)).size !== identities.length) return "the needs-you inventory has duplicate identities";
   const counts = isObject(raw.counts) && isCount(raw.counts.decisions) && isCount(raw.counts.groups) && isCount(raw.counts.members) ? { decisions: raw.counts.decisions, groups: raw.counts.groups, members: raw.counts.members } : undefined;
-  const complete = raw.complete === true && (raw.counts === undefined || counts !== undefined) && refused === 0 && !items.some((a) => a.requestsUnreadable) && raw.count === (identities?.length ?? raw.items.length) && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
+  const complete = raw.complete === true && (raw.counts === undefined || counts !== undefined) && refused === 0 && ![...items, ...(identities ?? [])].some((a) => a.requestsUnreadable) && raw.count === (identities?.length ?? raw.items.length) && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
   const epics = parseEpics(raw.epics);
   const context = parseContext(raw.context);
   const omittedSources = isObject(raw.omitted_sources) ? Object.fromEntries(Object.entries(raw.omitted_sources).filter(([k, v]) => str(k, MODE_RE) && isCount(v))) as Record<string, number> : undefined;

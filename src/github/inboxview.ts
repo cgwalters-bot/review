@@ -348,6 +348,7 @@ export function cardEl(c: Card, hooks: InboxHooks, inspected?: string, refresh =
   const head = h("div", { class: "card-head" },
     h("span", { class: `kind c-${c.kind}` }, "ask" in c && c.ask.detailsUnavailable ? "Details unavailable" : CARD_LABEL[c.kind]),
     c.priority ? pill(c.priority) : null,
+    "ask" in c && c.ask.kind === "review-withheld" ? pill("Review withheld") : null,
     h("span", { class: "title", title: c.title }, c.url && !("ask" in c && c.ask.group) ? link(c.url, c.title) : c.title),
     h("span", { class: "age", ...(c.since ? { [SINCE_ATTR]: c.since, title: c.since } : {}) }, age(c.since, hooks.now)));
   const ask = "ask" in c ? c.ask : undefined;

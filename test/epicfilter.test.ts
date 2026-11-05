@@ -27,7 +27,8 @@ test("661 publication: epic chain, activity map and an identity without its deta
   assert.equal(parsed.items.find((a) => a.key === key("tracker#1300"))!.epic, "unknown");
   assert.equal(cards.length, 8, "every published identity is a card, detail or not");
   assert.equal(cards.at(-1)!.key, key("tracker#1310"));
-  assert.deepEqual([parsed.complete, parsed.count, parsed.omitted, parsed.detailsOmitted], [true, 8, 0, 1]);
+  assert.deepEqual([parsed.complete, parsed.count, parsed.omitted, parsed.detailsOmitted], [false, 8, 0, 1]);
+  assert.equal(cards.at(-1)!.url, undefined, "the omitted descriptor cannot establish a GitHub target");
 });
 
 test("661 publication: in-progress default, focus first, approvals first, honest chip counts", () => {
@@ -67,6 +68,25 @@ test("a capped publication: placeholders only, approvals still first, the cap co
   assert.equal(list.querySelector("a.action")?.textContent, "Inspect");
   const model = epicSelection(placeholders, capped.epics, "active");
   assert.deepEqual(model.ordered.slice(0, 4).map((c) => c.key), [key("tracker#1261"), key("agent-board#650"), key("agentic-job#2900"), key("tracker#1310")]);
+});
+
+for (const policy of ["legacy", "github", "foreign", "malformed", "unkeyed", "absent", "overbound"] as const) test(`identity-only cards retain ${policy} descriptor navigation policy`, () => {
+  const identity = { item: "o/r#1", source: "reviews", kind: "review-withheld", waiting_since: parsed.validatedAt, detail_key: "o/r#2" };
+  const request = { key: "o/r#2", forge: "github.com", quality: "decision", actions: [] };
+  const requests = policy === "legacy" ? undefined : policy === "absent" ? [] : policy === "overbound" ? Array(501).fill(request) : [{ ...request, ...(policy === "foreign" ? { forge: "forge.example" } : policy === "malformed" ? { actions: null } : policy === "unkeyed" ? { key: null } : {}) }];
+  const p = parseNeedsYou({ ...raw, items: [], identities: [identity], requests, count: 1 });
+  assert.ok(typeof p === "object");
+  const list = document.createElement("div");
+  let calls = 0;
+  const placeholders = inboxCards({ published: { asks: [], list: p, unavailable: false } });
+  fillInbox(list, placeholders, { ...hooks, chatItem: () => { calls++; return undefined; } });
+  const navigable = policy === "legacy" || policy === "github";
+  assert.equal(list.querySelector("a.action")?.textContent ?? null, navigable ? "Inspect" : null);
+  assert.equal(list.querySelector("article")!.getAttribute("data-href"), navigable ? "#pr/o/r/1" : "#");
+  assert.equal(calls, navigable ? 1 : 0, "restricted placeholders must not construct a GitHub chat target");
+  assert.equal(list.querySelector("button, form, .primary"), null);
+  if (!navigable) assert.equal(list.querySelector("a[href]"), null);
+  if (["malformed", "unkeyed", "absent", "overbound"].includes(policy)) assert.equal(p.complete, false);
 });
 
 test("missing or malformed activity hides nothing, and neither does a list with no epic in progress", () => {
@@ -125,6 +145,7 @@ test("approve rows: one line with what the pass publishes, and Approve submits i
   const withheld = document.createElement("div");
   fillInbox(withheld, cards.filter((c) => c.key === key("tracker#1300")), hooks);
   assert.match(withheld.querySelector(".approval-evidence")!.textContent!, /review unknown/);
+  assert.match(withheld.querySelector(".card-head")!.textContent!, /Review withheld/);
   assert.equal(row.querySelector(".card-full"), null, "nothing to unfold: the row is the action");
   row.querySelector<HTMLButtonElement>("button")!.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
