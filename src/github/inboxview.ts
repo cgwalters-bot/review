@@ -203,7 +203,7 @@ const LIMIT_ATTR = "data-limit";
 export function cardSignature(c: Card): string {
   const base = [c.kind, c.key, c.title, c.where, c.url, c.since, c.answered === true, c.note, c.priority, c.unavailable === true];
   return JSON.stringify([...base, ...("ask" in c ? [c.ask.action, c.ask.group, c.ask.requests, c.ask.requestsUnreadable] :
-    c.kind === "digest" ? [c.items] : c.kind === "send" ? [c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused] : [c.entry.text, c.mark]), ...("ask" in c ? [c.ask.approval] : [])]);
+    c.kind === "digest" ? [c.items] : c.kind === "send" ? [c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused] : [c.entry.text, c.mark])]);
 }
 
 /**
@@ -334,17 +334,15 @@ export function cardEl(c: Card, hooks: InboxHooks): HTMLElement {
   }, head, h("p", { class: "card-where" }, c.where),
   c.unavailable ? h("p", { class: "card-note warn" }, "Unavailable: from the last list read; the pass's list can't be read now.") : null,
    c.note ? h("details", { class: "card-note" }, h("summary", {}, "Context"), h("p", {}, c.note)) : null);
+  // The pass publishes the kind and head, not the diff or checks: say so rather than guess.
+  if (c.kind === "approve") el.append(h("div", { class: "approval-evidence" },
+    c.ask.kind === "review-withheld" ? pill("Review agent withheld") : null,
+    h("span", {}, "Diff size and CI not published"),
+    githubTarget(c.ask) ? h("a", { href: askHref(c.ask.action) }, "Review the diff") : null));
   if (ask?.requests?.some((r) => r.quality !== "decision")) el.append(h("small", { class: "note" }, [...new Set(ask.requests.map((r) => r.quality).filter((q) => q !== "decision"))].join(" · ")));
   const descriptions = ask?.requests?.filter((r) => r.detail);
   if (descriptions?.length) el.append(h("details", { class: "request-context" }, h("summary", {}, "Published decision context"),
     ...descriptions.map((r) => h("dl", {}, ...Object.entries(r.detail!).flatMap(([key, value]) => [h("dt", {}, key), h("dd", {}, value)])))));
-  if (c.kind === "approve") {
-    const evidence = c.ask.approval;
-    el.append(h("div", { class: "approval-evidence" },
-      h("span", {}, evidence?.additions !== undefined && evidence.deletions !== undefined ? `+${evidence.additions} −${evidence.deletions}` : "Diff size unknown"),
-      h("span", { class: "pill" }, `CI: ${evidence?.ci ?? "unknown"}`),
-      h("span", { class: "pill" }, `Review agent: ${evidence?.reviewAgent ?? "unknown"}`)));
-  }
   if (c.kind === "document" && c.entry.text.trim()) el.append(h("details", { class: "dec-body" }, h("summary", {}, "The whole entry"), h("div", { class: "md" }, hooks.render(c.entry.text, c.entry.about?.repo))));
   // Cold load and polls read the publication alone. Target reads are lazy;
   // action-time preflight remains independent of these inspection reads.

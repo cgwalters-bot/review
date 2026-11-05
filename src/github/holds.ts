@@ -52,11 +52,9 @@ export interface AskRef {
 
 /** One thing that waits on the operator, as the pass lists it. */
 export interface Ask {
-  /** Provisional agent-board#661 identity fields; absent is unknown, not none. */
+  /** The nearest and the top live epic (agent-board#661), `none` or `unknown`; absent is unknown, not none. */
   epic?: string;
   topEpic?: string;
-  /** Display evidence only; never authority to approve. */
-  approval?: { additions?: number; deletions?: number; ci?: string; reviewAgent?: string };
   /** The same from pass to pass: `owner/repo#n`, with `/comment-ID` or `/digest`. */
   key: string;
   /** OWNER/REPO#N it is on. */
@@ -149,10 +147,12 @@ export interface InboxContext {
 }
 
 export interface InboxEpic {
+  /** OWNER/REPO#N, lower case; the pass publishes no title. */
   item: string;
-  title: string;
   active: boolean;
   activeWhy: string[];
+  /** Whether its activity was read whole: an inactive epic read in part may be active. */
+  complete: boolean;
   focus: boolean;
 }
 
@@ -250,30 +250,24 @@ function parseAsk(raw: unknown): Ask | undefined {
   if (group === null) return undefined;
   const epic = epicRef(raw.epic);
   const topEpic = epicRef(raw.topEpic);
-  const p = raw.approval;
-  // Diff statistics are not item counts: generated changes can exceed the
-  // publication's item cap. Independent evidence remains useful if one field
-  // is missing or malformed; none of it authorizes a write.
-  const lines = (v: unknown): number | undefined => Number.isSafeInteger(v) && (v as number) >= 0 ? v as number : undefined;
-  const additions = isObject(p) ? lines(p.additions) : undefined;
-  const deletions = isObject(p) ? lines(p.deletions) : undefined;
-  const ci = isObject(p) ? text(p.ci) : undefined;
-  const reviewAgent = isObject(p) ? text(p.reviewAgent) : undefined;
-  const approval = isObject(p) ? { ...(additions === undefined ? {} : { additions }), ...(deletions === undefined ? {} : { deletions }), ...(ci ? { ci } : {}), ...(reviewAgent ? { reviewAgent } : {}) } : undefined;
-  return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true, ...(group ? { group } : {}), ...(epic ? { epic } : {}), ...(topEpic ? { topEpic } : {}), ...(approval ? { approval } : {}) };
+  return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true, ...(group ? { group } : {}), ...(epic ? { epic } : {}), ...(topEpic ? { topEpic } : {}) };
 }
 
 const epicRef = (v: unknown): string | undefined => v === "none" || v === "unknown" ? v : str(v, ITEM_RE)?.toLowerCase();
 
+/** The pass's activity reasons: focus, recent-run, open-pr, operator-comment, or a newer one. */
+const WHY_RE = /^[a-z][a-z-]{0,31}$/;
+
+/** `epics`, a map of live epic to its activity; a broken or oversized one must not silently hide decisions. */
 function parseEpics(raw: unknown): InboxEpic[] | undefined {
-  // The shipped publisher uses a map, not the earlier provisional array.
-  if (isObject(raw)) raw = Object.entries(raw).map(([item, e]) => isObject(e) ? { ...e, item, title: item, focus: Array.isArray(e.activeWhy) && e.activeWhy.includes("focus") } : undefined);
-  // A broken or oversized activity index must not silently hide decisions.
-  if (!Array.isArray(raw) || raw.length > MAX_COUNT) return undefined;
+  if (!isObject(raw)) return undefined;
+  const entries = Object.entries(raw);
+  if (entries.length > MAX_COUNT) return undefined;
   const epics: InboxEpic[] = [];
-  for (const e of raw) {
-    if (!isObject(e) || !str(e.item, ITEM_RE) || !text(e.title) || typeof e.active !== "boolean" || typeof e.focus !== "boolean" || !Array.isArray(e.activeWhy) || e.activeWhy.length > 8 || !e.activeWhy.every((why) => text(why))) return undefined;
-    epics.push({ item: (e.item as string).toLowerCase(), title: text(e.title)!, active: e.active, focus: e.focus, activeWhy: e.activeWhy.map((why) => text(why)!) });
+  for (const [item, e] of entries) {
+    if (!str(item, ITEM_RE) || !isObject(e) || typeof e.active !== "boolean" || typeof e.complete !== "boolean" || !Array.isArray(e.activeWhy) || e.activeWhy.length > 8 || !e.activeWhy.every((why) => str(why, WHY_RE))) return undefined;
+    const activeWhy = e.activeWhy as string[];
+    epics.push({ item: item.toLowerCase(), active: e.active, complete: e.complete, focus: activeWhy.includes("focus"), activeWhy });
   }
   return new Set(epics.map((e) => e.item)).size === epics.length ? epics : undefined;
 }
