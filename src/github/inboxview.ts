@@ -8,11 +8,10 @@ import { h, link } from "../dom.ts";
 import type { Renderer } from "../markdown.ts";
 import { chatButton, type ChatItem } from "./chatitem.ts";
 import type { DocumentEntry } from "./decisiondocument.ts";
-import { type Heartbeat, isStale } from "./heartbeat.ts";
 import type { MemberPr } from "./backend.ts";
 import type { IssueRef } from "./board.ts";
 import { refKey } from "./forge.ts";
-import type { Ask, Holds, InboxContext } from "./holds.ts";
+import type { Ask, InboxContext } from "./holds.ts";
 import { askHref, type Card, CARD_LABEL, githubTarget, members, refusal } from "./inbox.ts";
 import { approvalKey, type ApproveItem, type ApproveResult } from "./maintain.ts";
 import { approveGroup, KEEP_ATTR, KEEP_BUSY } from "./maintainview.ts";
@@ -244,7 +243,7 @@ const LIMIT_ATTR = "data-limit";
 /** What a card shows, so an unchanged card is not redrawn. Its age is left out: the ticker moves it in place. */
 export function cardSignature(c: Card): string {
   const base = [c.kind, c.key, c.title, c.where, c.url, c.since, c.answered === true, c.note, c.priority, c.unavailable === true];
-  return JSON.stringify([...base, ...("ask" in c ? [c.ask.action, c.ask.group, c.ask.requests, c.ask.requestsUnreadable, c.ask.reviewBuckets, c.ask.carried] :
+  return JSON.stringify([...base, ...("ask" in c ? [c.ask.action, c.ask.group, c.ask.requests, c.ask.requestsUnreadable, c.ask.reviewBuckets, c.ask.carried, c.ask.detailsUnavailable, c.ask.approvalEvidence] :
     c.kind === "digest" ? [c.items] : c.kind === "send" ? [c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused] : [c.entry.text, c.mark])]);
 }
 
@@ -320,19 +319,6 @@ function action(c: Card, hooks: InboxHooks, inspected?: string, refresh = false)
   return h("a", { class: "action", href: askHref(c.ask.action) }, "Inspect");
 }
 
-/**
- * What holds every new run (wip, pools), said once over the cards; nothing
- * when no such hold is published. The pass rewrites its holds only when
- * they change, so whether they still stand is judged by the coordinator's
- * heartbeat, not by when they were written.
- */
-export function passLine(holds: Holds | undefined, heartbeat: Heartbeat | null | undefined, now: number): HTMLElement | null {
-  const pass = holds?.holds.filter((x) => x.item === null).map((x) => `${x.kind}: ${x.reason}`) ?? [];
-  if (!pass.length) return null;
-  const stale = !heartbeat || isStale(heartbeat, now);
-  return h("p", { class: `note pass-holds${stale ? " warn" : ""}` }, `New runs wait: ${pass.join("; ")}`, stale ? " · the pass's heartbeat is stale" : "");
-}
-
 /** Published facts only: never new human asks or write controls. */
 export function publishedContext(context: InboxContext | undefined): HTMLDetailsElement {
   const fold = h("details", { class: "published-context" }, h("summary", {}, "Published context"));
@@ -354,13 +340,29 @@ function bodySlot(body: Promise<HTMLElement>): HTMLElement {
   return slot;
 }
 
+/**
+ * Refresh display-only facts without replacing a live write or its receipt.
+ * Without a current approval card (`c` departed or changed kind) no evidence stays.
+ */
+function refreshEvidence(el: HTMLElement, c?: Card): HTMLElement {
+  const ask = c?.kind === "approve" ? c.ask : undefined;
+  const row = el.querySelector(":scope > .approval-evidence") ?? (ask ? el.appendChild(h("div", { class: "approval-evidence", "data-head": ask.action.head!, "data-action": JSON.stringify(ask.action) })) : null);
+  if (!row) return el;
+  const head = row.getAttribute("data-head");
+  const e = ask && !ask.carried && row.getAttribute("data-action") === JSON.stringify(ask.action) && ask.approvalEvidence?.head === head ? ask.approvalEvidence : undefined;
+  row.replaceChildren(...[
+    h("span", {}, `At ${head?.slice(0, 12)} · ${e?.diff ? `Diff +${e.diff.additions}/−${e.diff.deletions}` : "Diff unknown"} · CI ${e?.ci ?? "unknown"} · Review agent ${e?.review ?? "unknown"}${e ? ` · observed ${e.observedAt}` : " (not published or not current)"}`),
+    ask && githubTarget(ask) && !retired.has(el) ? h("a", { href: askHref(ask.action) }, "Review the diff") : null].filter((node) => node !== null));
+  return el;
+}
+
 export function cardEl(c: Card, hooks: InboxHooks, inspected?: string, refresh = false): HTMLElement {
   // An answer keeps its own receipts (answerBody), and an Open card writes nothing; the rest by what they write.
   const key = JSON.stringify(c.kind === "digest" ? [c.kind, c.items.map((a) => [a.pr, a.head])] : c.kind === "send" ? [c.kind, c.key, c.draft.issue.body, c.draft.found?.raw] : c.kind === "document" ? [c.kind, c.key, cardSignature(c)] : [c.kind, c.key, c.ask.action, members(c.ask), policySignature(c)]);
   const previous = hooks.writes?.get(key);
-  if (c.kind !== "answer" && c.kind !== "promote" && c.kind !== "open" && previous?.querySelector("[data-sent], [data-keep]")) return previous;
+  if (c.kind !== "answer" && c.kind !== "promote" && c.kind !== "open" && previous?.querySelector("[data-sent], [data-keep]")) return refreshEvidence(previous, c);
   const head = h("div", { class: "card-head" },
-    h("span", { class: `kind c-${c.kind}` }, CARD_LABEL[c.kind]),
+    h("span", { class: `kind c-${c.kind}` }, "ask" in c && c.ask.detailsUnavailable ? "Inspect" : CARD_LABEL[c.kind]),
     c.priority ? pill(c.priority) : null,
     h("span", { class: "title", title: c.title }, c.url && !("ask" in c && c.ask.group) ? link(c.url, c.title) : c.title),
     h("span", { class: "age", ...(c.since ? { [SINCE_ATTR]: c.since, title: c.since } : {}) }, age(c.since, hooks.now)));
@@ -376,11 +378,7 @@ export function cardEl(c: Card, hooks: InboxHooks, inspected?: string, refresh =
   }, head, h("p", { class: "card-where" }, c.where),
   c.unavailable ? h("p", { class: "card-note warn" }, "Unavailable: from the last list read; the pass's list can't be read now.") : null,
    c.note ? h("details", { class: "card-note" }, h("summary", {}, "Context"), h("p", {}, c.note)) : null);
-  // The pass publishes the kind and head, not the diff or checks: say so rather than guess.
-  if (c.kind === "approve") el.append(h("div", { class: "approval-evidence" },
-    c.ask.kind === "review-withheld" ? pill("Review agent withheld") : null,
-    h("span", {}, "Diff size and CI not published"),
-    githubTarget(c.ask) ? h("a", { href: askHref(c.ask.action) }, "Review the diff") : null));
+   refreshEvidence(el, c);
   if (ask?.requests?.some((r) => r.quality !== "decision")) el.append(h("small", { class: "note" }, [...new Set(ask.requests.map((r) => r.quality).filter((q) => q !== "decision"))].join(" · ")));
   const descriptions = ask?.requests?.filter((r) => r.detail);
   if (descriptions?.length) el.append(h("details", { class: "request-context" }, h("summary", {}, "Published decision context"),
@@ -416,7 +414,7 @@ export function cardEl(c: Card, hooks: InboxHooks, inspected?: string, refresh =
 
 /** A retained draft or receipt must not retain authority a newer list removed. */
 function policySignature(c: Card): string {
-  return JSON.stringify("ask" in c ? [c.ask.requests, c.ask.requestsUnreadable] : c.kind === "digest" ? c.items.map((a) => [a.pr, a.head]) : null);
+  return JSON.stringify("ask" in c ? [c.ask.requests, c.ask.requestsUnreadable, c.ask.detailsUnavailable] : c.kind === "digest" ? c.items.map((a) => [a.pr, a.head]) : null);
 }
 
 /** Keep typed text and receipts, but retire their old handlers until an explicit reload. */
@@ -453,13 +451,8 @@ function moreButton(list: HTMLElement, drawn: number, total: number, more: () =>
 }
 
 /**
- * Show `cards` in `list`, in order, keeping each card that didn't change
- * (or, unless `force`, holds an unsent form) as the node it is. A kept
- * draft is never moved either, since moving a node takes the focus out of
- * it: the other cards are placed around it. Only the first INBOX_PAGE cards
- * (more after "Show more") are drawn, so the ones further down read
- * nothing; a drawn card holding a draft stays however far it moved.
- * Returns the matching published card count, excluding departed drafts.
+ * Page cards in publication order; return matches, excluding departed drafts.
+ * Keep drafts in place for focus/phone keyboard unless forced; live writes always stay.
  */
 export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: InboxHooks, force = false, selected?: ReadonlySet<string>): number {
   list.setAttribute("data-inbox-list", "");
@@ -484,6 +477,7 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     shown.delete(c.key);
     // r clears a write's kept report too, reading the card's state again.
     const report = force && el?.querySelector(`[${KEEP_ATTR}=""]`);
+    if (el) refreshEvidence(el, c);
     if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS) && !report && !(force && "ask" in c && (c.kind === "promote" || c.ask.group || ["decisions", "drafts"].includes(c.ask.source)))) return el;
     // A newly published group revokes the representative's old single-item form.
     if (el && keep(el) && !("ask" in c && (c.ask.group || c.kind === "promote"))) {
@@ -510,6 +504,7 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
       // A filtered-out digest has no replacement key to compare policies
       // with. Keep its report/text, never its obsolete approval handlers.
       retireActions(el);
+      refreshEvidence(el);
       staleNote(el, CARD_GONE_NOTE);
       // A poll must not hide an already-visible draft when its key leaves
       // the publication. Show everything also recovers drafts hidden earlier.

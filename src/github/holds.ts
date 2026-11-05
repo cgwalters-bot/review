@@ -52,6 +52,9 @@ export interface AskRef {
 
 /** One thing that waits on the operator, as the pass lists it. */
 export interface Ask {
+  /** Display-only agent-board approval-evidence/v1 projection; never approval authority. */
+  approvalEvidence?: ApprovalEvidence;
+  detailsUnavailable?: boolean;
   /** The nearest and the top live epic (agent-board#661), `none` or `unknown`; absent is unknown, not none. */
   epic?: string;
   topEpic?: string;
@@ -87,6 +90,14 @@ export interface ReviewBucket {
   reason: string;
   summary: string;
   ci: "green" | "unknown";
+}
+
+export interface ApprovalEvidence {
+  head: string;
+  observedAt: string;
+  diff?: { additions: number; deletions: number };
+  ci: string;
+  review: string;
 }
 
 /** One next step a request names, and whether the pass says it can be taken from here. */
@@ -275,6 +286,21 @@ function parseAsk(raw: unknown): Ask | undefined {
   return { key, item, source: raw.source as string, kind: raw.kind as string, priority: raw.priority as string | null, waitingSince, ask, recommendation, action, carried: raw.carried === true, ...(group ? { group } : {}), ...(epic ? { epic } : {}), ...(topEpic ? { topEpic } : {}) };
 }
 
+// Threat: stale/partial publisher facts looking like verified success at a new
+// head. This optional, bounded display projection cannot authorize a write.
+const MAX_APPROVAL_EVIDENCE = 50;
+
+function parseApprovalEvidence(raw: unknown, ask: Ask): ApprovalEvidence | undefined {
+  if (!isObject(raw) || raw.schema !== "agent-board/approval-evidence/v1" || !isObject(raw.items) || Object.keys(raw.items).length > MAX_APPROVAL_EVIDENCE || !isCount(raw.omitted) || ask.carried || ask.group || ask.action.type !== "approve_pull_request") return undefined;
+  const observedAt = time(raw.observed_at);
+  const e = Object.hasOwn(raw.items, ask.key) ? raw.items[ask.key] : undefined;
+  if (!observedAt || !isObject(e) || !str(e.assessed_head, HEAD_RE) || e.assessed_head !== ask.action.head) return undefined;
+  const diff = isObject(e.diff) && [e.diff.additions, e.diff.deletions].every((n) => Number.isSafeInteger(n) && (n as number) >= 0) ? { additions: e.diff.additions as number, deletions: e.diff.deletions as number } : undefined;
+  return { head: e.assessed_head as string, observedAt, ...(diff ? { diff } : {}),
+    ci: isObject(e.ci) && e.ci.complete === true && ["green", "failing", "pending", "unknown"].includes(e.ci.state as string) ? e.ci.state as string : "unknown/partial",
+    review: isObject(e.review) && time(e.review.at) && ["approved", "changes_requested", "withheld"].includes(e.review.verdict as string) ? `${e.review.verdict} at ${time(e.review.at)}` : "unknown" };
+}
+
 const epicRef = (v: unknown): string | undefined => v === "none" || v === "unknown" ? v : str(v, ITEM_RE)?.toLowerCase();
 
 /** The pass's activity reasons: focus, recent-run, open-pr, operator-comment, or a newer one. */
@@ -380,6 +406,8 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
         const key = `${a.action.repository}#${n}`.toLowerCase();
         return buckets[key] ? [[key, buckets[key]]] : [];
       }));
+    const evidence = parseApprovalEvidence(raw.approval_evidence, a);
+    if (evidence) a.approvalEvidence = evidence;
     const mine = requests.filter(([k]) => k === a.key).map(([, r]) => r);
     if (mine.length) a.requests = mine;
     if (allUnreadable || unreadable.has(a.key) || (raw.requests !== undefined && !mine.length)) a.requestsUnreadable = true;

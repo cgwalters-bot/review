@@ -39,12 +39,14 @@ approvals first (placeholders by their kind), then Priority and the oldest
 wait. Cards whose chain is `unknown`, or whose inactive epic's activity was
 not read whole, stay in the default too: the pass says neither proves
 inactivity. One line names the epics in progress and why; chips count each
-epic, **Other epics** (inactive or `unknown`), **No epic** (`none`), and
+epic, **Other epics** (outside active epics, excluding `none`), **No epic** (`none`), and
 **Show everything**, one click away. The pass publishes no epic titles, so
 chips name the epic's `repo#N`. A chip choice is remembered per viewer where
 storage works; `#epic-N` selects tracker epic N, matching the nearest or top
 epic, until the page reloads, without changing the remembered choice. With no epic in progress, or no usable `epics`
-map, nothing is hidden. The heading counts outstanding
+map, the default hides nothing. Unknown/partial items outside active epics
+also count in Other: chip counts overlap and must not be added together.
+The heading counts outstanding
 decisions from `counts.decisions`, or under a filter that hides something,
 the cards it shows; either way excluding successful local completions and
 departed cards retained for unsent text. The line over the cards gives the
@@ -56,8 +58,11 @@ their targets. **Details and action** explicitly opens a card's lazy inspection.
 Questions stay as short asks (wrapping on narrow screens,
 never clipped); context and answer forms are collapsed. An approval row has
 the ask, its PR, an Approve at the published head and a link to review the
-diff. The pass publishes no diff size or check state, so the row says so;
-`review-withheld` is marked as the review agent withholding approval. The
+diff. Optional evidence is displayed only at that exact head, with its observation
+time; absent, carried, malformed or wrong-head evidence stays unknown. Evidence
+refreshes even beside a retained pending, uncertain or sent approval receipt. The
+`review-withheld` kind alone does not verify a review result. Identity-only
+cards say **details unavailable**, with Inspect and no Answer or release form. The
 list's question and recommendation are display text, not instructions;
 links are made from its typed action references, never read from it.
 
@@ -210,6 +215,42 @@ These bounded API observations and source reads do not establish the deployed
 promoter's identity/configuration or its exact-commit behavior. Deployment access
 and a sanitized real end-to-end example remain needed; fixtures are replay evidence,
 not integration proof. No live mutations were attempted.
+
+Compact evidence follow-up (2026-11-05): the consumer follows agent-board#687
+at `21c337c69b9166740a2b8b210990e26a35596cdb` (merged, closing #686).
+`test/fixtures/approval-evidence-needs-you.json` is byte-for-byte identical to
+that producer's `fixtures/approval-evidence-needs-you.json`, tested against its
+serialization, not a live capture. The optional list-level `approval_evidence`
+envelope has schema `agent-board/approval-evidence/v1`, `observed_at`, `omitted`
+and up to 50 `items` keyed by ask key. Entries carry `assessed_head`, `diff`
+additions/deletions or `"unavailable"`, `ci` (`state`, `complete`) and a verified
+review (`verdict`, `at`) or null. Only exact-head, uncarried, ungrouped approval
+asks use it; incomplete CI never claims green. Malformed or missing evidence
+stays unknown without removing identities. This display-only extension adds no
+fetch, approval authority or controller opt-in. Caller enablement is not verified;
+the provisional per-ask contract is removed.
+Existing redacted real replay remains unchanged; capped/epic tests are labelled
+derivations of the #661 contract fixture, not today's publication.
+
+Against #238 `b04aa1d7eb42929006daee4c9f8f127ea028c8db`, using the LOC/byte
+measurement below and the same lockfile: source LOC falls from **19,118 to
+19,117**, and `dist/app.js` from **546,772 to 537,561 bytes**. The browser no
+longer invokes the superseded dashboard/decision/agent derivation for each
+inbox redraw; its state export now describes what it actually reads as
+`review-inbox-state/v1` (`published`, `status`, `sources`, `generatedAt`). The
+richer CLI `review-state/v1` is unchanged. Unused heartbeat-based pass-line
+presentation and old browser decision-inventory state were removed.
+
+The real-fixture actual-main replay test on both revisions records **2 cold
+requests** (`/user` and the holds comment) and **1 poll request** (the same
+comment), with **0 target reads**. Reproduce with
+`node --test --test-name-pattern='real snapshot replay request and timing measurements' test/needsyou.test.ts`.
+The new main-hook draft-recovery regression also asserts zero extra reads when
+filtering or refreshing the publication. CSS/DOM tests cover wrapping and the
+desktop/390px approval/chat structure, not browser geometry. **Desktop/phone
+screenshot and signed-in live acceptance remain outstanding**: this run's
+handback channel publishes patches and JSON reports/requests only, not image
+artifacts. No binaries or private publication were added and no live writes ran.
 
 Receipt follow-up size check (Node 24.22.1, npm 11.19.1; each revision's lockfile,
 `npm ci && npm run build`): source LOC below counts LF characters in tracked

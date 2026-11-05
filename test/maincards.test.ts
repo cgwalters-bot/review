@@ -7,6 +7,7 @@ import { GitHub } from "../src/github/api.ts";
 import { type Ask, type ReviewBucket, parseNeedsYou } from "../src/github/holds.ts";
 import { type Card, inboxCards, publishedCards, refusal } from "../src/github/inbox.ts";
 import { fillInbox } from "../src/github/inboxview.ts";
+import { fillState, homeSkeleton } from "../src/github/homeview.ts";
 import { newestDraft, type ReviewDraftConfig } from "../src/github/reviewdrafts.ts";
 import { fields, fixture, rawAsk, rawNeedsYou, scriptedFetch, type Scripted } from "./helpers.ts";
 
@@ -14,7 +15,7 @@ const dom = new JSDOM(readFileSync(new URL("../static/index.html", import.meta.u
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, Node: dom.window.Node, HTMLElement: dom.window.HTMLElement,
   ResizeObserver: class { observe() {} disconnect() {} }, fetch: async () => { throw new Error("network forbidden"); } });
 dom.window.confirm = () => true;
-const { inboxHooks } = await import("../src/github/main.ts");
+const { inboxHooks, paintInbox, snapshot } = await import("../src/github/main.ts");
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 const target = "cgwalters-forge/tracker#50";
 const url = "https://github.com/cgwalters-forge/tracker/issues/50";
@@ -33,6 +34,71 @@ function bucketCard(over: Record<string, unknown> = {}, askOver: Record<string, 
 }
 const bootcDraft = (n: number) => ({ ...draft(n, n === 2 ? replacement : head), html_url: `https://github.com/cgwalters-forge/bootc/pull/${n}` });
 const shown = () => ({ title: "Which way?", body: "Q: Which way?", state: "open", html_url: url, labels: [{ name: "needs-human" }, { name: "needs-design" }, { name: "other" }] });
+
+for (const cached of [false, true]) test(`main snapshot and freshness retain ${cached ? "cache-only" : "failed"} publication reads`, () => {
+  const r = setup(() => undefined);
+  const source = { state: cached ? "ok" as const : "unavailable" as const, fetchedAt: 100, ...(cached ? {} : { error: "publication read failed" }) };
+  r.state.active = { at: 100, fromCache: cached, sources: { holds: source }, warnings: [] };
+  r.state.sources = {};
+  const model = snapshot(r.state);
+  assert.equal(model.sources.holds!.state, cached ? "cached" : "unavailable");
+  assert.equal(source.state, cached ? "ok" : "unavailable", "export never mutates source state");
+  const home = homeSkeleton({ toggled() {} });
+  fillState(home, model);
+  assert.equal(home.slots.freshness.hidden, false);
+  assert.match(home.slots.freshness.textContent!, cached ? /holds: cached/ : /holds: unavailable.*publication read failed/);
+});
+
+test("actual main: type answer, filter away, remove publication, Show everything recovers draft", async () => {
+  const r = setup((method, p) => method === "GET" && p === path ? { body: shown() } : undefined);
+  const home = homeSkeleton({ toggled() {} });
+  const parts = Object.fromEntries(["filters", "pass", "list", "empty"].map((name) => [name, document.createElement("div")]));
+  Object.assign(r.state, { home, inbox: { ...parts, busy: false }, login: "cgwalters" });
+  document.getElementById("view")!.replaceChildren(home.el);
+  home.sections.needs.body.append(...Object.values(parts));
+  const publish = (items: Record<string, unknown>[]) => {
+    const list = parseNeedsYou(rawNeedsYou(items, "2026-11-05T09:00:00Z", { epics: { "cgwalters-forge/tracker#976": { active: true, activeWhy: ["focus"], complete: true } } }));
+    assert.ok(typeof list === "object");
+    r.state.published = { asks: list.items, list, unavailable: false };
+    paintInbox(r.state);
+  };
+  const chip = (choice: string) => parts.filters!.querySelector<HTMLButtonElement>(`[data-epic-choice="${choice}"]`)!.click();
+  publish([rawAsk(50, { epic: "cgwalters-forge/tracker#976", topEpic: "cgwalters-forge/tracker#976" })]);
+  assert.equal(r.calls.length, 0, "cold paint reads no targets");
+  const fold = parts.list!.querySelector<HTMLDetailsElement>(".card-full")!;
+  fold.open = true;
+  fold.dispatchEvent(new dom.window.Event("toggle"));
+  await settle();
+  const card = parts.list!.firstElementChild as HTMLElement;
+  const text = card.querySelector("textarea")!;
+  text.value = "Retain my answer";
+  const reads = r.calls.length;
+  chip("none");
+  assert.equal(card.hidden, true);
+  publish([]);
+  assert.equal(card.hidden, true, "zero remaining published cards must not clear a non-All filter");
+  chip("all");
+  assert.equal(card.hidden, false);
+  assert.equal(text.value, "Retain my answer");
+  assert.match(card.textContent!, /This has left the inbox/);
+  assert.equal(card.getAttribute("data-href"), "#");
+  assert.equal(card.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled, true);
+  assert.equal(r.calls.length, reads, "filter changes and publication refresh add no reads");
+  assert.equal(r.writes().length, 0);
+});
+
+for (const width of [1280, 390]) test(`actual main approval/chat DOM at ${width}px (not browser geometry)`, () => {
+  Object.defineProperty(dom.window, "innerWidth", { configurable: true, value: width });
+  const r = setup(() => undefined);
+  r.paint(cards(rawAsk(7, { kind: "review-approve", action: { type: "approve_pull_request", repository: "cgwalters-forge/widget", number: 7, head } }))[0]!);
+  const row = r.list.firstElementChild!;
+  assert.equal(row.querySelectorAll(":scope > .card-body.actions").length, 1);
+  assert.match(row.querySelector(":scope > .card-body.actions button")!.textContent!, /Approve a{7}/);
+  assert.equal(row.querySelectorAll(":scope > .actions:not(.card-body) .item-chat").length, 1);
+  assert.match(row.querySelector(".approval-evidence")!.textContent!, /At a{12}.*CI unknown.*Review agent unknown/);
+  assert.equal(row.querySelector(".card-full"), null);
+  assert.equal(r.calls.length, 0, "approval/chat presentation has no eager reads");
+});
 /** The pass's asks of `raw`. */
 function asks(...raw: Record<string, unknown>[]): Ask[] {
   const l = parseNeedsYou(rawNeedsYou(raw, "2026-10-30T00:00:00Z"));
@@ -311,6 +377,41 @@ test("a pending member preflight's revoked-policy failure survives restricted re
   r.paint(c, true);
   const fresh = await openMember(r);
   assert.equal(fresh.querySelector("button")!.disabled, false, "a valid policy allows explicit rereading after preflight refusal");
+});
+
+test("a new published head cannot lend its evidence to a pending or uncertain old-head approval", async () => {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const r = setup((method, p) => ({ status: method === "POST" ? 502 : 200, body: p.endsWith("/reviews") ? [] : draft(7) }));
+  r.state.gh = new GitHub(async () => "test", async (url, init) => {
+    if (init?.method === "POST") await pending;
+    return r.fetchImpl(url, init);
+  });
+  const approval = (sha: string) => {
+    const card = cards(rawAsk(7, { kind: "review-approve", action: { type: "approve_pull_request", repository: "cgwalters-forge/widget", number: 7, head: sha } }))[0]! as Card & { kind: "approve" };
+    card.ask.approvalEvidence = { head: sha, observedAt: "2026-11-05T12:00:00Z", ci: "green", review: "unknown" };
+    return card;
+  };
+  r.paint(approval(head));
+  const original = r.list.firstElementChild!;
+  const button = original.querySelector<HTMLButtonElement>(".primary")!;
+  button.click(); await settle();
+  const moved = approval(replacement);
+  for (const complete of [false, true]) {
+    if (complete) { release(); await settle(); }
+    r.paint(moved);
+    assert.equal(r.list.firstElementChild, original, "preserve the live old-head receipt");
+    assert.match(button.textContent!, /Approve a{7}/);
+    assert.match(original.querySelector(".approval-evidence")!.textContent!, /At a{12}.*CI unknown/);
+    assert.doesNotMatch(original.querySelector(".approval-evidence")!.textContent!, /b{12}|CI green/);
+    assert.match(original.textContent!, complete ? /Not sent, or uncertain/ : /Sending/);
+  }
+  assert.deepEqual(r.writes().map((c) => c.body), [{ event: "APPROVE", commit_id: head }]);
+  r.paint(moved, true);
+  assert.notEqual(r.list.firstElementChild, original);
+  assert.match(r.list.querySelector(".approval-evidence")!.textContent!, /At b{12}.*CI green/);
+  assert.match(r.list.querySelector(".primary")!.textContent!, /Approve b{7}/);
+  assert.equal(r.writes().length, 1);
 });
 
 for (const failure of [false, true]) test(`inspection preserves pending ordinary approval's live ${failure ? "uncertain" : "sent"} completion`, async () => {

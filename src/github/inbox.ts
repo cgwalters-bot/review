@@ -103,6 +103,7 @@ export function inboxCounts(p: Published, completed: ReadonlyMap<string, string>
  * the card acts as it always did.
  */
 export function refusal(a: Ask, step?: string): string | undefined {
+  if (a.detailsUnavailable) return "Details unavailable; inspect the source before acting.";
   if (a.requestsUnreadable) return "this request's descriptors could not be read safely; it is read-only";
   const forge = a.requests?.find((r) => r.forge !== GITHUB_FORGE)?.forge;
   if (forge) return `this request is on ${forge}, and this page writes only to ${GITHUB_FORGE}`;
@@ -117,7 +118,7 @@ export function refusal(a: Ask, step?: string): string | undefined {
 export function askCard(a: Ask, unavailable = false): Card {
   const type = a.action.type;
   // A group's answer would land on its representative alone: its members are read and opened one by one.
-  const kind = a.source === "decisions" || a.source === "drafts" ? "open" : a.kind === "review-promote" ? "promote" : a.group ? "open" : type === "operator_action" ? "do" : type === "approve_pull_request" || (a.kind === "digest-approve" && a.action.head) ? "approve" : type === "issue" || type === "pull_request" ? "answer" : "open";
+  const kind = a.detailsUnavailable || a.source === "decisions" || a.source === "drafts" ? "open" : a.kind === "review-promote" ? "promote" : a.group ? "open" : type === "operator_action" ? "do" : type === "approve_pull_request" || (a.kind === "digest-approve" && a.action.head) ? "approve" : type === "issue" || type === "pull_request" ? "answer" : "open";
   const diagnostic = a.requests?.find((r) => r.quality !== "decision")?.quality;
   const note = [
     a.group && `${a.group.numbers.length} PRs: ${a.group.reason}`,
@@ -259,7 +260,7 @@ export function inboxCards(input: InboxInput): Card[] {
       const detail = details.get(i.detailKey);
       if (detail) return [detail];
       const [repository = "", n = ""] = i.item.split("#");
-      return [{ ...i, key: i.detailKey, ask: `${i.item}: ${i.kind}`, recommendation: "Detail was not published; inspect the source before acting.", action: { type: "issue", repository, number: Number(n) }, requestsUnreadable: true }];
+      return [{ ...i, key: i.detailKey, ask: `${i.item}: details unavailable`, recommendation: null, action: { type: i.source === "reviews" || i.kind === "digest-approve" ? "pull_request" : "issue", repository, number: Number(n) }, detailsUnavailable: true }];
     });
   }
   const published = p?.list?.identities ? asks.map((a) => askCard(a, p.unavailable)) : publishedCards(asks, p?.unavailable);

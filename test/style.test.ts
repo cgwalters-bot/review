@@ -7,6 +7,13 @@ import { JSDOM } from "jsdom";
 
 const css = readFileSync(new URL("../static/style.css", import.meta.url), "utf8");
 
+it("approval evidence wraps; desktop separates approval/chat and 390px stacks them", () => {
+  assert.match(css, /\.approval-evidence \{[^}]*min-width: 0;[^}]*overflow-wrap: anywhere/);
+  assert.match(css, /\.c-approve > \.card-body.actions \{[^}]*grid-column: 2; grid-row: 1 \/ span 3/);
+  assert.match(css, /\.c-approve > \.actions:not\(\.card-body\) \{[^}]*grid-column: 2; grid-row: 4/);
+  assert.match(css, /@media[^{}]*max-width: 600px[^{}]*\{[^]*?\.row.card.c-approve \{ display: block;/);
+});
+
 it("never truncates titles or other display text with ellipsis or line clamps", () => {
   assert.doesNotMatch(css, /text-overflow\s*:\s*ellipsis|(?:-webkit-)?line-clamp\s*:/);
   for (const selector of [".row .title", "button.tfile .tname"]) {

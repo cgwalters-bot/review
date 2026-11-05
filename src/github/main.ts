@@ -4,7 +4,6 @@
 
 import { formatAnswer, parseQuestion } from "../answer.ts";
 import { h } from "../dom.ts";
-import { pageState, type PageState } from "./state.ts";
 import { readSource, type Sources } from "./freshness.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
@@ -44,7 +43,7 @@ import {
 import { type CacheSession, forgetCache, openCache } from "./cache.ts";
 import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from "./capture.ts";
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
-import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, sendDocumentEdit } from "./decisiondocument.ts";
+import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, parseDocument, sendDocumentEdit } from "./decisiondocument.ts";
 import { epicChips, epicChoice, epicSelection, saveEpicChoice, type EpicFilter } from "./epicfilter.ts";
 import { type Card, askHref, decisionKey, githubTarget, inboxCards, inboxCounts, mayAct, members, type Published, publishedNote, refusal } from "./inbox.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
@@ -70,7 +69,7 @@ import type { Active } from "./agents.ts";
 import { fillStatus, fillPeople, fillState, type Home, HOME_CLASS, type HomeHooks, homeSkeleton, stepRow, walkRows } from "./homeview.ts";
 import { ACTION_CONFIG, loadOffer } from "./actions.ts";
 import { proposalCard } from "./actionsview.ts";
-import { type DraftIssue, loadDraftIssue, REVIEW_DRAFT_CONFIG, refText } from "./reviewdrafts.ts";
+import { loadDraftIssue, REVIEW_DRAFT_CONFIG, refText } from "./reviewdrafts.ts";
 import { draftCard, draftReviewForm } from "./reviewdraftsview.ts";
 import { type ApproveResult, approveSelected } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
@@ -97,7 +96,6 @@ import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
 import { DEFAULT_VIEW, fillNav, SECTION_VIEW, showView, VIEW_ATTR, VIEW_TITLE, type ViewId, viewHash, VIEWS, visibleView } from "./shell.ts";
 import { checkedText, SourceLayer } from "./sourcelayer.ts";
 import { loadAdvance, saveAdvance } from "./store.ts";
-import type { Decision } from "./triage.ts";
 import { agoLabel, answerForm, answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
@@ -216,11 +214,6 @@ interface State {
   cachedAt?: number;
   /** PR details shown from the cache, by refKey: when they were fetched. */
   prCachedAt: Map<string, number>;
-  /** The open decisions, in order, and when a cached copy was fetched. */
-  decisions?: Decision[];
-  decisionsCachedAt?: number;
-  /** Decisions he answered (on GitHub, or from this tab until the next read) and the bot hasn't acted on, by issue node id. */
-  decisionsAnswered: Set<string>;
   error?: string;
   forgeError?: string;
   /** What the token lacks, e.g. classic scopes. */
@@ -420,15 +413,10 @@ function mountHome(state: State): Home {
 interface Inbox {
   filters: HTMLElement;
   list: HTMLElement;
-  /** What holds every new run, if anything (passLine). */
+  /** Publication freshness and counts. */
   pass: HTMLElement;
-  /** Why something it reads can't be shown, over the cards. */
-  status: HTMLElement;
-  /** Those reasons, by what was read. */
-  notes: Map<string, string>;
   empty: HTMLElement;
-  document?: { body: string; marks: Map<string, Mark> };
-  drafts?: DraftIssue[];
+  document?: { body: string };
   /** Document writes, one after another, each on the body the last left. */
   writes: Promise<void>;
   /** Proposal executions: one at a time, and no reload of the proposals (which would redraw its card) meanwhile. */
@@ -437,24 +425,18 @@ interface Inbox {
   startChat?: HTMLElement | null;
 }
 
-/**
- * The inbox's cards, in place of the Decisions rows, the decisions
- * document and the opt-in panels. It opens on the first card; Draft
- * review follows the list.
- */
 function mountInbox(state: State, home: Home): void {
   const list = h("div", { class: "inbox-cards" });
-  const status = h("p", { class: "note", role: "status" });
   const empty = h("p", { class: "empty", hidden: "" }, "All caught up: nothing needs you right now.");
   const tail = h("div", { class: "inbox-tail" });
-  const inbox: Inbox = { list, filters: h("div"), pass: h("div"), status, notes: new Map(), empty, writes: Promise.resolve(), busy: false, startChat: startChatButton() };
+  const inbox: Inbox = { list, filters: h("div"), pass: h("div"), empty, writes: Promise.resolve(), busy: false, startChat: startChatButton() };
   state.inbox = inbox;
   if (inbox.startChat) {
     inbox.startChat.hidden = !state.chat;
     tail.append(inbox.startChat);
   }
   if (REVIEW_DRAFT_CONFIG) tail.append(draftReviewForm(state.gh, REVIEW_DRAFT_CONFIG, () => refreshSoon(state)));
-  home.sections.needs.body.prepend(inbox.filters, inbox.pass, status, list, empty, tail);
+  home.sections.needs.body.prepend(inbox.filters, inbox.pass, list, empty, tail);
 }
 
 /** An ask's PR, as the PR pane and the review writes name it. */
@@ -566,7 +548,7 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
       const body = (await state.gh.get<{ body: string }>(documentPath(target))).data.body;
       const entry = parseDocument(body).find((e) => e.id === `D${id}` && !e.done);
       if (!entry) throw new Error("This decision left the document; reload the inbox.");
-      state.inbox!.document = { body, marks: new Map() };
+      state.inbox!.document = { body };
       const hooks = inboxHooks(state, drafts);
       return cardEl({ kind: "document", key: `document:${entry.id}`, title: entry.title, where: a.item, entry }, { ...hooks,
         answerEntry: async (shown, letter, reply) => {
@@ -684,7 +666,7 @@ function answerEntry(state: State, shown: DocumentEntry, letter: string, reply: 
 }
 
 /** Redraw the inbox's cards that changed; with `force` (he reloaded), those holding unsent text too. */
-function paintInbox(state: State, force = false): void {
+export function paintInbox(state: State, force = false): void {
   const inbox = state.inbox;
   const home = state.home;
   // A redraw while a proposal executes could replace the card showing its progress.
@@ -699,7 +681,7 @@ function paintInbox(state: State, force = false): void {
   const epics = state.published.unavailable ? undefined : state.published.list?.epics;
   const selection = epics && epicSelection(cards, epics, choice);
   const filtered = !!selection?.hidden;
-  fillInbox(inbox.list, selection?.ordered ?? cards, inboxHooks(state), force, filtered ? new Set(selection.selected.map((c) => c.key)) : undefined);
+  fillInbox(inbox.list, selection?.ordered ?? cards, inboxHooks(state), force, selection && choice !== "all" ? new Set(selection.selected.map((c) => c.key)) : undefined);
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
   const { text, settled } = publishedNote(state.published, Date.now());
   const list = state.published.list;
@@ -755,15 +737,15 @@ function currentNeeds(state: State): Need[] {
   return state.published.asks.filter((a) => githubTarget(a) && state.completedAsks?.get(a.key) !== decisionKey(a)).map((a) => ({ key: a.key, action: "review", title: a.ask, where: a.item, href: askHref(a.action), inPlace: false }));
 }
 
-function snapshot(state: State): PageState {
-  return pageState({ active: state.active, entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, sources: state.sources });
+export function snapshot(state: State) {
+  const sources = { ...state.active?.sources, ...state.sources };
+  if (state.active?.fromCache) for (const name of Object.keys(state.active.sources ?? {})) {
+    const source = sources[name];
+    if (source?.state === "ok") sources[name] = { ...source, state: "cached" };
+  }
+  return { schema: "review-inbox-state/v1", generatedAt: new Date().toISOString(), status: state.active?.status ?? null, published: state.published, sources };
 }
 
-/**
- * Redraw "Needs you" if what it lists changed. With an answer half
- * written, only say so, unless `force` (he asked to reload, or the page
- * is being drawn).
- */
 function paintNeeds(state: State, force = false): void {
   const home = state.home;
   if (!home || state.closed) return;
@@ -910,7 +892,7 @@ async function refreshActive(state: State): Promise<boolean> {
 
 /** The item `#item/<id>` opens: a board item, or a decision's issue that is not on the board. */
 function routedItem(state: State, id: string): Item | undefined {
-  return findRouteItem([...state.items, ...state.linked, ...(state.active?.board ?? []), ...(state.decisions?.map((d) => d.item) ?? [])], id)
+  return findRouteItem([...state.items, ...state.linked, ...(state.active?.board ?? [])], id)
     ?? (state.routed?.id === id ? state.routed.item : undefined);
 }
 
@@ -1695,7 +1677,6 @@ async function start(source: TokenSource): Promise<void> {
     needs: [],
     answeredHere: new Set(),
     activeRunning: false,
-    decisionsAnswered: new Set(),
     published: { asks: [], unavailable: false },
   };
   state.gh.onUnauthorized = () => void rejected(state);

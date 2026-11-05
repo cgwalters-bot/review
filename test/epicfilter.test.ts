@@ -44,9 +44,9 @@ test("661 publication: in-progress default, focus first, approvals first, honest
   assert.deepEqual(["other", "none", "all", `epic:${key("tracker#976")}`, `epic:${key("tracker#1100")}`].map((f) => model.count(f as never)), [2, 2, 8, 2, 2]);
   let chosen = "";
   const chips = epicChips(model, "active", (f) => { chosen = f; });
-  assert.match(chips.textContent!, /2 epics in progress: tracker#976 \(focus, the operator's comment this week\), tracker#1100 \(a run in 48 hours, an open PR\)\. Shown by default, with 2 whose epic is unknown or not read whole\./);
+  assert.match(chips.textContent!, /Default includes 2 unknown\/partial items, also counted in Other epics. Counts overlap; they are not additive/);
   const labels = [...chips.querySelectorAll("button")].map((b) => b.textContent);
-  assert.deepEqual(labels, ["In progress · 6", "Focus: tracker#976 · 2", "tracker#1100 · 2", "Other epics · 2", "No epic · 2", "Show everything · 8"]);
+  assert.deepEqual(labels, ["Default (in progress + unknown/partial) · 6", "Focus: tracker#976 · 2", "tracker#1100 · 2", "Other epics · 2", "No epic · 2", "Show everything · 8"]);
   chips.querySelectorAll<HTMLButtonElement>("button")[5]!.click();
   assert.equal(chosen, "all");
   const twin = epicChips(epicSelection(cards, [...parsed.epics!, { item: "other/tracker#976", active: true, activeWhy: ["open-pr"], complete: true, focus: false }], "active"), "active", () => {});
@@ -59,7 +59,12 @@ test("a capped publication: placeholders only, approvals still first, the cap co
   assert.ok(typeof capped === "object");
   assert.deepEqual([capped.complete, capped.omitted, capped.items.length, capped.identities?.length], [false, 2, 0, 8]);
   const placeholders = inboxCards({ published: { asks: [], list: capped, unavailable: false } });
-  assert.ok(placeholders.every((c) => "ask" in c && c.ask.requestsUnreadable));
+  assert.ok(placeholders.every((c) => "ask" in c && c.ask.detailsUnavailable && c.kind === "open"));
+  const list = document.createElement("div");
+  fillInbox(list, placeholders, hooks);
+  assert.equal(list.querySelector(".c-answer, .card-full, form"), null);
+  assert.match(list.textContent!, /Details unavailable/);
+  assert.ok(list.querySelector('a[href="#pr/cgwalters-forge/tracker/1261"]'));
   const model = epicSelection(placeholders, capped.epics, "active");
   assert.deepEqual(model.ordered.slice(0, 4).map((c) => c.key), [key("tracker#1261"), key("agent-board#650"), key("agentic-job#2900"), key("tracker#1310")]);
 });
@@ -76,7 +81,9 @@ test("missing or malformed activity hides nothing, and neither does a list with 
   for (const epics of [[], idle]) {
     const model = epicSelection(cards, epics, "active");
     assert.deepEqual([model.selected.length, model.hidden], [8, 0]);
-    assert.match(epicChips(model, "active", () => {}).textContent!, /No epic is in progress: everything is shown/);
+    const chips = epicChips(model, "active", () => {});
+    assert.match(chips.textContent!, /No epic is in progress: the default shows everything/);
+    assert.match(chips.querySelector("button")!.textContent!, /Default \(everything\) · 8/);
   }
 });
 
@@ -114,11 +121,11 @@ test("approve rows: one line with what the pass publishes, and Approve submits i
   const row = list.querySelector<HTMLElement>(`[data-key="${key("tracker#1261")}"]`)!;
   assert.ok(row.classList.contains("c-approve"));
   assert.match(row.textContent!, /Controller PR approved by the review job.*cgwalters-forge\/tracker#1261 · review-approve/);
-  assert.match(row.querySelector(".approval-evidence")!.textContent!, /^Diff size and CI not publishedReview the diff$/);
+  assert.match(row.querySelector(".approval-evidence")!.textContent!, /At a{12} · Diff unknown · CI unknown · Review agent unknown/);
   assert.equal(row.querySelector<HTMLAnchorElement>(".approval-evidence a")!.getAttribute("href"), "#pr/cgwalters-forge/tracker/1261");
   const withheld = document.createElement("div");
   fillInbox(withheld, cards.filter((c) => c.key === key("tracker#1300")), hooks);
-  assert.match(withheld.querySelector(".approval-evidence")!.textContent!, /^Review agent withheld/);
+  assert.match(withheld.querySelector(".approval-evidence")!.textContent!, /Review agent unknown/, "kind alone is not verified review evidence");
   assert.equal(row.querySelector(".card-full"), null, "nothing to unfold: the row is the action");
   row.querySelector<HTMLButtonElement>("button")!.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
