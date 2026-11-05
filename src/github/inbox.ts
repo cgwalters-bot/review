@@ -18,7 +18,7 @@
 // confirmed recently. A list that can't be read again keeps its cards,
 // marked unavailable, and says why.
 
-import type { DocumentEntry, Mark } from "./decisiondocument.ts";
+import type { DocumentEntry } from "./decisiondocument.ts";
 import { OPERATOR } from "./config.ts";
 import type { Ask, AskRef, NeedsYou } from "./holds.ts";
 import type { ApproveItem } from "./maintain.ts";
@@ -61,7 +61,7 @@ export type Card = CardBase & (
   | { kind: "answer" | "approve" | "promote" | "open" | "do"; ask: Ask }
   | { kind: "digest"; items: ApproveItem[] }
   | { kind: "send"; draft: DraftIssue }
-  | { kind: "document"; entry: DocumentEntry; mark?: Mark }
+  | { kind: "document"; entry: DocumentEntry }
 );
 
 const PULLS = ["pull_request", "approve_pull_request", "review_pull_request", "reply_pull_request", "close_pull_request"];
@@ -75,8 +75,6 @@ export function askUrl(r: AskRef): string {
 export function askHref(r: AskRef): string {
   return `#${PULLS.includes(r.type) ? "pr" : "issue"}/${r.repository}/${r.number}`;
 }
-
-const open = (state: string | undefined): boolean => state === undefined || state === "open";
 
 /** The forge this client writes to; a request on another is shown, never acted on. */
 export const GITHUB_FORGE = "github.com";
@@ -103,6 +101,7 @@ export function inboxCounts(p: Published, completed: ReadonlyMap<string, string>
  * the card acts as it always did.
  */
 export function refusal(a: Ask, step?: string): string | undefined {
+  if (a.detailsUnavailable) return "Details unavailable; inspect the source before acting";
   if (a.requestsUnreadable) return "this request's descriptors could not be read safely; it is read-only";
   const forge = a.requests?.find((r) => r.forge !== GITHUB_FORGE)?.forge;
   if (forge) return `this request is on ${forge}, and this page writes only to ${GITHUB_FORGE}`;
@@ -117,7 +116,7 @@ export function refusal(a: Ask, step?: string): string | undefined {
 export function askCard(a: Ask, unavailable = false): Card {
   const type = a.action.type;
   // A group's answer would land on its representative alone: its members are read and opened one by one.
-  const kind = a.source === "decisions" || a.source === "drafts" ? "open" : a.kind === "review-promote" ? "promote" : a.group ? "open" : type === "operator_action" ? "do" : type === "approve_pull_request" || (a.kind === "digest-approve" && a.action.head) ? "approve" : type === "issue" || type === "pull_request" ? "answer" : "open";
+  const kind = a.detailsUnavailable || a.source === "decisions" || a.source === "drafts" ? "open" : a.kind === "review-promote" ? "promote" : a.group ? "open" : type === "operator_action" ? "do" : type === "approve_pull_request" || (a.kind === "digest-approve" && a.action.head) ? "approve" : type === "issue" || type === "pull_request" ? "answer" : "open";
   const diagnostic = a.requests?.find((r) => r.quality !== "decision")?.quality;
   const note = [
     a.group && `${a.group.numbers.length} PRs: ${a.group.reason}`,
@@ -143,45 +142,6 @@ export function publishedCards(asks: readonly Ask[], unavailable = false): Card[
     if (a !== digest[0]) return [];
     return [{ kind: "digest", items, key: "digest", title: `Approve ${items.length} PR${items.length === 1 ? "" : "s"} as a group`, where: "the maintain digest", since: a.waitingSince, ...(unavailable ? { unavailable } : {}) }];
   });
-}
-
-/** A Send card for an open review-draft issue; a ticked box waits on the tracker's workflow, which closes the issue. */
-export function sendCard(d: DraftIssue & { issue: { state?: string } }): Card | undefined {
-  if (!open(d.issue.state)) return undefined;
-  return {
-    kind: "send",
-    draft: d,
-    key: `send:${d.issue.number}`,
-    title: d.issue.title,
-    where: `#${d.issue.number}`,
-    url: d.issue.html_url,
-    ...(d.box === "ticked" ? { answered: true, note: "Send is ticked: waiting on the tracker's workflow." } : {}),
-  };
-}
-
-/**
- * A card for an open decisions document entry. Its About item closed or
- * merged resolves it, as the document view does; a ticked option is his
- * answer, waiting on the bot; comments on the item since the ask mark it.
- */
-export function documentCard(entry: DocumentEntry, mark: Mark | undefined): Card | undefined {
-  if (entry.done) return undefined;
-  const about = entry.about ? `${entry.about.repo}#${entry.about.number}` : undefined;
-  // A mark read for another About line (an older body) is not this entry's.
-  const m = mark && mark.item === about ? mark : undefined;
-  if (m && m.state !== "answered") return undefined;
-  const answered = entry.options.some((o) => o.checked);
-  return {
-    kind: "document",
-    entry,
-    ...(m ? { mark: m } : {}),
-    key: `document:${entry.id}`,
-    title: `${entry.id} ${entry.title}`,
-    where: about ?? entry.id,
-    ...(m ? { url: m.url } : about ? { url: `https://github.com/${entry.about!.repo}/issues/${entry.about!.number}` } : {}),
-    ...(entry.about?.asked ? { since: entry.about.asked } : {}),
-    ...(answered ? { answered: true, note: "Answered: waiting on the bot." } : m ? { note: `Changed since asked: ${m.comments === 1 ? "a comment" : `${m.comments} comments`} on ${m.item}.` } : {}),
-  };
 }
 
 /** What the inbox last read of the pass's list. */
@@ -235,16 +195,10 @@ export function publishedNote(p: Published, now: number): { text: string; settle
 
 export interface InboxInput {
   published?: Published;
-  document?: { entries: readonly DocumentEntry[]; marks: ReadonlyMap<string, Mark> };
-  drafts?: readonly DraftIssue[];
 }
 
-/** Every card: the pass's in its order, then the document's and the drafts', those he did last. */
+/** Published inventory in producer order, followed by any snapshot-only holds. */
 export function inboxCards(input: InboxInput): Card[] {
-  const local = [
-    ...(input.document?.entries ?? []).map((e) => documentCard(e, input.document?.marks.get(e.id))),
-    ...(input.drafts ?? []).map(sendCard),
-  ].filter((c): c is Card => c !== undefined);
   const holds = input.published?.holds ?? [];
   const p = input.published;
   let asks = (p?.asks ?? []).filter((a) => !holds.some((h) => h.key === a.key));
@@ -259,11 +213,11 @@ export function inboxCards(input: InboxInput): Card[] {
       const detail = details.get(i.detailKey);
       if (detail) return [detail];
       const [repository = "", n = ""] = i.item.split("#");
-      return [{ ...i, key: i.detailKey, ask: `${i.item}: ${i.kind}`, recommendation: "Detail was not published; inspect the source before acting.", action: { type: "issue", repository, number: Number(n) }, requestsUnreadable: true }];
+      return [{ ...i, key: i.detailKey, ask: `${i.item}: ${i.kind}`, recommendation: null, action: { type: i.source === "reviews" ? "pull_request" : "issue", repository, number: Number(n) }, detailsUnavailable: true }];
     });
   }
   const published = p?.list?.identities ? asks.map((a) => askCard(a, p.unavailable)) : publishedCards(asks, p?.unavailable);
-  return [...published, ...publishedCards(holds), ...local.filter((c) => !c.answered), ...local.filter((c) => c.answered)];
+  return [...published, ...publishedCards(holds)];
 }
 
 /** Whether `login` may act on the inbox's cards: the operator, or a token GitHub hasn't named yet. */

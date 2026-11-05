@@ -1,19 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type DocumentEntry, type Mark, parseDocument } from "../src/github/decisiondocument.ts";
 import { type Ask, type NeedsYou, parseNeedsYou } from "../src/github/holds.ts";
-import { askCard, askHref, type Card, documentCard, inboxCards, NEEDS_YOU_MAX_AGE_MS, type Published, publishedCards, publishedNote, sendCard } from "../src/github/inbox.ts";
-import type { DraftIssue } from "../src/github/reviewdrafts.ts";
+import { askCard, askHref, inboxCards, NEEDS_YOU_MAX_AGE_MS, type Published, publishedCards, publishedNote } from "../src/github/inbox.ts";
 import { rawAsk, rawNeedsYou } from "./helpers.ts";
 
 const NOW = Date.parse("2026-10-25T12:00:00Z");
 const HOUR = 3_600_000;
 const at = (hoursAgo: number) => new Date(NOW - hoursAgo * HOUR).toISOString();
 const HEAD = "a".repeat(40);
-
-/** What a predicate made of a case: absent (the thing left), or the card waiting on him or answered. */
-type Outcome = "absent" | "present" | "answered";
-const outcome = (c: Card | undefined): Outcome => (c === undefined ? "absent" : c.answered ? "answered" : "present");
 
 /** A list as parsed, of the raw asks given. */
 function list(items: unknown[], over: Record<string, unknown> = {}, confirmed = at(0.1)): NeedsYou {
@@ -55,52 +49,10 @@ describe("published ask cards", () => {
   });
 });
 
-function draft(over: Partial<DraftIssue> = {}, state?: string): DraftIssue & { issue: { state?: string } } {
-  return { issue: { number: 40, title: "Review draft: upstream/widget#3: Fix", html_url: "https://github.com/cgwalters-forge/tracker/issues/40", body: "", comments: 1, user: { login: "cgwalters-bot" }, ...(state ? { state } : {}) }, box: "unticked", ...over };
-}
-
-describe("Send cards", () => {
-  const cases: [string, ReturnType<typeof draft>, Outcome][] = [
-    ["an open draft issue", draft(), "present"],
-    ["a draft he sent, the workflow not yet run", draft({ box: "ticked" }), "answered"],
-    ["a draft issue the workflow closed", draft({}, "closed"), "absent"],
-    // Not readable as a draft (no draft yet, too many comments): still his to look at.
-    ["a draft issue with no draft yet", draft({ refused: "100 or more comments" }), "present"],
-  ];
-  for (const [name, d, want] of cases) it(name, () => assert.equal(outcome(sendCard(d)), want));
-});
-
-describe("document entry cards", () => {
-  const body = "### D15 Create the ruleset\nAbout: example/work#15, asked 2026-10-15\n- [ ] A) Create it\nReply:\n\n### D16 Pick one\nAbout: example/work#16\n- [x] A) This\n- [ ] B) That\nReply: done\n\n### D17 Land it (P0, blocks example/work#17)\n- [ ] A) Yes\nReply:\n\n## Done\n### D1 Old\n- [x] A) Kept\n";
-  const entries = parseDocument(body);
-  const entry = (id: string): DocumentEntry => entries.find((e) => e.id === id)!;
-  const closed: Mark = { item: "example/work#15", state: "closed", url: "https://github.com/example/work/issues/15" };
-  const merged: Mark = { item: "example/work#17", state: "merged", url: "https://github.com/example/work/pull/17" };
-  const commented: Mark = { item: "example/work#15", state: "answered", comments: 2, url: "https://github.com/example/work/issues/15" };
-  const cases: [string, DocumentEntry, Mark | undefined, Outcome, RegExp?][] = [
-    ["an open entry", entry("D15"), undefined, "present"],
-    ["an entry he answered", entry("D16"), undefined, "answered", /waiting on the bot/],
-    ["an entry whose About item closed", entry("D15"), closed, "absent"],
-    ["an entry whose heading's blocked item merged", entry("D17"), merged, "absent"],
-    ["an entry whose item changed since the ask", entry("D15"), commented, "present", /Changed since asked: 2 comments on example\/work#15/],
-    ["a mark read for another item", entry("D16"), closed, "answered"],
-    ["an entry under Done", entry("D1"), undefined, "absent"],
-  ];
-  for (const [name, e, mark, want, note] of cases) {
-    it(name, () => {
-      const card = documentCard(e, mark);
-      assert.equal(outcome(card), want);
-      if (note) assert.match(card?.note ?? "", note);
-    });
-  }
-});
-
 describe("inboxCards", () => {
-  it("lists the pass's asks in its order, then the document's and the drafts', then those he did", () => {
-    const entries = parseDocument("### D2 Ask\n- [ ] A) Yes\nReply:\n\n### D3 Done here\n- [x] A) Yes\nReply:\n");
+  it("lists the pass's asks in producer order without local discovery", () => {
     const published: Published = { asks: asks(rawAsk(9, { priority: "P2" }), rawAsk(8)), unavailable: false };
-    const cards = inboxCards({ published, document: { entries, marks: new Map() }, drafts: [draft()] });
-    assert.deepEqual(cards.map((c) => `${c.key}${c.answered ? " (answered)" : ""}`), ["cgwalters-forge/tracker#9", "cgwalters-forge/tracker#8", "document:D2", "send:40", "document:D3 (answered)"]);
+    assert.deepEqual(inboxCards({ published }).map((c) => c.key), ["cgwalters-forge/tracker#9", "cgwalters-forge/tracker#8"]);
   });
 
   it("marks the cards of a list that can't be read now", () => {

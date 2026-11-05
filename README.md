@@ -50,14 +50,23 @@ the cards it shows; either way excluding successful local completions and
 departed cards retained for unsent text. The line over the cards gives the
 number hidden by the pass's cap (`omitted`) and the number hidden by the
 filter separately, beside group and member totals, local completions and
-omitted details. Uncertain writes remain outstanding.
+omitted details. **Other epics** overlaps named epic counts; it is not another
+partition of the list. Unknown chains remain in the default selection, and with
+no active epic the default chip explicitly says it shows everything. Uncertain
+writes remain outstanding. Filtering preserves focused editors and unsent text;
+**Show everything** recovers a departed draft without restoring write authority.
 Five cards are drawn initially; **Show more** draws the rest without inspecting
 their targets. **Details and action** explicitly opens a card's lazy inspection.
 Questions stay as short asks (wrapping on narrow screens,
 never clipped); context and answer forms are collapsed. An approval row has
 the ask, its PR, an Approve at the published head and a link to review the
-diff. The pass publishes no diff size or check state, so the row says so;
-`review-withheld` is marked as the review agent withholding approval. The
+diff. Optional `agent-board/approval-evidence/v1` supplies exact-head diff counts,
+CI state/completeness, review verdict/time and observation time for ungrouped,
+uncarried approvals. Missing, malformed, unknown-version, evicted or mismatched
+evidence stays unknown; partial CI never appears green. A publication refresh
+updates these facts even beside retained pending, sent or uncertain receipts,
+without changing their write outcomes. `review-withheld` is marked as the review
+agent withholding approval. The
 list's question and recommendation are display text, not instructions;
 links are made from its typed action references, never read from it.
 
@@ -87,6 +96,15 @@ snapshot from a pass without the list shows its own operator holds and
 says that review waits, proposals and digest asks aren't listed. Context
 facts use their own published observation times; the inbox does not fetch a
 coordinator heartbeat or reconstruct operations telemetry.
+
+The optional evidence contract shipped in agent-board#687 at
+`957cb9362a16f4fd13471c7d1c6252a0597eda6d`. It is capped at 50 entries, joined
+by typed PR identity and full assessed head, and consumes only existing producer
+reads. `test/fixtures/approval-evidence-needs-you.json` is its verbatim serialized
+projection, not a live capture or full publication; tests serialize it into the
+normal needs-you envelope before parsing and rendering. Producer caller enablement
+(`holds.approvalEvidence`) is off by default and belongs to the separate deployment
+follow-up, not this browser change.
 
 **Answer** is a hold or a PR's needs-human. Its card reads the target and
 its newest bot comment before showing the form, then checks the ask again
@@ -234,6 +252,30 @@ against pre-#229 the totals grow by 242 lines and 9,159 bytes. **The “JS shrin
 acceptance is still unmet**, as are real deployed-promotion/hold-release evidence
 and the unsupported reply/close/merge-or-enqueue actions in #222. This follow-up
 does not close that issue or add those writes.
+
+Compact-inbox follow-up (#239, continuing draft #241): using the same LF-count
+method above, including root `src/*.ts` and excluding deleted files, all production
+TypeScript is 19,112 lines (18,781 excluding CLI). #238 at `b04aa1d` has 19,118
+(18,787 excluding CLI); #242 at `4a8d672` has 19,214 (18,883 excluding CLI).
+The follow-up removes superseded local card discovery, unused browser state and
+legacy browser snapshot derivation rather than moving production logic into tests.
+The CLI's `review-state/v1` is unchanged; the browser's debugging export is now
+the smaller `review-inbox-state/v1`.
+
+Independent lockfile builds give `dist/app.js` sizes of 546,772 bytes (#238),
+529,014 (#242), and 518,923 (this follow-up): reductions of 27,849 and 10,091 bytes.
+The actual-main test replays the redacted 3 November publication against each
+revision (`REPLAY_ENTRY=/path/to/worktree/src/github/main.ts node --test
+--test-name-pattern='real snapshot replay request' test/needsyou.test.ts`). All
+three make two cold requests (`/user` and publication comments), one comments
+request per poll, and no target discovery. Timing is local replay timing, not a
+live latency comparison. `npm run check` passes 1,842 tests, typecheck and build.
+The dependency install still reports one high and one critical advisory.
+
+These are replay and DOM/CSS regressions, not a current signed-in capture or
+browser-geometry proof. Desktop and 390px screenshot/geometry acceptance remains
+outstanding: this handback allows no binary image artifacts and exposes no image
+publication channel. No live writes were performed; this does not complete #239.
 
 The digest's approvals are one **Approve selected** card. It approves
 selected PRs at the heads the digest assessed, skipping changed heads and

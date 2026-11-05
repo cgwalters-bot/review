@@ -136,6 +136,36 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 const listed = (at: number, items: unknown[], over: Record<string, unknown> = {}) => [holdsComment(iso(at), rawNeedsYou(items, iso(at), over))];
 
 describe("Needs you from the pass's published list", () => {
+  it("actual main retains a typed answer through filtering, publication eviction and Show everything", async (t) => {
+    const holds = { status: 200, etag: '"draft"', comments: listed(T0, [rawAsk(50, { epic: FOCUS, topEpic: FOCUS })], { epics }) };
+    const app = await boot(t, holds);
+    try {
+      const chip = (choice: string) => app.doc.querySelector<HTMLButtonElement>(`[data-epic-choice="${choice}"]`)!;
+      app.inspect();
+      await app.until(() => !!app.doc.querySelector(".card textarea"), "answer form");
+      const text = app.doc.querySelector<HTMLTextAreaElement>(".card textarea")!;
+      text.value = "Keep my unsent answer";
+      const card = text.closest<HTMLElement>(".card")!;
+      chip("none").focus(); chip("none").click();
+      assert.equal(app.doc.activeElement, chip("none"), "chip redraw retains keyboard focus");
+      assert.equal(card.hidden, true);
+      holds.etag = '"gone"';
+      holds.comments = listed(T0, [], { epics });
+      await app.wake(2 * MINUTE);
+      assert.equal(card.hidden, true, "an empty selection must not implicitly clear the filter");
+      const before = app.reads.all.length;
+      chip("all").click();
+      assert.equal(card.hidden, false);
+      assert.equal(text.value, "Keep my unsent answer");
+      assert.match(card.textContent!, /This has left the inbox/);
+      assert.equal(card.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled, true);
+      text.form!.dispatchEvent(new app.window.Event("submit", { bubbles: true, cancelable: true }));
+      await settle();
+      assert.equal(app.reads.all.length, before, "filter recovery never rereads or writes a target");
+      assert.deepEqual(app.reads.writes, []);
+    } finally { await app.close(); }
+  });
+
   const decision = () => rawAsk(1, { key: "cgwalters-forge/operator#1/decision-12", item: "cgwalters-forge/operator#1", source: "decisions", kind: "document-decision", action: { type: "issue", repository: "cgwalters-forge/operator", number: 1 } });
 
   it("excludes a successfully answered document decision immediately, before the publication changes", async (t) => {

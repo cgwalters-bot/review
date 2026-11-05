@@ -79,6 +79,17 @@ export interface Ask {
   requestsUnreadable?: boolean;
   /** Informational evidence for exact members, never approval authority. */
   reviewBuckets?: Record<string, ReviewBucket>;
+  /** Identity survived the publication cap, but its actionable detail did not. */
+  detailsUnavailable?: boolean;
+  approvalEvidence?: ApprovalEvidence;
+}
+
+export interface ApprovalEvidence {
+  assessed_head: string;
+  observed_at: string;
+  diff: "unavailable" | { additions: number; deletions: number };
+  ci: { state: "unknown" | "failing" | "pending" | "green"; complete: boolean };
+  review: { verdict: "approved" | "changes_requested" | "withheld"; at: string } | null;
 }
 
 export interface ReviewBucket {
@@ -249,6 +260,25 @@ function reviewBuckets(raw: unknown): Record<string, ReviewBucket> {
   })) as Record<string, ReviewBucket>;
 }
 
+/** Stops another head's or a partial read's success looking like evidence for this approval.
+ * Optional/off on older publishers; the producer caps this extension at 50 rows. */
+function approvalEvidence(raw: unknown): Record<string, ApprovalEvidence> {
+  if (!isObject(raw) || raw.schema !== "agent-board/approval-evidence/v1" || !time(raw.observed_at) || !isCount(raw.omitted) || !isObject(raw.items) || Object.keys(raw.items).length > 50) return {};
+  const result: Record<string, ApprovalEvidence> = {};
+  for (const [key, v] of Object.entries(raw.items)) {
+    if (!str(key, KEY_RE) || !isObject(v) || !str(v.assessed_head, HEAD_RE) || !isObject(v.ci) || !["unknown", "failing", "pending", "green"].includes(v.ci.state as string) || typeof v.ci.complete !== "boolean") continue;
+    if (v.diff !== "unavailable" && (!isObject(v.diff) || ![v.diff.additions, v.diff.deletions].every((n) => Number.isSafeInteger(n) && (n as number) >= 0))) continue;
+    if (v.review !== null && (!isObject(v.review) || !["approved", "changes_requested", "withheld"].includes(v.review.verdict as string) || !time(v.review.at))) continue;
+    result[key] = {
+      assessed_head: v.assessed_head as string, observed_at: raw.observed_at as string,
+      diff: v.diff === "unavailable" ? "unavailable" : { additions: (v.diff as Record<string, number>).additions!, deletions: (v.diff as Record<string, number>).deletions! },
+      ci: { state: v.ci.state as ApprovalEvidence["ci"]["state"], complete: v.ci.complete },
+      review: v.review === null ? null : { verdict: (v.review as Record<string, unknown>).verdict as NonNullable<ApprovalEvidence["review"]>["verdict"], at: (v.review as Record<string, string>).at! },
+    };
+  }
+  return result;
+}
+
 function parseRef(raw: unknown): AskRef | undefined {
   if (!isObject(raw) || !ASK_ACTIONS.includes(raw.type as string) || !str(raw.repository, REPO_RE) || /\/\.+$/.test(raw.repository as string) || !isPositive(raw.number)) return undefined;
   if ((raw.comment !== undefined && !isPositive(raw.comment)) || (raw.head !== undefined && raw.head !== null && !str(raw.head, HEAD_RE))) return undefined;
@@ -374,7 +404,10 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
     else allUnreadable = true;
   }
   const buckets = reviewBuckets(raw.review_buckets);
+  const evidence = approvalEvidence(raw.approval_evidence);
   for (const a of items) {
+    const e = evidence[a.key];
+    if (e && a.key === `${a.action.repository}#${a.action.number}`.toLowerCase() && !a.carried && !a.group && a.action.type === "approve_pull_request" && a.action.head === e.assessed_head && sources.some(([k, v]) => k === a.source && v === "complete")) a.approvalEvidence = e;
     if (raw.review_buckets !== undefined && !a.carried && raw.sources && (raw.sources as Record<string, unknown>)[a.source] === "complete") a.reviewBuckets = Object.fromEntries(
       (a.group?.numbers ?? [a.action.number]).flatMap((n) => {
         const key = `${a.action.repository}#${n}`.toLowerCase();

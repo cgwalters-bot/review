@@ -78,10 +78,10 @@ export function epicChips(model: ReturnType<typeof epicSelection>, choice: EpicF
   const name = (item: string): string => model.active.filter((e) => short(e.item) === short(item)).length > 1 ? item : short(item);
   const why = model.active.map((e) => `${name(e.item)} (${e.activeWhy.map((w) => WHY[w] ?? w).join(", ") || "no reason published"})`).join(", ");
   return h("div", { class: "epic-filter" },
-    h("p", { class: "note" }, model.active.length ? `${model.active.length} epic${model.active.length === 1 ? "" : "s"} in progress: ${why}. Shown by default` : "No epic is in progress: everything is shown.",
-      model.active.length ? (model.unsure ? `, with ${model.unsure} whose epic is unknown or not read whole.` : ".") : ""),
-    h("div", { class: "epic-chips", role: "group", "aria-label": "Filter by epic" }, chip("active", "In progress"),
+    h("p", { class: "note" }, model.active.length ? `${model.active.length} epic${model.active.length === 1 ? "" : "s"} in progress: ${why}. Shown by default` : "No epic is in progress: the default shows everything.",
+      model.active.length ? (model.unsure ? `, with ${model.unsure} whose epic is unknown or not read whole (also counted in Other epics).` : ".") : ""),
+    h("div", { class: "epic-chips", role: "group", "aria-label": "Filter by epic" }, chip("active", model.active.length ? "In progress + unknown" : "Default: everything"),
       ...model.active.map((e) => chip(`epic:${e.item}`, `${e.focus ? "Focus: " : ""}${name(e.item)}`, e.item)),
-      chip("other", "Other epics", "Inactive epics, and items whose epic the pass could not read"), chip("none", "No epic"), chip("all", "Show everything")),
+      chip("other", "Other epics", "Outside known active epics; unknown/partial items also stay in the default. Counts overlap."), chip("none", "No epic"), chip("all", "Show everything")),
     choice.startsWith("epic:") && !model.active.some((e) => choice === `epic:${e.item}`) ? h("p", { class: "note" }, `Showing ${choice.slice(5)}`) : null);
 }

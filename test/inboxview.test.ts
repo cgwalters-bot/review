@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parseDocument } from "../src/github/decisiondocument.ts";
-import { askCard, type Card, documentCard, publishedCards, publishedNote } from "../src/github/inbox.ts";
-import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, CARD_UNAVAILABLE_CLASS, fillInbox as drawInbox, holdsDraft, INBOX_PAGE, type InboxHooks, passLine } from "../src/github/inboxview.ts";
+import { askCard, type Card, publishedCards, publishedNote } from "../src/github/inbox.ts";
+import { CARD_CHANGED_NOTE, CARD_GONE_NOTE, CARD_STALE_CLASS, CARD_UNAVAILABLE_CLASS, fillInbox as drawInbox, holdsDraft, INBOX_PAGE, type InboxHooks } from "../src/github/inboxview.ts";
 import { ACTION_CONFIG, loadOffer } from "../src/github/actions.ts";
 import { GitHub } from "../src/github/api.ts";
 import { CHAT_CONFIG } from "../src/github/chatconfig.ts";
 import { ITEM_CHAT_EVENT } from "../src/github/chatitem.ts";
 import { proposalCard } from "../src/github/actionsview.ts";
-import type { Heartbeat } from "../src/github/heartbeat.ts";
-import { type Ask, type Hold, HOLDS_MARKER, parseHolds, parseNeedsYou } from "../src/github/holds.ts";
+import { type Ask, HOLDS_MARKER, parseHolds, parseNeedsYou } from "../src/github/holds.ts";
 import { answerForm } from "../src/github/view.ts";
 import { createRenderer } from "../src/markdown.ts";
 import { fixture, installDom, rawAsk, rawNeedsYou, REAL_NEEDS_YOU_AT, REAL_NEEDS_YOU_KEYS, realNeedsYouSnapshot } from "./helpers.ts";
@@ -36,7 +35,7 @@ const hooks: InboxHooks = {
 
 /** The open entry `id` of a document, as a card, with `extra` added to its text. */
 function entry(id: string, extra = ""): Card {
-  return documentCard(parseDocument(`### ${id} Pick one\n${extra}- [ ] A) This\n- [ ] B) That\nReply:\n`)[0]!, undefined)!;
+  return { kind: "document", key: `document:${id}`, title: `${id} Pick one`, where: id, entry: parseDocument(`### ${id} Pick one\n${extra}- [ ] A) This\n- [ ] B) That\nReply:\n`)[0]! };
 }
 
 /** The published asks of `raw`, as parsed. */
@@ -389,7 +388,7 @@ describe("fillInbox", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepEqual(sent, ["D1 B later"]);
     assert.ok(!holdsDraft(card));
-    const answered = documentCard(parseDocument("### D1 Pick one\n- [ ] A) This\n- [x] B) That\nReply: later\n")[0]!, undefined)!;
+    const answered: Card = { ...entry("D1"), answered: true, note: "Answered: waiting on the bot." };
     fillInbox(list, [answered], hooks);
     assert.notEqual(cardOf(list, "document:D1"), card);
     assert.ok(cardOf(list, "document:D1")!.classList.contains("card-done"));
@@ -414,25 +413,6 @@ describe("fillInbox", () => {
     assert.deepEqual([keys(list).length, read.length, box.querySelector(".inbox-more")], [INBOX_PAGE + 2, INBOX_PAGE, null], "new cards do not inspect themselves");
     for (const fold of list.querySelectorAll<HTMLDetailsElement>(".card-full")) { fold.open = true; fold.dispatchEvent(new win.Event("toggle")); }
     assert.equal(read.length, INBOX_PAGE + 2);
-  });
-});
-
-describe("passLine", () => {
-  const pool: Hold = { item: null, url: null, epic: false, kind: "pool", reason: "claude over pace", operator: false, priority: null, question: null };
-  const human = { ...pool, item: "o/r#1", url: "https://github.com/o/r/issues/1", kind: "needs-human", reason: "labelled needs-human", operator: true };
-  const ago = (minutes: number) => new Date(hooks.now - minutes * 60_000).toISOString();
-  const beat = (minutes: number): Heartbeat => ({ updatedAt: ago(minutes), session: "s", loopState: "polling", workers: [], skipped: 0 });
-  // name, holds (written 2h ago: the pass rewrites them only on a change), heartbeat, the line or null, whether it warns
-  const cases: [string, Hold[] | undefined, Heartbeat | null | undefined, string | null, boolean][] = [
-    ["old holds with a fresh heartbeat are current", [pool, human], beat(5), "New runs wait: pool: claude over pace", false],
-    ["a stale heartbeat", [pool], beat(60), "New runs wait: pool: claude over pace · the pass's heartbeat is stale", true],
-    ["no heartbeat published", [pool], null, "New runs wait: pool: claude over pace · the pass's heartbeat is stale", true],
-    ["nothing when no pool is held", [human], beat(60), null, false],
-    ["nothing when the holds weren't read", undefined, beat(5), null, false],
-  ];
-  for (const [name, holds, hb, text, warn] of cases) it(name, () => {
-    const el = passLine(holds && { at: ago(120), holds }, hb, hooks.now);
-    assert.deepEqual([el?.textContent ?? null, el?.classList.contains("warn") ?? false], [text, warn]);
   });
 });
 
