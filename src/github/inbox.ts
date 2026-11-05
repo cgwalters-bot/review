@@ -97,6 +97,20 @@ export function inboxCounts(p: Published, completed: ReadonlyMap<string, string>
 }
 
 /**
+ * Whether a card still waits on the operator here: an ask without a local
+ * receipt, or a digest group with a member PR approved at no receipt yet.
+ * The heading and the epic chips both count by this.
+ */
+export function cardOutstanding(c: Card, asks: readonly Ask[], completed: ReadonlyMap<string, string> = new Map()): boolean {
+  const done = (a: Ask) => completed.get(a.key) === decisionKey(a);
+  if ("ask" in c) return !done(c.ask);
+  if (c.kind !== "digest") return true;
+  const ref = (repository: string, number: number, head: string | undefined) => `${repository}#${number}@${head}`.toLowerCase();
+  const receipts = new Set(asks.filter((a) => !a.group && a.kind === "digest-approve" && done(a)).map((a) => ref(a.action.repository, a.action.number, a.action.head)));
+  return c.items.some((it) => !receipts.has(ref(`${it.pr.owner}/${it.pr.repo}`, it.pr.number, it.head)));
+}
+
+/**
  * Why a card writes nothing in place, though its kind would: its request
  * is on another forge, or the pass says its step (review-at-head for
  * Approve, check-proposal for Do) is not supported. Without descriptors,

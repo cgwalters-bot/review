@@ -295,6 +295,18 @@ describe("Needs you from the pass's published list", () => {
     } finally { await app.close(); }
   });
 
+  it("stops counting a digest once every member is approved here", async (t) => {
+    const app = await boot(t, { status: 200, etag: '"a"', comments: listed(T0, [7, 8].map((n) => approval(n, true))) });
+    try {
+      assert.equal(app.count(), "1");
+      app.doc.querySelector<HTMLButtonElement>(".maintain-sec button")!.click();
+      await app.until(() => !!app.doc.querySelector(".maintain-results [data-sent]"), "digest result");
+      assert.equal(app.count(), "0");
+      await app.reload();
+      assert.equal(app.count(), "0", "unchanged publication does not restore the completed digest");
+    } finally { await app.close(); }
+  });
+
   for (const overlapping of [true, false]) it(`shares ${overlapping ? "an in-flight" : "a completed but still unread"} approval across single and digest cards`, async (t) => {
     let release = () => {};
     const writeGate = new Promise<void>((resolve) => { release = resolve; });
@@ -536,6 +548,11 @@ describe("Needs you from the pass's published list", () => {
       assert.equal(app.count(), String(total));
       assert.equal(app.doc.querySelector<HTMLElement>(".inbox-cards > .card")!.dataset.key, row.dataset.key);
       assert.deepEqual(app.reads.writes, []);
+      // A local approval leaves the heading and the chips by one predicate.
+      app.doc.querySelector<HTMLButtonElement>(".inbox-cards > .card button")!.click();
+      await app.until(() => app.count() === String(total - 1), "completed approval");
+      assert.equal(chip("all").textContent, `Show everything · ${total - 1}`);
+      assert.equal(chip("active").textContent, `In progress + approvals · ${total - 1}`);
     } finally { await app.close(); }
   });
 

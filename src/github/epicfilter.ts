@@ -24,7 +24,8 @@ const refs = (c: Card): string[] => "ask" in c ? [c.ask.epic, c.ask.topEpic].fil
 const APPROVALS = ["review-approve", "review-withheld", "digest-approve"];
 const approval = (c: Card): boolean => c.kind === "approve" || c.kind === "digest" || ("ask" in c && APPROVALS.includes(c.ask.kind));
 
-export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[] | undefined, choice: EpicFilter) {
+/** `waits` tells the rows the chips count, as the heading does, from those completed here. */
+export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[] | undefined, choice: EpicFilter, waits: (c: Card) => boolean = () => true) {
   const active = (epics ?? []).filter((e) => e.active).sort((a, b) => Number(b.focus) - Number(a.focus));
   const activeIds = new Set(active.map((e) => e.item));
   const partialIds = new Set((epics ?? []).filter((e) => !e.active && !e.complete).map((e) => e.item));
@@ -63,7 +64,7 @@ export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[
       || (a.priority ?? "P9").localeCompare(b.priority ?? "P9") || (a.since ?? "~").localeCompare(b.since ?? "~"));
   });
   const unsure = active.length ? cards.filter((c) => !inProgress(c, refs(c)) && uncertain(c, refs(c))).length : 0;
-  return { active, unsure, selected, ordered, hidden: cards.length - selected.length, count: (f: EpicFilter) => cards.filter((c) => matches(c, f)).length };
+  return { active, unsure, selected, ordered, hidden: cards.length - selected.length, count: (f: EpicFilter) => cards.filter((c) => waits(c) && matches(c, f)).length };
 }
 
 /** The pass's activity reasons in words; a newer one is shown as published. */
