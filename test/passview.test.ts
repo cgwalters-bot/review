@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { HOLDS_MARKER, parseHolds } from "../src/github/holds.ts";
-import { parsePassView, passView, type PassView } from "../src/github/passview.ts";
+import { parsePassView, passView, type PassView, retainPassView } from "../src/github/passview.ts";
 import { fixture, installDom } from "./helpers.ts";
 
 installDom();
@@ -32,6 +32,19 @@ describe("pass publication replay", () => {
     const el = passView(parsePassView(raw), now + 7_200_000, "HTTP 503");
     for (const s of ["Publication unavailable", "not current", "stale", "partial", "3 records omitted", "2 pass records omitted", "incomplete publication is not an empty queue", "due; awaiting reading"]) assert.ok(el.textContent?.includes(s), s);
     assert.match(passView(raw, now - 120_000).textContent!, /clock is in the future/);
+  });
+
+  it("keeps the last readable view across a failed refresh and recovers on the next read", () => {
+    const last = parsePassView(snapshot().pass_view) as PassView;
+    const fresh = parsePassView({ ...snapshot().pass_view, observed_at: "2026-11-05T12:05:00Z" }) as PassView;
+    assert.equal(retainPassView(last, undefined, true), last);
+    assert.equal(retainPassView(last, "malformed", true), last);
+    assert.equal(retainPassView(last, fresh, true), fresh);
+    assert.equal(retainPassView(last, fresh, false), fresh);
+    assert.equal(retainPassView(last, undefined, false), undefined);
+    assert.equal(retainPassView(undefined, undefined, true), undefined);
+    const el = passView(retainPassView(last, undefined, true), now, "HTTP 503");
+    for (const s of ["Publication unavailable", "not current", "API rate limit exceeded", "merge-queue"]) assert.ok(el.textContent?.includes(s), s);
   });
 
   it("renders publisher text as text, and ignores untyped URLs", () => {

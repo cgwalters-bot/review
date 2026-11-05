@@ -37,6 +37,11 @@ export function parsePassView(raw: unknown): PassView | string {
   return raw as unknown as PassView;
 }
 
+/** While the publication can't be read, the last readable view stays, marked last read by passView's warning. */
+export function retainPassView(last: PassView | undefined, read: PassView | string | undefined, unavailable: boolean): PassView | string | undefined {
+  return unavailable && last && typeof read !== "object" ? last : read;
+}
+
 function itemLink(ref: string): HTMLElement {
   return h("a", { href: `https://github.com/${ref.replace("#", "/issues/")}` }, ref);
 }
