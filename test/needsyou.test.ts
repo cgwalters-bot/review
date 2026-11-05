@@ -516,6 +516,41 @@ describe("Needs you from the pass's published list", () => {
     }
   });
 
+  // #244: the 661 publication plus a #680 promote group, as Needs you drew it before #237 and #242.
+  it("661 publication with a promote group: compact cards, a quiet placeholder and members in the pass's order", async (t) => {
+    const published = { ...fixture<Record<string, unknown> & { items: unknown[]; identities: unknown[]; requests: Record<string, unknown>[] }>("needs-you-661.json"), validated_at: iso(T0), changed_at: iso(T0) };
+    const bucketed = fixture<{ group: { reason: string; numbers: number[] }; review_buckets: unknown }>("draft-review-needs-you.json");
+    const group = "cgwalters-forge/bootc#1";
+    const groupRequest = { ...published.requests.find((r) => r.key === "cgwalters-forge/tracker#1261")!, key: group, identity: `github.com/${group}/promote`, question: "3 drafts", target: { type: "pull_request", repository: "cgwalters-forge/bootc", number: 1 } };
+    const app = await boot(t, { status: 200, etag: '"a"', comments: [holdsComment(iso(T0), {
+      ...published, review_buckets: bucketed.review_buckets, count: 9, counts: { decisions: 9, groups: 1, members: 11 },
+      items: [...published.items, rawAsk(1, { key: group, item: group, source: "reviews", kind: "review-promote", ask: "3 drafts", action: { type: "pull_request", repository: "cgwalters-forge/bootc", number: 1 }, group: bucketed.group, epic: FOCUS, topEpic: FOCUS })],
+      identities: [...published.identities, { item: group, kind: "review-promote", source: "reviews", waiting_since: "2026-11-04T19:00:00Z", epic: FOCUS }],
+      requests: [...published.requests, groupRequest],
+    })] });
+    try {
+      const cards = [...app.doc.querySelectorAll<HTMLElement>(".inbox-cards > .card:not([hidden])")];
+      const card = (key: string) => cards.find((c) => c.dataset.key === key)!;
+      assert.equal(app.count(), "7");
+      assert.deepEqual(cards.map((c) => c.dataset.key), ["cgwalters-forge/tracker#1261", "cgwalters-forge/agent-board#650", group, "cgwalters-forge/agentic-job#2900", "cgwalters-forge/tracker#1310"]);
+      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, /9 published decisions · 1 groups · 11 members · 0 locally completed\. 1 without details\. Hidden: 0 by the pass's cap, 2 by the epic filter\./);
+      for (const c of cards) {
+        // #237 added a "Published decision context" fold beside Context on every card.
+        assert.deepEqual([...c.querySelectorAll(":scope > details:not(.card-full, .not-offered) > summary")].map((s) => s.textContent), c.querySelector(":scope > .card-note") ? ["Context"] : [], c.dataset.key);
+      }
+      assert.match(card("cgwalters-forge/tracker#1261").querySelector(".card-note")!.textContent!, /ownership_evidence/, "the published context is still one click away");
+      // #237 drew a detail-less identity as an Answer with a refusal box.
+      const placeholder = card("cgwalters-forge/tracker#1310");
+      assert.deepEqual([placeholder.querySelector(".kind")!.textContent, placeholder.querySelector(".title")!.textContent], ["Act", "Detail not published: inspect the source before acting"]);
+      assert.equal(placeholder.querySelector(".warn, button, a[href], details"), null);
+      // #242 drew nav buttons and bucket headings on the group before any read.
+      const members = card(group).querySelector(".members")!;
+      assert.equal(members.querySelector("nav, h4, button"), null);
+      assert.deepEqual([...members.querySelectorAll<HTMLElement>(".member")].map((d) => d.dataset.member), [1, 2, 3].map((n) => `cgwalters-forge/bootc#${n}`));
+      assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS], "drawing reads nothing else");
+    } finally { await app.close(); }
+  });
+
   it("a missing current list does not use retained epic activity to hide fallback holds", async (t) => {
     const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [rawAsk(1, { epic: FOCUS, topEpic: FOCUS })], { epics }) };
     const app = await boot(t, holds);
