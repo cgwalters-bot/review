@@ -77,6 +77,16 @@ export interface Ask {
   requests?: Request[];
   /** Descriptors were supplied but could not be read safely; never fall back to legacy writes. */
   requestsUnreadable?: boolean;
+  /** Informational evidence for exact members, never approval authority. */
+  reviewBuckets?: Record<string, ReviewBucket>;
+}
+
+export interface ReviewBucket {
+  bucket: "quick" | "deep";
+  assessed_head: string;
+  reason: string;
+  summary: string;
+  ci: "green" | "unknown";
 }
 
 /** One next step a request names, and whether the pass says it can be taken from here. */
@@ -227,6 +237,18 @@ const text = (v: unknown): string | undefined => (isText(v) && v.trim() ? v.spli
 /** Bound member rendering; refuse rather than silently truncate membership. */
 const MAX_GROUP_MEMBERS = 100;
 
+/** Fail closed without changing legacy asks or canonical counts. */
+function reviewBuckets(raw: unknown): Record<string, ReviewBucket> {
+  if (!isObject(raw) || Object.keys(raw).length > MAX_COUNT) return {};
+  if (Object.keys(raw).some((key) => !/^[a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9]\d*$/.test(key))) return {};
+  return Object.fromEntries(Object.entries(raw).filter(([key, v]) => {
+    const match = /^([a-z0-9_.-]+\/[a-z0-9_.-]+)#([1-9]\d*)$/.exec(key);
+    return match && !/\/\.+$/.test(match[1]!) && isPositive(Number(match[2])) && isObject(v) &&
+      Object.keys(v).every((k) => ["bucket", "assessed_head", "reason", "summary", "ci"].includes(k)) && (v.bucket === "quick" || v.bucket === "deep") && str(v.assessed_head, HEAD_RE) &&
+      (v.ci === "green" || v.ci === "unknown") && [v.reason, v.summary].every((s) => typeof s === "string" && s.trim() && s.length <= TEXT_MAX);
+  })) as Record<string, ReviewBucket>;
+}
+
 function parseRef(raw: unknown): AskRef | undefined {
   if (!isObject(raw) || !ASK_ACTIONS.includes(raw.type as string) || !str(raw.repository, REPO_RE) || /\/\.+$/.test(raw.repository as string) || !isPositive(raw.number)) return undefined;
   if ((raw.comment !== undefined && !isPositive(raw.comment)) || (raw.head !== undefined && raw.head !== null && !str(raw.head, HEAD_RE))) return undefined;
@@ -351,7 +373,13 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
     if (key) unreadable.add(key);
     else allUnreadable = true;
   }
+  const buckets = reviewBuckets(raw.review_buckets);
   for (const a of items) {
+    if (raw.review_buckets !== undefined && !a.carried && raw.sources && (raw.sources as Record<string, unknown>)[a.source] === "complete") a.reviewBuckets = Object.fromEntries(
+      (a.group?.numbers ?? [a.action.number]).flatMap((n) => {
+        const key = `${a.action.repository}#${n}`.toLowerCase();
+        return buckets[key] ? [[key, buckets[key]]] : [];
+      }));
     const mine = requests.filter(([k]) => k === a.key).map(([, r]) => r);
     if (mine.length) a.requests = mine;
     if (allUnreadable || unreadable.has(a.key) || (raw.requests !== undefined && !mine.length)) a.requestsUnreadable = true;

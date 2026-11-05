@@ -26,6 +26,7 @@ const options: esbuild.BuildOptions = {
   target: "es2022",
   outdir: OUT_DIR,
   minify: true,
+  charset: "utf8",
   sourcemap: true,
   legalComments: "linked",
   logLevel: "info",
