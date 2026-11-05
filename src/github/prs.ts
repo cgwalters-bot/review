@@ -23,6 +23,9 @@ import {
 import {
   type CiCheck,
   ciChecks,
+  ciSummary,
+  type CiState,
+  type RawCheckRun,
   type ForgePr,
   isForgeDraft,
   parseSearchPr,
@@ -223,6 +226,19 @@ async function requiredChecks(gh: GitHub, repo: string, branch: string): Promise
 
 /** Pages of a head's check runs to read at most (a big CI matrix runs past one). */
 const MAX_CHECK_PAGES = 3;
+
+/** Uncached, bounded CI for an explicitly inspected head; incomplete is unknown. */
+export async function readHeadCi(gh: GitHub, ref: IssueRef, sha: string): Promise<CiState | "unknown"> {
+  try {
+    const path = `/repos/${ref.owner}/${ref.repo}/commits/${sha}`;
+    const [runs, statuses] = await Promise.all([
+      gh.send<{ check_runs: RawCheckRun[]; total_count: number }>("GET", `${path}/check-runs?per_page=100`),
+      gh.send<{ statuses: RawStatus[]; total_count: number }>("GET", `${path}/status?per_page=100`),
+    ]);
+    if (!Array.isArray(runs.check_runs) || !Array.isArray(statuses.statuses) || runs.total_count !== runs.check_runs.length || statuses.total_count !== statuses.statuses.length || runs.total_count >= 100 || statuses.total_count >= 100) return "unknown";
+    return ciSummary(ciChecks(runs.check_runs, statuses.statuses));
+  } catch { return "unknown"; }
+}
 
 /** The latest check runs on a commit, every page up to MAX_CHECK_PAGES. */
 async function headCheckRuns(gh: GitHub, repo: string, sha: string): Promise<RawAppCheckRun[]> {

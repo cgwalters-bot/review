@@ -111,6 +111,20 @@ is not offered again; check and finish on GitHub.
 Published PR groups instead show their reason and exact member links for
 inspection, including one-member and carried groups. Each member's Inspect
 link is independent of its lazy read, so a failed read does not hide it.
+The optional needs-you v2 `review_buckets` extension (agent-board#680,
+`docs/pass.md`) is informational and absent/off on legacy lists. Its concrete
+threat is stale or representative-only evidence making another draft look
+reviewed. At most 10,000 lower-case typed repository/PR keys are read, with
+40-hex heads, bounded summary/reason text and the producer's exact bucket/CI
+enums. Each inspected member shows its own summary, reason, assessed and
+inspected heads, published CI and freshly read CI. Only matching, non-carried,
+fully read evidence with green published and successful current CI can be quick.
+Missing, malformed, evicted, unread or mismatched evidence is unknown/deep.
+The existing member view groups inspected members into quick, deep and
+unknown/deep; next/previous follows producer member order, not bucket position.
+A changed publication keeps the selected typed member and receipts but offers
+no stale action: close/reopen or `r` explicitly reinspects it. Polls do not read
+targets or discover new members. Producer ranking and decision counts stay intact.
 Foreign/unreadable descriptors and retired policy still remove navigation.
 Groups never offer an
 answer, approval or release on just the representative. Membership is
@@ -148,6 +162,12 @@ the replacement commit. No command, ready, merge or enqueue is sent. Sent and
 uncertain receipts are kept separately for each member/head in this signed-in
 session; they do not mark the group done. The receipt says approval sent, waiting on promoter,
 not promotion completed. Human-text members still require Make it mine.
+CI is read uncached at inspection and both approval preflights, bounded to
+100 checks and 100 statuses; incomplete/unavailable reads are unknown. A changed
+CI summary also requires redisplay and confirmation, without requiring green
+CI for an explicit approval. The shared synthetic producer projection is in
+`test/fixtures/draft-review-needs-you.json`; real-hook offline replay is not
+live acceptance. No live mutations or private payloads were used to test it.
 If descriptors become foreign or unreadable, prior member outcomes remain
 visible without controls or navigation, even if the write was still pending.
 Reloading with `r` refreshes member readers, not a cached member-list receipt.

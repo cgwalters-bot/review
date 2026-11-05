@@ -120,7 +120,7 @@ describe("fillInbox", () => {
       chatItem: () => ({ ref: REAL_NEEDS_YOU_KEYS[0]!, title: "Constructed group" }),
     });
     const card = list.firstElementChild!;
-    assert.deepEqual([...card.querySelectorAll("li a")].map((a) => a.getAttribute("href")), numbers.map((n) => `#pr/cgwalters-forge/agentic-job/${n}`));
+    assert.deepEqual([...card.querySelectorAll(".member summary a")].map((a) => a.getAttribute("href")), numbers.map((n) => `#pr/cgwalters-forge/agentic-job/${n}`));
     assert.equal(card.querySelector("form, .primary, .c-answer, .c-approve, [href*='untrusted']"), null);
     assert.match(card.textContent!, /Inspect each member; no group writes/);
     if (carried) assert.match(card.textContent!, /Carried over/);
@@ -158,7 +158,7 @@ describe("fillInbox", () => {
     } else {
       assert.notEqual(list.firstElementChild, card, "valid membership replaces the old representative form");
       assert.equal(list.firstElementChild!.querySelector("form, textarea"), null);
-      assert.deepEqual([...list.firstElementChild!.querySelectorAll("li a")].map((a) => a.getAttribute("href")), ["#pr/cgwalters-forge/agentic-job/2110", "#pr/cgwalters-forge/agentic-job/2111"]);
+      assert.deepEqual([...list.firstElementChild!.querySelectorAll(".member summary a")].map((a) => a.getAttribute("href")), ["#pr/cgwalters-forge/agentic-job/2110", "#pr/cgwalters-forge/agentic-job/2111"]);
     }
   });
 
@@ -174,7 +174,7 @@ describe("fillInbox", () => {
         chatItem: () => ({ ref: `example/project#${row.numbers[0]}`, title: "Redacted" }),
       });
       assert.equal(reads, 0);
-      assert.deepEqual([...list.querySelectorAll("li a")].map((a) => a.getAttribute("href")), row.numbers.map((n) => `#pr/example/project/${n}`));
+      assert.deepEqual([...list.querySelectorAll(".member summary a")].map((a) => a.getAttribute("href")), row.numbers.map((n) => `#pr/example/project/${n}`));
       assert.match(list.textContent!, /Inspect each member/);
       assert.equal(list.querySelector("form, .c-answer, .c-approve"), null);
       assert.equal(list.querySelector("[href*='untrusted']"), null);
@@ -197,9 +197,9 @@ describe("fillInbox", () => {
     const grouped = (numbers: number[]) => askCard({ ...(q as Card & { kind: "answer" }).ask, action: { type: "pull_request", repository: "o/r", number: 1 }, group: { reason: "drafts", numbers } });
     fillInbox(list, [grouped([1, 2])], hooks);
     assert.equal(list.querySelector("form"), null);
-    assert.equal(list.querySelectorAll("li").length, 2);
+    assert.equal(list.querySelectorAll(".member").length, 2);
     fillInbox(list, [grouped([1, 3, 4])], hooks);
-    assert.equal(list.querySelectorAll("li").length, 3);
+    assert.equal(list.querySelectorAll(".member").length, 3);
     assert.equal(list.querySelector("[href='#pr/o/r/2']"), null);
   });
 
@@ -216,10 +216,10 @@ describe("fillInbox", () => {
     finish("https://github.com/o/r/pull/1#pullrequestreview-1");
     await settle();
     assert.match(list.textContent!, /Approved:/);
-    assert.equal(list.querySelectorAll("li a").length, 2);
+    assert.equal(list.querySelectorAll(".member summary a").length, 2);
     fillInbox(list, [askCard({ ...a, group: { reason: "drafts", numbers: [1, 3] } })], pending);
     assert.match(list.textContent!, /Approved:/);
-    assert.deepEqual([...list.querySelectorAll("li a")].map((a) => a.getAttribute("href")), ["#pr/o/r/1", "#pr/o/r/3"]);
+    assert.deepEqual([...list.querySelectorAll(".member summary a")].map((a) => a.getAttribute("href")), ["#pr/o/r/1", "#pr/o/r/3"]);
   });
 
   it("keeps a rejected single approval's outcome beside new membership without a retry", async () => {

@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { GitHub } from "../src/github/api.ts";
-import { type Ask, parseNeedsYou } from "../src/github/holds.ts";
-import { type Card, publishedCards, refusal } from "../src/github/inbox.ts";
+import { type Ask, type ReviewBucket, parseNeedsYou } from "../src/github/holds.ts";
+import { type Card, inboxCards, publishedCards, refusal } from "../src/github/inbox.ts";
 import { fillInbox } from "../src/github/inboxview.ts";
 import { newestDraft, type ReviewDraftConfig } from "../src/github/reviewdrafts.ts";
 import { fields, fixture, rawAsk, rawNeedsYou, scriptedFetch, type Scripted } from "./helpers.ts";
@@ -21,6 +21,17 @@ const url = "https://github.com/cgwalters-forge/tracker/issues/50";
 const path = "/repos/cgwalters-forge/tracker/issues/50";
 const head = "a".repeat(40);
 const replacement = "b".repeat(40);
+const bucketFixture = fixture("draft-review-needs-you.json") as { schema: string; group: { reason: string; numbers: number[] }; review_buckets: Record<string, ReviewBucket> };
+function bucketCard(over: Record<string, unknown> = {}, askOver: Record<string, unknown> = {}): Card {
+  const a = rawAsk(1, { key: "cgwalters-forge/bootc#1", item: "cgwalters-forge/bootc#1", source: "reviews", kind: "review-promote",
+    action: { type: "pull_request", repository: "cgwalters-forge/bootc", number: 1 }, group: bucketFixture.group, ...askOver });
+  // The shared producer fixture is a projection, not a full publication.
+  // Supply the unchanged baseline envelope and consume its schema verbatim.
+  const list = parseNeedsYou(JSON.parse(JSON.stringify(rawNeedsYou([a], "2026-11-05T00:00:00Z", { ...bucketFixture, ...over }))));
+  assert.equal(typeof list, "object");
+  return publishedCards((list as Exclude<typeof list, string>).items)[0]!;
+}
+const bootcDraft = (n: number) => ({ ...draft(n, n === 2 ? replacement : head), html_url: `https://github.com/cgwalters-forge/bootc/pull/${n}` });
 const shown = () => ({ title: "Which way?", body: "Q: Which way?", state: "open", html_url: url, labels: [{ name: "needs-human" }, { name: "needs-design" }, { name: "other" }] });
 /** The pass's asks of `raw`. */
 function asks(...raw: Record<string, unknown>[]): Ask[] {
@@ -212,7 +223,7 @@ for (const failure of [false, true]) for (const policy of ["foreign", "unreadabl
       r.paint(restricted, true, remount);
       if (policy === "unsupported" || policy === "read-failed") await openMember(r);
       assert.match(r.list.textContent!, receipt);
-      assert.equal(r.list.querySelector(".card-body button:not(:disabled)"), null);
+      assert.equal(r.list.querySelector(".card-body .actions button:not(:disabled)"), null);
       if (policy === "foreign" || policy === "unreadable") {
         assert.equal(r.list.querySelector("a[href]"), null);
         assert.match(r.list.textContent!, /Prior write on cgwalters-forge\/widget#7/);
@@ -1023,4 +1034,161 @@ test("a digest that disappears when all members are restricted retains no approv
     old.click(); await settle();
     assert.equal(r.writes().length, 0);
   }
+});
+
+test("shared #680 projection round trips exact members and navigates independently of bucket order", async () => {
+  assert.equal(bucketFixture.schema, "agent-board/needs-you/v2");
+  const r = setup((method, p) => {
+    if (p.endsWith("/check-runs")) return { body: { total_count: 1, check_runs: [{ name: "test", status: "completed", conclusion: "success" }] } };
+    if (p.endsWith("/status")) return { body: { total_count: 0, statuses: [] } };
+    return { body: bootcDraft(Number(p.split("/").at(-1))) };
+  });
+  const c = bucketCard();
+  assert.ok("ask" in c);
+  assert.deepEqual(c.ask.reviewBuckets, bucketFixture.review_buckets);
+  r.paint(c);
+  assert.equal(r.calls.length, 0, "initial load does no discovery");
+  for (const [n, group] of [[1, "quick"], [2, "deep"], [3, "unknown/deep"]] as const) {
+    const d = [...r.list.querySelectorAll<HTMLDetailsElement>(".member")].find((d) => d.dataset.member?.endsWith(`#${n}`))!;
+    d.open = true; await settle();
+    assert.equal(d.closest<HTMLElement>("[data-review-group]")!.dataset.reviewGroup, group);
+    assert.match(d.textContent!, /CI success.*inspected head/);
+    assert.match(d.textContent!, new RegExp(n === 1 ? "Inspected README diff.*Small mechanical" : n === 2 ? "Pending fresh verified.*src/install.rs" : "No fresh review evidence"));
+    d.open = false;
+  }
+  const next = [...r.list.querySelectorAll<HTMLButtonElement>("nav button")].find((b) => b.textContent === "Next member")!;
+  const previous = [...r.list.querySelectorAll<HTMLButtonElement>("nav button")].find((b) => b.textContent === "Previous member")!;
+  previous.click(); await settle();
+  previous.click(); await settle();
+  assert.equal(r.list.querySelector<HTMLDetailsElement>(".member[open]")!.dataset.member, "cgwalters-forge/bootc#1");
+  next.click(); await settle();
+  assert.equal(r.list.querySelector<HTMLDetailsElement>(".member[open]")!.dataset.member, "cgwalters-forge/bootc#2");
+  const changed = structuredClone(bucketFixture.review_buckets);
+  changed["cgwalters-forge/bootc#2"]!.bucket = "quick";
+  const reads = r.calls.length;
+  r.paint(bucketCard({ review_buckets: changed })); await settle();
+  assert.equal(r.list.querySelector<HTMLDetailsElement>(".member[open]")!.dataset.member, "cgwalters-forge/bootc#2", "refresh keeps typed identity, not group index");
+  assert.equal(r.calls.length, reads, "a changed poll restores selection without reading targets");
+  assert.match(r.list.querySelector(".member[open]")!.textContent!, /evidence changed/);
+  assert.equal(r.writes().length, 0);
+});
+
+for (const source of ["drafts", "decisions"]) test(`changed lazy ${source} group preserves selected member without poll reads`, async () => {
+  const r = setup(() => ({ body: bootcDraft(1) }));
+  r.paint(bucketCard({}, { source }));
+  const first = await openMember(r);
+  assert.equal(first.dataset.member, "cgwalters-forge/bootc#1");
+  const calls = r.calls.length;
+  const changed = bucketCard({}, { source, group: { ...bucketFixture.group, reason: "new grouping" } });
+  r.state.published = { asks: "ask" in changed ? [changed.ask] : [], unavailable: false };
+  fillInbox(r.list, [changed], inboxHooks(r.state));
+  await settle();
+  assert.ok(r.list.querySelector<HTMLDetailsElement>(".card-full")!.open);
+  const selected = r.list.querySelector<HTMLDetailsElement>(".member[open]")!;
+  assert.equal(selected.dataset.member, "cgwalters-forge/bootc#1");
+  assert.match(selected.textContent!, /evidence changed/);
+  assert.equal(r.calls.length, calls);
+  selected.open = false; await settle(); selected.open = true; await settle();
+  assert.ok(r.calls.length > calls, "only explicit reinspection reads the target");
+});
+
+for (const [name, extension, askOver] of [
+  ["legacy", undefined, {}], ["malformed", { "cgwalters-forge/bootc#1": { ...bucketFixture.review_buckets["cgwalters-forge/bootc#1"], assessed_head: "short" } }, {}],
+  ["unknown extension version", { schema: "v3", members: bucketFixture.review_buckets }, {}],
+  ["unknown record version", { "cgwalters-forge/bootc#1": { ...bucketFixture.review_buckets["cgwalters-forge/bootc#1"], version: 3 } }, {}],
+  ["carried", bucketFixture.review_buckets, { carried: true }],
+  ["stale", { "cgwalters-forge/bootc#1": { ...bucketFixture.review_buckets["cgwalters-forge/bootc#1"], assessed_head: replacement } }, {}],
+] as const) test(`${name} assessment cannot classify a member quick`, async () => {
+  const r = setup((_, p) => ({ body: p.endsWith("/check-runs") ? { total_count: 1, check_runs: [{ name: "test", status: "completed", conclusion: "success" }] } : p.endsWith("/status") ? { total_count: 0, statuses: [] } : bootcDraft(1) }));
+  r.paint(bucketCard({ review_buckets: extension }, askOver));
+  const row = await openMember(r);
+  assert.equal(row.closest<HTMLElement>("[data-review-group]")!.dataset.reviewGroup, "unknown/deep");
+  assert.equal(r.writes().length, 0);
+});
+
+test("extension bounds, unread sources, evicted detail and unknown schema never grant quick or approval", () => {
+  const c = bucketCard(); assert.ok("ask" in c);
+  for (const over of [
+    { sources: { reviews: "unread" } },
+    { review_buckets: Object.fromEntries(Array.from({ length: 10_001 }, (_, i) => [`cgwalters-forge/bootc#${i + 1}`, bucketFixture.review_buckets["cgwalters-forge/bootc#1"]])) },
+    { review_buckets: { "cgwalters-forge/bootc#1": { ...bucketFixture.review_buckets["cgwalters-forge/bootc#1"], summary: "x".repeat(501) } } },
+  ]) {
+    const malformed = bucketCard(over); assert.ok("ask" in malformed);
+    assert.equal(malformed.ask.reviewBuckets?.["cgwalters-forge/bootc#1"], undefined);
+  }
+  const raw = rawNeedsYou([], "2026-11-05T00:00:00Z", { review_buckets: bucketFixture.review_buckets, identities: [{ key: c.ask.key, detail_key: c.ask.key, item: c.ask.item, source: "reviews", kind: "review-promote", priority: null, waiting_since: c.ask.waitingSince, carried: false }], count: 1 });
+  const list = parseNeedsYou(raw); assert.ok(typeof list === "object");
+  const evicted = inboxCards({ published: { asks: [], list, unavailable: false } })[0]!;
+  assert.ok("ask" in evicted);
+  assert.equal(evicted.ask.reviewBuckets, undefined);
+  assert.ok(refusal(evicted.ask, "promote"));
+  assert.equal(typeof parseNeedsYou({ ...raw, schema: "agent-board/needs-you/v3" }), "string");
+});
+
+for (const race of [false, true]) test(`CI ${race ? "write-boundary race" : "truncated read"} uses the real member hooks without new authority`, async () => {
+  let green = true;
+  const r = setup((method, p) => {
+    if (p.endsWith("/check-runs")) return { body: { total_count: race ? 1 : 101, check_runs: [{ name: "test", status: "completed", conclusion: green ? "success" : "failure" }] } };
+    if (p.endsWith("/status")) return { body: { total_count: 0, statuses: [] } };
+    if (p.endsWith("/reviews")) { green = false; return { body: [] }; }
+    return { body: bootcDraft(1) };
+  });
+  r.paint(bucketCard()); const row = await openMember(r);
+  assert.equal(row.closest<HTMLElement>("[data-review-group]")!.dataset.reviewGroup, race ? "quick" : "unknown/deep");
+  if (race) {
+    row.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+    assert.match(row.textContent!, /CI moved/);
+  }
+  assert.equal(r.writes().length, 0);
+});
+
+test("mixed evidence retains per-member sent and uncertain receipts across bucket and representative moves", async () => {
+  const r = setup((method, p) => {
+    if (p.endsWith("/check-runs")) return { body: { total_count: 1, check_runs: [{ name: "test", status: "completed", conclusion: "success" }] } };
+    if (p.endsWith("/status")) return { body: { total_count: 0, statuses: [] } };
+    if (p.endsWith("/reviews")) return method === "GET" ? { body: [] } : { status: p.includes("/2/") ? 502 : 200, body: { html_url: "https://github.com/cgwalters-forge/bootc/pull/1#pullrequestreview-1" } };
+    return { body: bootcDraft(Number(p.split("/").at(-1))) };
+  });
+  r.paint(bucketCard());
+  for (const number of [1, 2]) {
+    const row = [...r.list.querySelectorAll<HTMLDetailsElement>(".member")].find((d) => d.dataset.member?.endsWith(`#${number}`))!;
+    row.open = true; await settle(); row.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+  }
+  const moved = bucketCard({ review_buckets: {} }, { key: "cgwalters-forge/bootc#2", action: { type: "pull_request", repository: "cgwalters-forge/bootc", number: 2 }, group: { reason: "regrouped", numbers: [2, 3, 1] } });
+  r.paint(moved); await settle();
+  assert.match(r.list.querySelector(".member[open]")!.textContent!, /uncertain/);
+  for (const row of r.list.querySelectorAll<HTMLDetailsElement>(".card:not(.card-stale) .member")) {
+    row.open = false; await settle(); row.open = true; await settle();
+    if (row.dataset.member?.endsWith("#1")) assert.match(row.textContent!, /Approval sent/);
+    if (row.dataset.member?.endsWith("#2")) assert.match(row.textContent!, /uncertain/);
+  }
+  assert.equal(r.writes().length, 2);
+  assert.equal(r.list.querySelector(".card-done"), null);
+});
+
+test("CI change without push refuses the displayed member; refresh requires another confirmation", async () => {
+  let green = true;
+  let confirms = 0;
+  const confirm = dom.window.confirm;
+  dom.window.confirm = () => { confirms++; return true; };
+  const r = setup((method, p) => {
+    if (p.endsWith("/check-runs")) return { body: { total_count: 1, check_runs: [{ name: "test", status: "completed", conclusion: green ? "success" : "failure" }] } };
+    if (p.endsWith("/status")) return { body: { total_count: 0, statuses: [] } };
+    if (p.endsWith("/reviews")) return { body: method === "GET" ? [] : { html_url: "https://github.com/cgwalters-forge/bootc/pull/1#pullrequestreview-1" } };
+    return { body: bootcDraft(1) };
+  });
+  try {
+    const c = bucketCard(); r.paint(c);
+    const old = await openMember(r);
+    green = false;
+    old.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+    assert.match(old.textContent!, /CI moved.*reread/);
+    assert.equal(r.writes().length, 0);
+    r.paint(c, true); const fresh = await openMember(r);
+    assert.match(fresh.textContent!, /unknown\/deep · CI failure/);
+    assert.equal(confirms, 1);
+    fresh.querySelector<HTMLButtonElement>("button")!.click(); await settle();
+    assert.equal(confirms, 2);
+    assert.deepEqual(r.writes().map((c) => c.body), [{ event: "APPROVE", commit_id: head }]);
+  } finally { dom.window.confirm = confirm; }
 });

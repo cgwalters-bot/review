@@ -44,8 +44,8 @@ import {
 } from "./board.ts";
 import { BOARD_NUMBER, BOARD_OWNER, BOT_LOGIN, OPERATOR, QUESTION_LABEL, DONE, FETCH_CONCURRENCY, LINKED_STATUSES, PAGE_SIZE, QUEUE_STATUSES, RECENT_COMMENTS, TRACKER_REPO } from "./config.ts";
 import { promoteProblem, refKey } from "./forge.ts";
-import { mapLimit, submitReview } from "./prs.ts";
-import type { ReviewRequest } from "./forge.ts";
+import { mapLimit, readHeadCi, submitReview } from "./prs.ts";
+import type { CiState, ReviewRequest } from "./forge.ts";
 import { approveHead, approveSelected, type ApproveResult } from "./maintain.ts";
 
 const PROJECT = `/orgs/${BOARD_OWNER}/projectsV2/${BOARD_NUMBER}`;
@@ -481,6 +481,7 @@ export async function approveAt(gh: GitHub, pr: IssueRef, head: string, ask?: { 
 
 /** A member of a card's PRs, as one read of it shows it. */
 export interface MemberPr {
+  ci: CiState | "unknown";
   ref: IssueRef;
   url: string;
   title: string;
@@ -499,16 +500,18 @@ export async function readMember(gh: GitHub, ref: IssueRef): Promise<MemberPr> {
   if (!actual || refKey(actual).toLowerCase() !== refKey(ref).toLowerCase()) throw new Error(`${refKey(ref)} is now ${pr.html_url}`);
   const author = pr.user?.login ?? "ghost";
   const problem = promoteProblem({ ref: actual, author, body: pr.body ?? "" });
-  return { ref: actual, url: pr.html_url, title: pr.title, state: `${pr.merged ? "merged" : pr.state}${pr.draft ? " draft" : ""}`, head: pr.head.sha, author, ...(problem ? { problem } : {}) };
+  const ci = await readHeadCi(gh, ref, pr.head.sha);
+  return { ref: actual, url: pr.html_url, title: pr.title, state: `${pr.merged ? "merged" : pr.state}${pr.draft ? " draft" : ""}`, head: pr.head.sha, author, ci, ...(problem ? { problem } : {}) };
 }
 
 /** A push after this check can only leave an approval of the old commit, never its replacement. */
-export async function promoteMember(gh: GitHub, ref: IssueRef, head: string, policy: () => void): Promise<string | undefined> {
+export async function promoteMember(gh: GitHub, ref: IssueRef, head: string, policy: () => void, ci: MemberPr["ci"] = "unknown"): Promise<string | undefined> {
   return asOperator(gh, async () => {
     const check = async () => {
       policy();
       const now = await readMember(gh, ref);
       if (now.head !== head) throw new Error("This member changed: head moved. Reload, reread and confirm again.");
+      if (now.ci !== ci) throw new Error("This member changed: CI moved. Reload, reread and confirm again.");
       if (now.state !== "open draft" || now.problem || !/^[0-9a-f]{40}$/.test(head)) throw new Error(now.problem ?? `Member is ${now.state}, not an eligible open draft`);
       policy();
     };
