@@ -166,7 +166,7 @@ async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHoo
 }
 
 /** A card's PRs, each read only when he opens it: a group's members, or a Promote card's PR. */
-function memberList(c: Card & { ask: Ask }, hooks: InboxHooks): HTMLElement | null {
+function memberList(c: Card & { ask: Ask }, hooks: InboxHooks, inspected?: string, refresh = false): HTMLElement {
   const [owner = "", repo = ""] = c.ask.action.repository.split("/");
   const groups = ["quick", "deep", "unknown/deep"].map((name) => h("section", { "data-review-group": name }, h("h4", {}, name)));
   let active: string | undefined;
@@ -185,12 +185,25 @@ function memberList(c: Card & { ask: Ask }, hooks: InboxHooks): HTMLElement | nu
       if (d.children.length === 1) d.append(bodySlot(memberBody(c, { owner, repo, number }, hooks, current).then((body) => {
         if (current()) {
           const group = groups.find((g) => g.dataset.reviewGroup === body.querySelector<HTMLElement>("[data-bucket]")?.dataset.bucket) ?? groups[2]!;
-          if (d.parentElement !== group) group.append(d);
+          if (d.parentElement !== group) {
+            // Moving a details node clears its keyboard focus in browsers.
+            const focused = d.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+            group.append(d);
+            focused?.focus({ preventScroll: true });
+          }
         }
         return body;
       })));
     });
     d.dataset.member = `${owner}/${repo}#${number}`.toLowerCase();
+    if (d.dataset.member === inspected) {
+      // A poll restores selection only; r explicitly reinspects that identity.
+      if (!refresh) {
+        d.dataset.restore = "pending";
+        d.append(h("p", { class: "note" }, "unknown/deep: evidence changed. Close and reopen to inspect again."), ...memberReceipts({ owner, repo, number }, hooks));
+      }
+      d.open = true;
+    }
     return d;
   });
   const move = (step: number) => {
@@ -281,7 +294,7 @@ function entryForm(c: Card & { kind: "document" }, hooks: InboxHooks): HTMLEleme
 }
 
 /** The card's in-place action or body, read on drawing where it needs to be; else a link to where it is done. */
-function action(c: Card, hooks: InboxHooks): HTMLElement | null {
+function action(c: Card, hooks: InboxHooks, inspected?: string, refresh = false): HTMLElement | null {
   if (c.answered) return null;
   const no = "ask" in c ? refusal(c.ask, c.kind === "approve" ? "review-at-head" : c.kind === "do" ? "check-proposal" : undefined) : undefined;
   if (no && "ask" in c) {
@@ -294,7 +307,7 @@ function action(c: Card, hooks: InboxHooks): HTMLElement | null {
     }
     return body;
   }
-  if ("ask" in c && (c.ask.group || c.kind === "promote")) return memberList(c, hooks);
+  if ("ask" in c && (c.ask.group || c.kind === "promote")) return memberList(c, hooks, inspected, refresh);
   if ("ask" in c && (c.ask.source === "decisions" || c.ask.source === "drafts") && hooks.publishedBody) return bodySlot(hooks.publishedBody(c.ask));
   switch (c.kind) {
     case "answer": if (hooks.answerBody && hooks.mayAct) return bodySlot(hooks.answerBody(c.ask)); break;
@@ -341,7 +354,7 @@ function bodySlot(body: Promise<HTMLElement>): HTMLElement {
   return slot;
 }
 
-export function cardEl(c: Card, hooks: InboxHooks, inspected?: string): HTMLElement {
+export function cardEl(c: Card, hooks: InboxHooks, inspected?: string, refresh = false): HTMLElement {
   // An answer keeps its own receipts (answerBody), and an Open card writes nothing; the rest by what they write.
   const key = JSON.stringify(c.kind === "digest" ? [c.kind, c.items.map((a) => [a.pr, a.head])] : c.kind === "send" ? [c.kind, c.key, c.draft.issue.body, c.draft.found?.raw] : c.kind === "document" ? [c.kind, c.key, cardSignature(c)] : [c.kind, c.key, c.ask.action, members(c.ask), policySignature(c)]);
   const previous = hooks.writes?.get(key);
@@ -379,17 +392,17 @@ export function cardEl(c: Card, hooks: InboxHooks, inspected?: string): HTMLElem
     const fold = h("details", { class: "card-full" }, h("summary", {}, "Details and action"));
     fold.addEventListener("toggle", () => {
       if (!fold.open || fold.children.length > 1 || retired.has(el)) return;
-      const act = action(c, hooks);
+      const act = action(c, hooks, inspected, refresh);
       if (act) fold.append(act);
     });
     if (ask && (ask.group || c.kind === "promote") && members(ask).some((n) => `${ask.action.repository}#${n}`.toLowerCase() === inspected)) {
-      const act = action(c, hooks);
+      const act = action(c, hooks, inspected, refresh);
       if (act) fold.append(act);
       fold.open = true;
     }
     el.append(fold);
   } else {
-    const act = action(c, hooks);
+    const act = action(c, hooks, inspected, refresh);
     if (act) el.append(act);
   }
   const off = ask && !c.answered ? notOffered({ ...c, ask }) : null;
@@ -479,7 +492,7 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
       return el;
     }
     if (el) retired.add(el);
-    const fresh = cardEl(c, hooks, inspected);
+    const fresh = cardEl(c, hooks, inspected, force);
     if ("ask" in c && c.ask.group && c.kind !== "promote") {
       const prior = el?.querySelector<HTMLElement>(":scope > .prior-write");
       if (prior) fresh.append(prior);
@@ -516,17 +529,6 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
       }
     }
     cursor = el;
-  }
-  if (inspected && !force) {
-    const row = [...list.querySelectorAll<HTMLDetailsElement>("details.member")].find((d) => d.dataset.member === inspected && !retired.has(d.closest(`.${CARD_CLASS}`)!));
-    if (row && !row.open && row.children.length === 1) {
-      // Restore selection, not a read or authority. Polls never inspect a target.
-      const [repository = "", n = ""] = inspected.split("#");
-      const [owner = "", repo = ""] = repository.split("/");
-      row.dataset.restore = "pending";
-      row.append(h("p", { class: "note" }, "unknown/deep: evidence changed. Close and reopen to inspect again."), ...memberReceipts({ owner, repo, number: Number(n) }, hooks));
-      row.open = true;
-    }
   }
   return matching.length;
 }
