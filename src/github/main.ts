@@ -76,6 +76,7 @@ import { type ApproveResult, approveSelected } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { type Need, needStops } from "./needs.ts";
 import { type Ask, holdAsks, loadHolds, readHoldAsk } from "./holds.ts";
+import { passView } from "./passview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -812,6 +813,8 @@ async function refreshPeople(state: State): Promise<boolean> {
 function paintActive(state: State): void {
   if (!state.home) return;
   const model = snapshot(state);
+  const source = model.sources.holds;
+  state.home.slots.passes.replaceChildren(passView(state.active?.holds?.passView, Date.now(), source && source.state !== "ok" ? source.error ?? source.state : undefined));
   fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError, Date.now(), state.active?.board);
   fillState(state.home, model);
 }

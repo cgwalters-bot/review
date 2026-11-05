@@ -1,5 +1,8 @@
 /* Palette and layout carried over from prototypes/review-queue.html,
    without web fonts (the CSP allows no third-party origins). */
+.pass-view { padding: 16px; overflow-wrap: anywhere; }
+.pass-record { border-block-start: 1px solid var(--line); padding-block: 8px; }
+.pass-view h3 { margin-block-start: 24px; }
 :root {
   color-scheme: light;
   --ground: #f3f5f8; --surface: #fff; --surface-2: #eef1f5; --ink: #172130; --muted: #5a6677; --line: #d8dee6;
