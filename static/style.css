@@ -449,6 +449,19 @@ details.sec[open] > summary { border-bottom: 1px solid var(--line); }
 .source-freshness { overflow-wrap: anywhere; padding: .5rem 1rem; }
 .status-preview > :not(.status-summary) { display: none; }
 .status-preview > :first-child { margin-top: 0; }
+/* The pass history: published text, wrapped rather than clipped. */
+.pass-view { padding: 0 1rem 1rem; min-width: 0; overflow-wrap: anywhere; }
+.pass-view h3 { margin: 1.25rem 0 .5rem; }
+.pass-view h4 { margin: .75rem 0 .25rem; font-size: var(--type-secondary); }
+.pass-view ul, .pass-list { margin: .25rem 0; padding-left: 1.25rem; }
+.pass-record { border-top: 1px solid var(--line); padding: .5rem 0; }
+.pass-record > p { margin: .25rem 0; }
+.pass-result, .pass-state { font-weight: 600; padding: 0 6px; border-radius: 4px; background: var(--p3-soft); color: var(--p3); }
+.pass-result.pass-success { background: var(--ok-soft); color: var(--ok); }
+.pass-result.pass-partial, .pass-state { background: var(--p2-soft); color: var(--p2); }
+.pass-result.pass-failure { background: var(--p0-soft); color: var(--p0); }
+.pass-errors { color: var(--p0); }
+.pass-flag { color: var(--p1); font-weight: 600; }
 /* The chat drawer, opened from Needs you. It stays within the viewport,
    including long untrusted tool output; full screen covers the page. */
 .chat-panel { min-width: 0; max-width: 100%; display: grid; gap: 6px; padding: 8px 12px; background: var(--surface); }

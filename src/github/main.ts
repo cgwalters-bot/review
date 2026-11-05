@@ -75,7 +75,8 @@ import { draftCard, draftReviewForm } from "./reviewdraftsview.ts";
 import { type ApproveResult, approveSelected } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { type Need, needStops } from "./needs.ts";
-import { type Ask, holdAsks, loadHolds, readHoldAsk } from "./holds.ts";
+import { type Ask, holdAsks, loadPublications, readHoldAsk } from "./holds.ts";
+import { type PassesRead, passesView, readPasses } from "./passesview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -190,6 +191,8 @@ interface State {
   /** Viewer choice survives leaving the home page, even when storage is blocked. */
   /** What the pass's needs-you list said when last read. */
   published: Published;
+  /** What the pass history said when last read, for Status. */
+  passes: PassesRead;
   /** Why GitHub hasn't confirmed `login` (it is then the cache's, or unknown); retried at each poll. */
   loginError?: string;
   loginChecking?: boolean;
@@ -814,6 +817,7 @@ function paintActive(state: State): void {
   const model = snapshot(state);
   fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError, Date.now(), state.active?.board);
   fillState(state.home, model);
+  state.home.slots.passes.replaceChildren(passesView(state.passes, Date.now()));
 }
 
 /**
@@ -845,9 +849,10 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
 /** Read inbox context without the CLI's usage and operations telemetry. */
 async function loadInboxContext(gh: GitHub): Promise<Active> {
   const sources: Sources = {};
-  const holds = await readSource(sources, "holds", (source) => loadHolds(source), gh);
+  const read = await readSource(sources, "holds", (source) => loadPublications(source), gh);
   const active: Active = { at: Date.now(), sources, warnings: Object.entries(sources).flatMap(([name, source]) => source.error ? [`Couldn't read ${name}: ${source.error}`] : []) };
-  if (holds) active.holds = holds;
+  if (read?.holds) active.holds = read.holds;
+  if (read) active.passes = read.passes ?? null;
   return active;
 }
 
@@ -892,6 +897,7 @@ async function refreshActive(state: State): Promise<boolean> {
         state.active = active;
         // A cached list shows at once, said to be the cache's; a cache miss says nothing yet.
         if (typeof active.holds?.needsYou === "object" && !state.published.list) state.published = readPublished(state.published, active);
+        if (!state.passes.data) state.passes = readPasses(state.passes, active);
         paintActive(state);
         paintNeeds(state);
       }
@@ -900,6 +906,7 @@ async function refreshActive(state: State): Promise<boolean> {
     if (state.closed) return false;
     state.active = { ...active, ...(state.active?.status === undefined ? {} : { status: state.active.status }) };
     state.published = readPublished(state.published, active);
+    state.passes = readPasses(state.passes, active);
     paintActive(state);
     paintNeeds(state);
     return Object.values(active.sources ?? {}).every((s) => s.state !== "unavailable");
@@ -1697,6 +1704,7 @@ async function start(source: TokenSource): Promise<void> {
     activeRunning: false,
     decisionsAnswered: new Set(),
     published: { asks: [], unavailable: false },
+    passes: {},
   };
   state.gh.onUnauthorized = () => void rejected(state);
   byId("meta").textContent = "Checking the token…";

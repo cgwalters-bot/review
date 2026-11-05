@@ -295,6 +295,18 @@ cut short by the publisher can be expanded from matching board context.
 There are no browser-derived risk, focus, scheduling or usage dashboards.
 Header counts and the source-freshness line remain available on both pages.
 
+Below it, **Scheduler passes** shows what the pass publishes of its recent
+runs (`agent-board/passes/v1`, [docs/passes.md](docs/passes.md)): each
+pass's result and its failed sections' first error lines, what it started
+with links to the item and run (preview and uncertain starts marked as
+such), why it started nothing, each pool's use against its allowance with
+the time to its reset, and the runs and PRs in flight. It is the bot's own
+comment beside the hold snapshot, read in the same request, and only
+displayed: it has no controls and changes nothing on Needs you. Missing,
+malformed, stale or partial data is shown as unknown, never as zero or
+idle, and while a read fails the last one read stays, marked so. agent-board
+does not publish it yet (see the doc), so the view says it is not published.
+
 The old Agents, Board, Activity, Usage, Ops and Dashboard hashes resolve to
 Status. Maintain and Chat resolve to Needs you. Old board-filter hashes
 also resolve to Needs you, without applying an obsolete board filter.

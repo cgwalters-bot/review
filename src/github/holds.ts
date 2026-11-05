@@ -12,6 +12,7 @@
 import type { GitHub } from "./api.ts";
 import { isBot } from "./authors.ts";
 import { fencedJson, isObject, type RawComment, str, time } from "./heartbeat.ts";
+import { findPasses, type Passes } from "./passes.ts";
 import { ITEM_RE, usagePath } from "./usage.ts";
 
 /** The comment's first line. */
@@ -434,8 +435,24 @@ export async function readHoldAsk(gh: GitHub, owner: string, repo: string, numbe
 
 /** The published holds, read with the viewer's token; undefined when none is published. A failed read throws, for readSource to say. */
 export async function loadHolds(gh: GitHub): Promise<Holds | undefined> {
+  return (await loadPublications(gh)).holds;
+}
+
+/** usagePath's page size: a full page may leave a later comment unread. */
+const PAGE = 100;
+
+/** The holds and the pass history (passes.ts), from the one read of their issue's comments. */
+export async function loadPublications(gh: GitHub): Promise<{ holds: Holds | undefined; passes: Passes | string | undefined }> {
   const { data } = await gh.get<RawComment[]>(usagePath);
-  return findHolds(Array.isArray(data) ? data : []);
+  const comments = Array.isArray(data) ? data : [];
+  let passes: Passes | string | undefined;
+  // The pass history must never cost Needs you its snapshot.
+  try {
+    passes = findPasses(comments) ?? (comments.length >= PAGE ? `not among the issue's first ${PAGE} comments, so unknown` : undefined);
+  } catch (e) {
+    passes = `unreadable (${e instanceof Error ? e.name : "error"})`;
+  }
+  return { holds: findHolds(comments), passes };
 }
 
 /**
