@@ -292,8 +292,72 @@ status update as sanitized Markdown, with its publication age and an
 **Expand** control. Missing, cached and unreadable sources are labelled;
 they are not treated as evidence that work is healthy or complete. Titles
 cut short by the publisher can be expanded from matching board context.
-There are no browser-derived risk, focus, scheduling or usage dashboards.
+The read-only **Poller passes** panel shows the optional structured pass
+publication: recent results and failed sections' first error lines, typed
+starts with item/kind/pool/run links, no-start reasons and re-plan deadlines,
+pool usage against allowed pace and reset countdowns, and running work or
+PRs queued for merge or waiting for review. It flags the publisher's
+well-under-pace assessment only when that pool has zero ready work. The
+browser does not calculate scheduling policy or scrape logs.
 Header counts and the source-freshness line remain available on both pages.
+
+### Pass publication contract (producer dependency)
+
+This is an app-side proposal, **not yet published by agent-board**. The exact
+synthetic JSON shape is [test/fixtures/pass-view.json](test/fixtures/pass-view.json):
+add optional `pass_view` beside `needs_you` in the existing
+`agent-board/holds/v1` bot comment. Its schema is `agent-board/pass-view/v1`.
+Absent means off/older producer, never a healthy idle pass. There is no new
+browser option, endpoint, target read, write permission or independent poll.
+Publication should remain off by default with the producer's existing
+`holds.needsYou` setting; no additional control is proposed.
+
+The concrete threats are unbounded publisher data creating unbounded DOM,
+and publisher-supplied addresses becoming navigation. The consumer accepts
+at most 8 passes, 12 sections per pass, 32 starts and 32 reasons per pass,
+16 pools and 100 in-flight records. It rejects an invalid extension as a
+whole without losing the inbox. Display strings are single-line, at most
+240 characters; names are lower-case tokens up to 32 characters. Links are
+constructed only from validated GitHub repository/item/run/PR components.
+Unknown fields are ignored. Publisher prose is text, not Markdown or authority.
+
+Producer requirements for a follow-up in `cgwalters-forge/agent-board`:
+
+- Use the fixture's exact keys and enums. `passes` is newest first; `at` is
+  each pass's clock and `observed_at` is the latest pool/in-flight observation.
+  `result` is success/partial/failure, with per-section success/skipped/failure.
+  A failed section requires `error`: only the first sanitized error line,
+  never a request URL, response body, credential, inference, broker or tailnet
+  address. Successful/skipped sections have null error. Do not scrape logs:
+  collect these from the same typed outcomes that generate the log lines.
+- `started` records confirmed starts (not preview intentions), with the run's
+  actual repository and numeric id. Preserve accepted dispatches even if later
+  bookkeeping fails. If no start was confirmed, publish `reasons`: no-ready-work,
+  replan-delay with its `until` timestamp, capped, or held; `item: null` denotes
+  a global reason. Missing reasons are unknown, not no-ready-work.
+- Pools carry used/allowed percentages, reset clock, ready count and the
+  producer's `under_pace` assessment. Null means unknown; do not turn failed
+  readings into zero. The app uses no independent under-pace threshold.
+  In-flight records distinguish running (same fields as a start), merge-queue
+  and waiting-review (typed repository and PR number).
+- `complete` describes the current source sample, not a guarantee that every
+  historical pass was observed. `omitted` counts records dropped outside passes;
+  each pass's `omitted` counts its dropped starts/sections/reasons. All are
+  nonnegative integers up to 1,000,000. Keep publication within the comment cap,
+  dropping pass-view detail before inbox identities, marking omissions and
+  incomplete sources rather than claiming idle health. Publish failed sections
+  even when scheduling fails; gaps from a failed publication remain unknown.
+  The publication mechanism must not rely on the existing success-only holds
+  path to report a failed pass. Carry at most the seven previous pass records;
+  do not refresh old observation clocks when sources fail.
+
+The panel labels observations older than an hour as stale, future clocks as
+suspect, and read/cache failures as unavailable rather than current. A GitHub
+304 cannot advance the pass's observation time. Partial or omitted data never
+claims an empty queue. Fixtures and replay tests are offline evidence only;
+producer publication and authenticated live parity remain acceptance work.
+This run cannot file the required cross-repository producer issue; the contract
+above and exact fixture are the handoff for that issue/linked PR.
 
 The old Agents, Board, Activity, Usage, Ops and Dashboard hashes resolve to
 Status. Maintain and Chat resolve to Needs you. Old board-filter hashes

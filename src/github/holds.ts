@@ -13,6 +13,7 @@ import type { GitHub } from "./api.ts";
 import { isBot } from "./authors.ts";
 import { fencedJson, isObject, type RawComment, str, time } from "./heartbeat.ts";
 import { ITEM_RE, usagePath } from "./usage.ts";
+import { parsePassView, type PassView } from "./passview.ts";
 
 /** The comment's first line. */
 export const HOLDS_MARKER = "<!-- agent-board-holds v1 -->";
@@ -190,6 +191,7 @@ export interface Holds {
   holds: Hold[];
   /** The ranked list, or why the snapshot's can't be used; absent where the snapshot has none (holds.needsYou off, an older pass, or past the comment's cap). */
   needsYou?: NeedsYou | string;
+  passView?: PassView | string;
 }
 
 const isText = (v: unknown): v is string => typeof v === "string";
@@ -408,6 +410,7 @@ export function parseHolds(body: string | null | undefined): Holds | undefined {
   const pass = parsePass(raw.pass);
   if (pass) out.pass = pass;
   if (raw.needs_you !== undefined) out.needsYou = parseNeedsYou(raw.needs_you);
+  if (raw.pass_view !== undefined) out.passView = parsePassView(raw.pass_view);
   return out;
 }
 
