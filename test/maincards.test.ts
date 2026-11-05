@@ -1036,7 +1036,7 @@ test("a digest that disappears when all members are restricted retains no approv
   }
 });
 
-test("shared #680 projection round trips exact members and navigates independently of bucket order", async () => {
+test("shared #680 projection round trips exact members as labelled rows in the pass's order", async () => {
   assert.equal(bucketFixture.schema, "agent-board/needs-you/v2");
   const r = setup((method, p) => {
     if (p.endsWith("/check-runs")) return { body: { total_count: 1, check_runs: [{ name: "test", status: "completed", conclusion: "success" }] } };
@@ -1048,21 +1048,23 @@ test("shared #680 projection round trips exact members and navigates independent
   assert.deepEqual(c.ask.reviewBuckets, bucketFixture.review_buckets);
   r.paint(c);
   assert.equal(r.calls.length, 0, "initial load does no discovery");
-  for (const [n, group] of [[1, "quick"], [2, "deep"], [3, "unknown/deep"]] as const) {
+  const order = () => [...r.list.querySelectorAll<HTMLDetailsElement>(".member")].map((d) => d.dataset.member);
+  const published = ["cgwalters-forge/bootc#1", "cgwalters-forge/bootc#2", "cgwalters-forge/bootc#3"];
+  // #242 drew nav buttons and bucket headings before any read, and moved rows under them.
+  assert.equal(r.list.querySelector(".members nav, .members h4, [data-review-group]"), null);
+  for (const [n, bucket] of [[1, "quick"], [2, "deep"], [3, "unknown/deep"]] as const) {
     const d = [...r.list.querySelectorAll<HTMLDetailsElement>(".member")].find((d) => d.dataset.member?.endsWith(`#${n}`))!;
     d.open = true; await settle();
-    assert.equal(d.closest<HTMLElement>("[data-review-group]")!.dataset.reviewGroup, group);
-    assert.match(d.textContent!, /CI success.*inspected head/);
+    assert.equal(d.dataset.bucket, bucket);
+    assert.match(d.textContent!, new RegExp(`${bucket} · CI success`));
     assert.match(d.textContent!, new RegExp(n === 1 ? "Inspected README diff.*Small mechanical" : n === 2 ? "Pending fresh verified.*src/install.rs" : "No fresh review evidence"));
+    assert.equal(d.querySelectorAll(".review-evidence").length, 1);
+    assert.doesNotMatch(d.querySelector(".review-evidence")!.textContent!, /[0-9a-f]{40}/, "no full heads in the evidence line");
     d.open = false;
   }
-  const next = [...r.list.querySelectorAll<HTMLButtonElement>("nav button")].find((b) => b.textContent === "Next member")!;
-  const previous = [...r.list.querySelectorAll<HTMLButtonElement>("nav button")].find((b) => b.textContent === "Previous member")!;
-  previous.click(); await settle();
-  previous.click(); await settle();
-  assert.equal(r.list.querySelector<HTMLDetailsElement>(".member[open]")!.dataset.member, "cgwalters-forge/bootc#1");
-  next.click(); await settle();
-  assert.equal(r.list.querySelector<HTMLDetailsElement>(".member[open]")!.dataset.member, "cgwalters-forge/bootc#2");
+  assert.deepEqual(order(), published, "inspection labels rows; it never reorders them");
+  const second = r.list.querySelectorAll<HTMLDetailsElement>(".member")[1]!;
+  second.open = true; await settle();
   const changed = structuredClone(bucketFixture.review_buckets);
   changed["cgwalters-forge/bootc#2"]!.bucket = "quick";
   const reads = r.calls.length;
@@ -1075,18 +1077,8 @@ test("shared #680 projection round trips exact members and navigates independent
   assert.equal(refreshed?.dataset.member, "cgwalters-forge/bootc#2", "explicit reload reinspects the selected identity");
   assert.match(refreshed.textContent!, /deep · CI success/);
   assert.ok(r.calls.length > reads, "explicit reload reads the selected target");
+  assert.deepEqual(order(), published);
   assert.equal(r.writes().length, 0);
-});
-
-test("member navigation keeps keyboard focus after asynchronous bucket assignment", async () => {
-  const r = setup((_, p) => ({ body: p.endsWith("/check-runs") ? { total_count: 1, check_runs: [{ name: "test", status: "completed", conclusion: "success" }] } : p.endsWith("/status") ? { total_count: 0, statuses: [] } : bootcDraft(1) }));
-  r.paint(bucketCard());
-  const first = r.list.querySelector<HTMLDetailsElement>(".member")!;
-  r.list.querySelector<HTMLButtonElement>("nav button:last-child")!.click();
-  assert.equal(document.activeElement, first.querySelector("summary"));
-  await settle();
-  assert.equal(first.closest<HTMLElement>("[data-review-group]")!.dataset.reviewGroup, "quick");
-  assert.equal(document.activeElement, first.querySelector("summary"));
 });
 
 for (const source of ["drafts", "decisions"]) test(`changed lazy ${source} group preserves selected member without poll reads`, async () => {
@@ -1118,7 +1110,10 @@ for (const [name, extension, askOver] of [
   const r = setup((_, p) => ({ body: p.endsWith("/check-runs") ? { total_count: 1, check_runs: [{ name: "test", status: "completed", conclusion: "success" }] } : p.endsWith("/status") ? { total_count: 0, statuses: [] } : bootcDraft(1) }));
   r.paint(bucketCard({ review_buckets: extension }, askOver));
   const row = await openMember(r);
-  assert.equal(row.closest<HTMLElement>("[data-review-group]")!.dataset.reviewGroup, "unknown/deep");
+  assert.equal(row.dataset.bucket, "unknown/deep");
+  // Only evidence for this member at this head may show its summary.
+  if (name === "stale") assert.match(row.querySelector(".review-evidence")!.textContent!, /assessed at bbbbbbb, not this head/);
+  assert.doesNotMatch(row.querySelector(".review-evidence")!.textContent!, /README/);
   assert.equal(r.writes().length, 0);
 });
 
@@ -1150,7 +1145,7 @@ for (const race of [false, true]) test(`CI ${race ? "write-boundary race" : "tru
     return { body: bootcDraft(1) };
   });
   r.paint(bucketCard()); const row = await openMember(r);
-  assert.equal(row.closest<HTMLElement>("[data-review-group]")!.dataset.reviewGroup, race ? "quick" : "unknown/deep");
+  assert.equal(row.dataset.bucket, race ? "quick" : "unknown/deep");
   if (race) {
     row.querySelector<HTMLButtonElement>("button")!.click(); await settle();
     assert.match(row.textContent!, /CI moved/);

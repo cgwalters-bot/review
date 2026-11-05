@@ -153,8 +153,9 @@ async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHoo
   const where = refKey(m.ref);
   const evidence = !c.unavailable && !c.ask.carried && !c.ask.requestsUnreadable && (c.ask.requests ?? []).every((r) => r.quality === "decision") ? c.ask.reviewBuckets?.[where.toLowerCase()] : undefined;
   const bucket = evidence?.assessed_head === m.head && (evidence.bucket !== "quick" || evidence.ci === "green" && m.ci === "success") ? evidence.bucket : "unknown/deep";
+  // One short line: the row's bucket is a label, not a place it moves to.
   const facts = h("div", { "data-bucket": bucket }, h("p", {}, link(m.url, m.title), ` · ${m.state} · ${m.head.slice(0, 7)} · by ${m.author} · `, h("a", { href: `#pr/${where.replace("#", "/")}` }, "Review")),
-    h("p", { class: "review-evidence" }, `${bucket} · CI ${m.ci ?? "unknown"} (published ${evidence?.ci ?? "unknown"}) · inspected head ${m.head}. ${evidence?.summary ?? "No fresh review evidence"}. Reason: ${evidence?.reason ?? "Missing, unread or carried assessment"}. Assessed head: ${evidence?.assessed_head ?? "unknown"}. Informational only.`));
+    h("small", { class: "note review-evidence" }, `${bucket} · CI ${m.ci ?? "unknown"} (published ${evidence?.ci ?? "unknown"}) · ${!evidence ? "No fresh review evidence" : evidence.assessed_head !== m.head ? `assessed at ${evidence.assessed_head.slice(0, 7)}, not this head` : `${evidence.summary}; ${evidence.reason}`}. Informational only.`));
   if (c.kind !== "promote") return h("div", {}, facts, ...memberReceipts(ref, hooks));
   const no = [refusal(c.ask, "promote"), m.problem, m.state !== "open draft" ? `member is ${m.state}, not an open draft` : undefined].filter(Boolean).join("; ");
   const key = approvalKey(m.ref, m.head);
@@ -168,14 +169,12 @@ async function memberBody(c: Card & { ask: Ask }, ref: IssueRef, hooks: InboxHoo
 /** A card's PRs, each read only when he opens it: a group's members, or a Promote card's PR. */
 function memberList(c: Card & { ask: Ask }, hooks: InboxHooks, inspected?: string, refresh = false): HTMLElement {
   const [owner = "", repo = ""] = c.ask.action.repository.split("/");
-  const groups = ["quick", "deep", "unknown/deep"].map((name) => h("section", { "data-review-group": name }, h("h4", {}, name)));
-  let active: string | undefined;
-  const rows = members(c.ask).map((number) => {
+  // One summary line per member, in the pass's order: rows never move, so focus and position stay put.
+  return h("div", { class: "card-body members" }, hooks.member ? null : "Inspect each member; no group writes.", ...members(c.ask).map((number) => {
     const d = h("details", { class: "member" }, h("summary", {}, `${c.ask.action.repository}#${number}`, " · ", h("a", { href: askHref({ ...c.ask.action, number }) }, "Inspect")));
     const current = () => d.isConnected && !retired.has(d.closest(`.${CARD_CLASS}`)!);
     d.addEventListener("toggle", () => {
       if (!hooks.member || !current() || !d.open) return;
-      active = d.dataset.member;
       d.closest<HTMLElement>("[data-inbox-list]")?.setAttribute("data-selected-member", d.dataset.member!);
       if (d.dataset.restore === "pending") { d.dataset.restore = "ready"; return; }
       if (d.dataset.restore === "ready") {
@@ -183,15 +182,10 @@ function memberList(c: Card & { ask: Ask }, hooks: InboxHooks, inspected?: strin
         while (d.children.length > 1) d.lastElementChild!.remove();
       }
       if (d.children.length === 1) d.append(bodySlot(memberBody(c, { owner, repo, number }, hooks, current).then((body) => {
-        if (current()) {
-          const group = groups.find((g) => g.dataset.reviewGroup === body.querySelector<HTMLElement>("[data-bucket]")?.dataset.bucket) ?? groups[2]!;
-          if (d.parentElement !== group) {
-            // Moving a details node clears its keyboard focus in browsers.
-            const focused = d.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
-            group.append(d);
-            focused?.focus({ preventScroll: true });
-          }
-        }
+        const bucket = body.querySelector<HTMLElement>("[data-bucket]")?.dataset.bucket;
+        if (!current()) return body;
+        if (bucket) d.dataset.bucket = bucket;
+        else delete d.dataset.bucket;
         return body;
       })));
     });
@@ -200,24 +194,12 @@ function memberList(c: Card & { ask: Ask }, hooks: InboxHooks, inspected?: strin
       // A poll restores selection only; r explicitly reinspects that identity.
       if (!refresh) {
         d.dataset.restore = "pending";
-        d.append(h("p", { class: "note" }, "unknown/deep: evidence changed. Close and reopen to inspect again."), ...memberReceipts({ owner, repo, number }, hooks));
+        d.append(h("p", { class: "note" }, "Review evidence changed. Close and reopen to inspect again."), ...memberReceipts({ owner, repo, number }, hooks));
       }
       d.open = true;
     }
     return d;
-  });
-  const move = (step: number) => {
-    const index = rows.findIndex((d) => d.dataset.member === active);
-    const next = rows[Math.max(0, Math.min(rows.length - 1, index + step))]!;
-    for (const row of rows) row.open = row === next;
-    next.querySelector("summary")!.focus();
-  };
-  groups[2]!.append(...rows);
-  return h("div", { class: "card-body members" }, "Inspect each member; no group writes.", h("nav", {}, ...([-1, 1] as const).map((step) => {
-    const button = h("button", { type: "button" }, step < 0 ? "Previous member" : "Next member");
-    button.onclick = () => move(step);
-    return button;
-  })), ...groups);
+  }));
 }
 
 const STEP: Record<string, string> = { promote: "promote", "merge-or-enqueue": "merge or enqueue", reply: "reply", close: "close", "review-at-head": "approve at the head", "check-proposal": "run the proposal" };
@@ -295,7 +277,8 @@ function entryForm(c: Card & { kind: "document" }, hooks: InboxHooks): HTMLEleme
 
 /** The card's in-place action or body, read on drawing where it needs to be; else a link to where it is done. */
 function action(c: Card, hooks: InboxHooks, inspected?: string, refresh = false): HTMLElement | null {
-  if (c.answered) return null;
+  // Its title already says the detail is missing; there is nothing to refuse.
+  if (c.answered || ("ask" in c && c.ask.detailMissing)) return null;
   const no = "ask" in c ? refusal(c.ask, c.kind === "approve" ? "review-at-head" : c.kind === "do" ? "check-proposal" : undefined) : undefined;
   if (no && "ask" in c) {
     const body = refused(no, c.ask);
@@ -374,17 +357,17 @@ export function cardEl(c: Card, hooks: InboxHooks, inspected?: string, refresh =
     [SIG_ATTR]: cardSignature(c),
     [POLICY_ATTR]: policySignature(c),
   }, head, h("p", { class: "card-where" }, c.where),
-  c.unavailable ? h("p", { class: "card-note warn" }, "Unavailable: from the last list read; the pass's list can't be read now.") : null,
-   c.note ? h("details", { class: "card-note" }, h("summary", {}, "Context"), h("p", {}, c.note)) : null);
+  c.unavailable ? h("p", { class: "card-note warn" }, "Unavailable: from the last list read; the pass's list can't be read now.") : null);
   // The pass publishes the kind and head, not the diff or checks: say so rather than guess.
   if (c.kind === "approve") el.append(h("div", { class: "approval-evidence" },
     c.ask.kind === "review-withheld" ? pill("Review agent withheld") : null,
     h("span", {}, "Diff size and CI not published"),
     githubTarget(c.ask) ? h("a", { href: askHref(c.ask.action) }, "Review the diff") : null));
   if (ask?.requests?.some((r) => r.quality !== "decision")) el.append(h("small", { class: "note" }, [...new Set(ask.requests.map((r) => r.quality).filter((q) => q !== "decision"))].join(" · ")));
-  const descriptions = ask?.requests?.filter((r) => r.detail);
-  if (descriptions?.length) el.append(h("details", { class: "request-context" }, h("summary", {}, "Published decision context"),
-    ...descriptions.map((r) => h("dl", {}, ...Object.entries(r.detail!).flatMap(([key, value]) => [h("dt", {}, key), h("dd", {}, value)])))));
+  // The note and the published request context share one collapsed fold, so a card stays a few lines.
+  const descriptions = ask?.requests?.filter((r) => r.detail) ?? [];
+  if (c.note || descriptions.length) el.append(h("details", { class: "card-note" }, h("summary", {}, "Context"), c.note ? h("p", {}, c.note) : null,
+    ...descriptions.map((r) => h("dl", { class: "request-context" }, ...Object.entries(r.detail!).flatMap(([key, value]) => [h("dt", {}, key), h("dd", {}, value)])))));
   if (c.kind === "document" && c.entry.text.trim()) el.append(h("details", { class: "dec-body" }, h("summary", {}, "The whole entry"), h("div", { class: "md" }, hooks.render(c.entry.text, c.entry.about?.repo))));
   // Cold load and polls read the publication alone. Target reads are lazy;
   // action-time preflight remains independent of these inspection reads.

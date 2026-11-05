@@ -78,6 +78,8 @@ export interface Ask {
   requests?: Request[];
   /** Descriptors were supplied but could not be read safely; never fall back to legacy writes. */
   requestsUnreadable?: boolean;
+  /** An inventory identity whose detailed card the pass did not publish: a read-only placeholder. */
+  detailMissing?: boolean;
   /** Informational evidence for exact members, never approval authority. */
   reviewBuckets?: Record<string, ReviewBucket>;
 }

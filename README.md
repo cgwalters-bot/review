@@ -27,7 +27,8 @@ on his approval or answer (broker PRs included), operator-action proposals
 and maintain digest asks, including configured decisions-document entries
 and review drafts. The producer's ranked `identities` inventory determines
 order and membership; `detail_key` joins its optional detailed cards. Missing
-details produce read-only placeholders, not target discovery. The browser
+details produce read-only two-line placeholders ("Detail not published"),
+not target discovery. The browser
 does not search the board, decisions or draft issues to assemble this list.
 
 Each identity and card carries agent-board#661's `epic` (nearest live epic)
@@ -54,7 +55,8 @@ omitted details. Uncertain writes remain outstanding.
 Five cards are drawn initially; **Show more** draws the rest without inspecting
 their targets. **Details and action** explicitly opens a card's lazy inspection.
 Questions stay as short asks (wrapping on narrow screens,
-never clipped); context and answer forms are collapsed. An approval row has
+never clipped); a card's note and its published request context share one
+collapsed **Context** fold, and answer forms are collapsed. An approval row has
 the ask, its PR, an Approve at the published head and a link to review the
 diff. The pass publishes no diff size or check state, so the row says so;
 `review-withheld` is marked as the review agent withholding approval. The
@@ -65,7 +67,9 @@ The parser accepts the producer's compact identities and epic map, and the
 older detailed-only publication. `test/fixtures/needs-you-661.json` is a
 `needs_you` written to agent-board's serialization at `819bb77`
 (`crates/board-forge/src/pass/holds.rs`), not a capture: the live
-publication on `bot-ops#1` was not readable to the run that wrote it. Inventory
+publication on `bot-ops#1` was not readable to the run that wrote it.
+`test/e2e/render-needs-you.ts` draws Needs you from any checkout against these
+fixtures, offline, for desktop and phone screenshots that compare commits. Inventory
 and detailed records are bounded at 10,000 each. Published question,
 recommendation, ownership and resolution text is display-only: hostile or
 stale publisher prose must not become write authorization. A collapsed
@@ -116,12 +120,12 @@ The optional needs-you v2 `review_buckets` extension (agent-board#680,
 threat is stale or representative-only evidence making another draft look
 reviewed. At most 10,000 lower-case typed repository/PR keys are read, with
 40-hex heads, bounded summary/reason text and the producer's exact bucket/CI
-enums. Each inspected member shows its own summary, reason, assessed and
-inspected heads, published CI and freshly read CI. Only matching, non-carried,
+enums. Each inspected member shows one short line: its bucket, freshly read
+and published CI, and the published summary and reason. Only matching, non-carried,
 fully read evidence with green published and successful current CI can be quick.
 Missing, malformed, evicted, unread or mismatched evidence is unknown/deep.
-The existing member view groups inspected members into quick, deep and
-unknown/deep; next/previous follows producer member order, not bucket position.
+Members stay one summary line each, in producer member order; the bucket
+labels a member (`data-bucket`) and never moves it.
 A changed publication keeps the selected typed member and receipts but offers
 no stale action: close/reopen or `r` explicitly reinspects it. Polls do not read
 targets or discover new members. Producer ranking and decision counts stay intact.
