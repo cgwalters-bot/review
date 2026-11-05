@@ -1070,7 +1070,23 @@ test("shared #680 projection round trips exact members and navigates independent
   assert.equal(r.list.querySelector<HTMLDetailsElement>(".member[open]")!.dataset.member, "cgwalters-forge/bootc#2", "refresh keeps typed identity, not group index");
   assert.equal(r.calls.length, reads, "a changed poll restores selection without reading targets");
   assert.match(r.list.querySelector(".member[open]")!.textContent!, /evidence changed/);
+  r.paint(bucketCard({ review_buckets: changed }), true); await settle();
+  const refreshed = r.list.querySelector<HTMLDetailsElement>(".member[open]")!;
+  assert.equal(refreshed?.dataset.member, "cgwalters-forge/bootc#2", "explicit reload reinspects the selected identity");
+  assert.match(refreshed.textContent!, /deep · CI success/);
+  assert.ok(r.calls.length > reads, "explicit reload reads the selected target");
   assert.equal(r.writes().length, 0);
+});
+
+test("member navigation keeps keyboard focus after asynchronous bucket assignment", async () => {
+  const r = setup((_, p) => ({ body: p.endsWith("/check-runs") ? { total_count: 1, check_runs: [{ name: "test", status: "completed", conclusion: "success" }] } : p.endsWith("/status") ? { total_count: 0, statuses: [] } : bootcDraft(1) }));
+  r.paint(bucketCard());
+  const first = r.list.querySelector<HTMLDetailsElement>(".member")!;
+  r.list.querySelector<HTMLButtonElement>("nav button:last-child")!.click();
+  assert.equal(document.activeElement, first.querySelector("summary"));
+  await settle();
+  assert.equal(first.closest<HTMLElement>("[data-review-group]")!.dataset.reviewGroup, "quick");
+  assert.equal(document.activeElement, first.querySelector("summary"));
 });
 
 for (const source of ["drafts", "decisions"]) test(`changed lazy ${source} group preserves selected member without poll reads`, async () => {
