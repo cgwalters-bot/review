@@ -381,13 +381,19 @@ status update as sanitized Markdown, with its publication age and an
 **Expand** control. Missing, cached and unreadable sources are labelled;
 they are not treated as evidence that work is healthy or complete. Titles
 cut short by the publisher can be expanded from matching board context.
-The read-only **Poller passes** panel shows the optional structured pass
+The read-only **Scheduler passes** panel shows the optional independent pass
 publication: recent results and failed sections' first error lines, typed
 starts with item/kind/pool/run links, no-start reasons and re-plan deadlines,
 pool usage against allowed pace and reset countdowns, and running work or
-PRs queued for merge or waiting for review. It flags the publisher's
-well-under-pace assessment only when that pool has zero ready work. The
-browser does not calculate scheduling policy or scrape logs.
+PRs queued for merge or waiting for review. A fixed twenty-percentage-point
+display threshold flags headroom only with complete fresh evidence that the
+particular pool is unheld and has zero ready work. The
+browser does not calculate scheduling policy or scrape logs. It uses the same
+bounded comment read as the inbox. When independent history is absent, the
+existing **Poller passes** publication remains visible with explicit legacy
+coverage warnings. See [docs/passes.md](docs/passes.md) for the producer gap,
+bounds, caller opt-in and offline screenshot reproduction. This is not yet
+end-to-end completion of #245.
 Header counts and the source-freshness line remain available on both pages.
 
 The read-only **Repositories** panel reads bot-authored
@@ -414,14 +420,18 @@ published v1 schema, not live publication evidence.
 
 ### Pass publication contract (producer dependency)
 
-This is an app-side proposal, **not yet published by agent-board**. The exact
+The legacy shape is published by agent-board#729 with off-by-default
+`holds.passView`; it is not the richer independent history proposal above. The
+legacy producer currently omits section errors, re-plan deadlines, readiness
+and PR queue/review-wait coverage. Its `complete` only means runs were listed,
+not that all those sources were read. Empty lists remain unknown. The exact
 synthetic JSON shape is [test/fixtures/pass-view.json](test/fixtures/pass-view.json):
 add optional `pass_view` beside `needs_you` in the existing
 `agent-board/holds/v1` bot comment. Its schema is `agent-board/pass-view/v1`.
 Absent means off/older producer, never a healthy idle pass. There is no new
 browser option, endpoint, target read, write permission or independent poll.
-Publication should remain off by default with the producer's existing
-`holds.needsYou` setting; no additional control is proposed.
+Publication is independent of `holds.needsYou`; the legacy producer's opt-in
+is `holds.passView`, not `holds.needsYou`.
 
 The concrete threats are unbounded publisher data creating unbounded DOM,
 and publisher-supplied addresses becoming navigation. The consumer accepts
@@ -432,7 +442,9 @@ whole without losing the inbox. Display strings are single-line, at most
 constructed only from validated GitHub repository/item/run/PR components.
 Unknown fields are ignored. Publisher prose is text, not Markdown or authority.
 
-Producer requirements for a follow-up in `cgwalters-forge/agent-board`:
+The original legacy consumer requirements below are not evidence that #729
+emits every fact. The independent producer handoff is in docs/passes.md.
+Unimplemented legacy requirements were:
 
 - Use the fixture's exact keys and enums. `passes` is newest first; `at` is
   each pass's clock and `observed_at` is the latest pool/in-flight observation.

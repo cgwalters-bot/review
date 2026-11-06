@@ -15,6 +15,7 @@ import { fencedJson, isObject, type RawComment, str, time } from "./heartbeat.ts
 import { ITEM_RE, usagePath } from "./usage.ts";
 import { parsePassView, type PassView } from "./passview.ts";
 import { findMaintainerReports } from "./repositories.ts";
+import { findPasses } from "./passes.ts";
 
 /** The comment's first line. */
 export const HOLDS_MARKER = "<!-- agent-board-holds v1 -->";
@@ -474,7 +475,9 @@ export async function loadHolds(gh: GitHub): Promise<Holds | undefined> {
 export async function loadPassPublications(gh: GitHub) {
   const { data } = await gh.get<RawComment[]>(usagePath);
   const comments = Array.isArray(data) ? data : [];
-  return { holds: findHolds(comments), repositories: findMaintainerReports(comments) };
+  // A replacement publication may be on page two; never accept an older match.
+  const uncertain = comments.length >= 100 ? "only the first 100 comments were read; a newer publication may be unread" : undefined;
+  return { holds: findHolds(comments), repositories: findMaintainerReports(comments), passes: uncertain ?? findPasses(comments), uncertain };
 }
 
 /**
