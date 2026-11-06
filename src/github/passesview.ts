@@ -26,13 +26,17 @@ export interface PassesRead {
 /**
  * What a read of the holds issue says of the pass history. A publication
  * read before stays, said to be the last one, while a later read fails or
- * finds one that can't be used; a read that finds none drops it.
+ * finds one that can't be used; a read that finds none drops it. With
+ * none read before, one served from the cache is kept the same way, so a
+ * cold start whose first network read fails still shows it.
  */
 export function readPasses(prev: PassesRead, active: Active): PassesRead {
   const source = active.sources?.holds;
-  const kept = prev.data ? { data: prev.data } : {};
-  if (source && source.state !== "ok") return { ...kept, unavailable: `couldn't confirm it (${redactAddresses(source.error ?? source.state)})` };
   const p = active.passes;
+  const last = prev.data ?? (typeof p === "object" && p !== null ? p : undefined);
+  const kept = last ? { data: last } : {};
+  // Through a failed read, one that found none stays absent, so the legacy view stays in its place.
+  if (source && source.state !== "ok") return { ...(last || !prev.absent ? kept : { absent: true }), unavailable: `couldn't confirm it (${redactAddresses(source.error ?? source.state)})` };
   if (p === undefined) return prev;
   if (p === null) return { absent: true };
   if (typeof p === "string") return { ...kept, unavailable: `the publication can't be used (${p})` };

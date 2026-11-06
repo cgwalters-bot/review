@@ -178,6 +178,8 @@ describe("redactAddresses", () => {
     ["dial tcp [::]:9000 refused", "dial tcp [address] refused"],
     ["fd7a:115c:a1e0:: refused", "[address] refused"],
     ["bind :: failed", "bind [address] failed"],
+    ["localhost:8 closed", "[address] closed"],
+    ["dial gpu-box:7 refused", "dial [address] refused"],
   ];
   for (const [input, want] of cases) it(`redacts ${JSON.stringify(input)}`, () => assert.equal(redactAddresses(input), want));
 
@@ -187,6 +189,14 @@ describe("redactAddresses", () => {
     const el = view({ data: parsed(json) });
     assert.match(text(el), /pull-requests: POST \[address\] refused by \[address\]/);
     assert.doesNotMatch(text(el), /100\.100|tail9|8080/);
+  });
+
+  it("redacts a single-digit host:port before it shows", () => {
+    const json = raw();
+    json.passes[2].sections[0].error = "dial gpu-box:7 refused";
+    const t = text(view({ data: parsed(json) }));
+    assert.match(t, /pull-requests: dial \[address\] refused/);
+    assert.doesNotMatch(t, /gpu-box/);
   });
 });
 
@@ -361,6 +371,15 @@ describe("readPasses", () => {
     assert.match(text(view(validated, NOW + 7_200_000)), /stale/);
   });
 
+  it("keeps cached history on a cold start whose network read then fails", () => {
+    const data = parsed();
+    const cached = readPasses({}, active({ passes: data, sources: { holds: { state: "cached" } } }));
+    assert.equal(cached.data, data);
+    const failed = readPasses(cached, active({ sources: { holds: { state: "unavailable", error: "HTTP 502" } } }));
+    assert.equal(failed.data, data);
+    assert.match(text(view(failed)), /couldn't confirm it \(HTTP 502\)\. What follows is the last one read\./);
+  });
+
   it("uses one Status panel, with legacy fallback only when independent history is absent", () => {
     const legacy = parsePassView(fixture<{ pass_view: unknown }>("pass-view.json").pass_view) as PassView;
     assert.match(text(schedulerPassView({ absent: true }, legacy, NOW)), /Poller passes/);
@@ -369,6 +388,10 @@ describe("readPasses", () => {
     assert.match(text(rich), /Scheduler passes/);
     assert.doesNotMatch(text(rich), /Poller passes/);
     assert.match(text(schedulerPassView({ unavailable: "HTTP 503" }, legacy, NOW)), /Nothing known about recent passes/);
+    const failed = readPasses({ absent: true }, { at: NOW, warnings: [], sources: { holds: { state: "unavailable", error: "HTTP 503" } } });
+    assert.match(text(schedulerPassView(failed, legacy, NOW, "HTTP 503")), /Poller passes/);
+    const broken = readPasses({ absent: true }, { at: NOW, warnings: [], sources: { holds: { state: "ok" } }, passes: "malformed header" });
+    assert.match(text(schedulerPassView(broken, legacy, NOW)), /can't be used \(malformed header\)/);
   });
 });
 

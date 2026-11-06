@@ -170,8 +170,8 @@ const ADDRESS_RES: RegExp[] = [
   // Three colons or more, so a time of day (12:30:00) is not taken for one; or a :: form.
   /\[?\b[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){3,7}\b\]?(?::\d+)?/gi,
   /\[?(?:\b[0-9a-f]{1,4})?::[0-9a-f]{1,4}\b(?::[0-9a-f]{1,4})*\]?(?::\d+)?/gi,
-  // host:port, the host starting with a letter so that T12:30 is not one.
-  /\b[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)*:\d{2,5}\b/gi,
+  // host:port, the host starting with a letter so that T12:30 is not one; any port, localhost:8 included.
+  /\b[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)*:\d{1,5}\b/gi,
 ];
 
 /** Any URL, tailnet name, IP address or host:port in published text, replaced: the producer must leave them out, and this is a second guard. */

@@ -910,16 +910,18 @@ async function refreshActive(state: State): Promise<boolean> {
     if (!state.active) {
       const cached = state.gh.cacheOnly();
       const active = await loadInboxContext(cached);
+      // Cached pass history is kept with or without a cached hold snapshot, so a failed first read still shows it.
+      const passes = state.passes.data ? undefined : readPasses(state.passes, active);
+      if (passes?.data) state.passes = passes;
       if (!state.active && active.holds) {
         active.at = cached.oldest ?? active.at;
         active.fromCache = true;
         state.active = active;
         // A cached list shows at once, said to be the cache's; a cache miss says nothing yet.
         if (typeof active.holds?.needsYou === "object" && !state.published.list) state.published = readPublished(state.published, active);
-        if (!state.passes.data) state.passes = readPasses(state.passes, active);
         paintActive(state);
         paintNeeds(state);
-      }
+      } else if (passes?.data) paintActive(state);
     }
     const active = await loadInboxContext(state.gh);
     if (state.closed) return false;
