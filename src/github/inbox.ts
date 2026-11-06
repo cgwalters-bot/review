@@ -90,10 +90,16 @@ export const members = (a: Ask): number[] => a.group?.numbers ?? [a.action.numbe
 /** Local receipts track a decision, not changes to its display metadata. */
 export const decisionKey = (a: Ask): string => JSON.stringify([a.kind, a.action, a.action.head ? undefined : a.ask]);
 
-export function inboxCounts(p: Published, completed: ReadonlyMap<string, string> = new Map()): { known: number; completed: number; outstanding: number } {
+/**
+ * Decisions, the pass's unit: `known` reported, `listed` in its inventory
+ * (several may share one row), `unlisted` the rest (past the pass's cap,
+ * or unreadable here: publishedNote names which), so the two add up.
+ */
+export function inboxCounts(p: Published, completed: ReadonlyMap<string, string> = new Map()): { known: number; listed: number; unlisted: number; completed: number; outstanding: number } {
   const done = p.asks.filter((a) => completed.get(a.key) === decisionKey(a)).length;
-  const known = p.list?.counts?.decisions ?? p.list?.count ?? p.asks.length;
-  return { known, completed: done, outstanding: Math.max(0, known - done) };
+  const listed = p.list?.identities?.length ?? p.asks.length;
+  const known = Math.max(listed, p.list?.counts?.decisions ?? p.list?.count ?? p.asks.length);
+  return { known, listed, unlisted: known - listed, completed: done, outstanding: Math.max(0, known - done) };
 }
 
 /**

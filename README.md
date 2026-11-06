@@ -35,10 +35,10 @@ Each identity and card carries agent-board#661's `epic` (nearest live epic)
 and `topEpic`, `none` or `unknown`, and `epics` maps each live epic to
 `active`, `activeWhy` (`focus`, `recent-run`, `open-pr`,
 `operator-comment`) and `complete`. By default the inbox shows the
-in-progress epics' cards plus approval waits from every epic. Full approvals
-come first across epics, then other full rows, then read-only placeholders;
-within these tiers the focus epic comes first, then Priority and the oldest
-wait. Explicit epic filters still select only their named rows.
+in-progress epics' cards plus approval waits from every epic. Approvals come
+first across epics, placeholders included, then other full rows, then
+read-only placeholders; within these tiers full rows come before
+placeholders, then the focus epic, then Priority and the oldest wait. Explicit epic filters still select only their named rows.
 Cards whose chain is `unknown`, or whose inactive epic's activity was
 not read whole, stay in the default too: the pass says neither proves
 inactivity. One line names the epics in progress and why; chips count each
@@ -51,11 +51,13 @@ map, the default hides nothing. With no active epic published, the default
 chip says **Default (all)**, not **In progress**; the text describes the default,
 and a separate line names any explicit selection. The heading and chips count
 published rows matching the filter, excluding successful local completions and
-departed cards retained for unsent text. The line over the cards gives the
-number hidden by the pass's cap (`omitted`) and the number hidden by the
-filter separately, beside the producer's **reported decisions**, the number of
-published rows, group and member totals, local completions and
-omitted details. Uncertain writes remain outstanding.
+departed cards retained for unsent text. The line over the cards says each
+unit's total once and splits it so the parts add up: the producer's reported
+decisions as listed in its inventory plus those not listed (past the pass's
+cap or unreadable here, which the note above names), then the
+rows (several decisions may share one) as waiting, done here and hidden by the
+epic filter; the waiting rows are the heading's count. Uncertain writes remain
+outstanding.
 Five cards are drawn initially; **Show more** draws the rest without inspecting
 their targets. **Details and action** explicitly opens a card's lazy inspection.
 Questions stay as short asks (wrapping on narrow screens,
@@ -72,10 +74,11 @@ links are made from its typed action references, never read from it.
 The app cannot recover approvals absent from the publication. The synthetic
 `test/fixtures/needs-you-174.ts` models 174 decisions including tracker#1367,
 an operator-path approval in an inactive epic. Its capped variant publishes
-12 other rows plus that full approval, reporting 161 omitted decisions.
-Both render the approval first without a missing-detail/cap warning on it;
-the heading/chips count 174 or 13 published rows respectively, while the
-summary keeps the 174 reported decisions distinct. This is offline replay,
+12 other rows plus that full approval, reporting 161 omitted decisions. Its
+grouped variant is the #251 screen: 60 decisions listed in 22 rows, three to a
+row, detail only for the approval and one group, and an approval placeholder.
+All render the approval first without a missing-detail/cap warning on it, and
+the heading, the chips and the line over the cards agree. This is offline replay,
 not proof of a deployed producer fix. No new option, permission or target
 read is added; the existing `holds.needsYou` publication remains opt-in.
 
@@ -99,8 +102,8 @@ and round-trip the resulting publication through this app's fixture tests.
 
 This run cannot file an issue in another repository; the exact producer handoff
 above must be filed there before claiming #251's publishing half complete.
-Generate a phone replay with `node test/e2e/render-needs-you.ts . 174-capped
-/tmp/opencode/needs-you-174.html`, then capture it with Chromium at 390px width.
+Generate a phone replay with `node test/e2e/render-needs-you.ts . 174-grouped
+/tmp/needs-you-174.html`, then capture it with Chromium at 390px width.
 
 The parser accepts the producer's compact identities and epic map, and the
 older detailed-only publication. `test/fixtures/needs-you-661.json` is a

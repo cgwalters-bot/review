@@ -37,9 +37,10 @@ test("661 publication: in-progress default, focus first, approvals first, honest
   assert.deepEqual(model.selected.map((c) => c.key).sort(), [key("agent-board#650"), key("agentic-job#2110"), key("agentic-job#2900"), key("tracker#1261"), key("tracker#1300"), key("tracker#1310")].sort());
   assert.deepEqual([model.hidden, model.unsure], [2, 2]);
   // tracker#1261 waits only on an approval: first, ahead of the five-day-old P0 asks outside the epics in progress.
+  // tracker#1310, an approval without its detail, still ranks ahead of every full non-approval row.
   assert.deepEqual(model.ordered.map((c) => c.key), [
-    key("tracker#1261"), key("agentic-job#2900"), key("tracker#1300"), key("agent-board#650"),
-    key("agentic-job#2110"), key("composefs-rs#33"), key("bot-ops#5/comment-21"), key("tracker#1310"),
+    key("tracker#1261"), key("agentic-job#2900"), key("tracker#1300"), key("tracker#1310"), key("agent-board#650"),
+    key("agentic-job#2110"), key("composefs-rs#33"), key("bot-ops#5/comment-21"),
   ]);
   assert.deepEqual(["other", "none", "all", `epic:${key("tracker#976")}`, `epic:${key("tracker#1100")}`].map((f) => model.count(f as never)), [2, 2, 8, 2, 2]);
   let chosen = "";
@@ -80,6 +81,8 @@ test("missing or malformed activity hides nothing, and neither does a list with 
     assert.match(chips.textContent!, /No epic is published as in progress\. The default shows all published rows/);
     assert.match(chips.textContent!, /Default \(all\) · 8/);
     assert.doesNotMatch(chips.textContent!, /In progress ·/);
+    // With every epic inactive, Other epics is everything but No epic.
+    assert.deepEqual(["active", "all", "other", "none"].map((f) => model.count(f as never)), [8, 8, 6, 2]);
     assert.match(chips.textContent!, /Selected: other epics/);
   }
 });

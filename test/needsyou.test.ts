@@ -180,7 +180,7 @@ describe("Needs you from the pass's published list", () => {
       app.doc.querySelector(".entry-answer")!.dispatchEvent(new app.window.Event("submit", { bubbles: true, cancelable: true }));
       await app.until(() => app.count() === "0", "immediate completed count");
       assert.match(app.doc.querySelector("#menu-meta")!.textContent!, /0/);
-      assert.match(app.doc.querySelector(".inbox-pass")?.textContent ?? app.doc.querySelector("#sec-needs")!.textContent!, /1 locally completed/);
+      assert.match(app.doc.querySelector(".inbox-pass")?.textContent ?? app.doc.querySelector("#sec-needs")!.textContent!, /1 rows \(1 with detail\): 0 waiting, 1 done here/);
       assert.deepEqual(app.reads.writes, ["PATCH /repos/cgwalters-forge/operator/issues/1"]);
       await app.reload();
       assert.equal(app.count(), "0", "the unchanged publication must not resurrect a local receipt");
@@ -212,7 +212,7 @@ describe("Needs you from the pass's published list", () => {
     try {
       assert.equal(app.count(), "2", "the heading and chips count rows, not grouped decisions");
       assert.deepEqual(app.keys(), ["cgwalters-forge/tracker#1", "cgwalters-forge/tracker#3"]);
-      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, /3 reported decisions · 2 published rows · 1 groups · 3 members/);
+      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, /3 decisions reported: 3 listed, 0 not listed\. 2 rows \(0 with detail\): 2 waiting, 0 done here, 0 hidden by the epic filter\. Groups: 1, members: 3\./);
       const fold = app.doc.querySelector<HTMLDetailsElement>(".published-context")!;
       assert.equal(fold.open, false);
       assert.match(fold.textContent!, /WIP 2\/3.*run unread.*Checks pending/s);
@@ -521,12 +521,19 @@ describe("Needs you from the pass's published list", () => {
     } finally { await app.close(); }
   });
 
-  for (const capped of [false, true]) it(`174 decisions: operator-path approval first, consistent row counts (capped=${capped})`, async (t) => {
-    const published = needsYou174(capped);
+  // `second` is the next row: in `grouped`, an approval without its detail ahead of every full non-approval row.
+  const variants = [
+    { variant: "full", listed: 174, total: 174, detailed: 174, approvals: 1, second: "cgwalters-forge/tracker#2000" },
+    { variant: "capped", listed: 13, total: 13, detailed: 13, approvals: 1, second: "cgwalters-forge/tracker#2000" },
+    { variant: "grouped", listed: 60, total: 22, detailed: 2, approvals: 2, second: "cgwalters-forge/tracker#2058" },
+  ] as const;
+  for (const { variant, listed: inventory, total, detailed, approvals, second } of variants) it(`174 decisions: operator-path approval first, one unit per count (${variant})`, async (t) => {
+    const published = needsYou174(variant);
     const holds: Holds = { status: 200, etag: '"174"', comments: [holdsComment(iso(T0), published)] };
     const app = await boot(t, holds);
     try {
-      const total = capped ? 13 : 174;
+      const line = (waiting: number, done: number) => `174 decisions reported: ${inventory} listed, ${174 - inventory} not listed. ${total} rows (${detailed} with detail): ${waiting} waiting, ${done} done here, 0 hidden by the epic filter.`;
+      assert.equal(app.keys()[1], second);
       const row = app.doc.querySelector<HTMLElement>(".inbox-cards > .card")!;
       assert.equal(row.dataset.key, "cgwalters-forge/tracker#1367");
       assert.ok(row.classList.contains("c-approve"));
@@ -538,12 +545,12 @@ describe("Needs you from the pass's published list", () => {
       const chip = (choice: string) => app.doc.querySelector<HTMLButtonElement>(`[data-epic-choice="${choice}"]`)!;
       assert.equal(chip("active").textContent, `In progress + approvals · ${total}`);
       assert.equal(chip("all").textContent, `Show everything · ${total}`);
-      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, new RegExp(`174 reported decisions · ${total} published rows`));
+      assert.ok(app.doc.querySelector("#sec-needs")!.textContent!.includes(line(total, 0)));
       assert.equal(app.reads.all.filter((r) => r.path !== HOLDS && r.path !== "/user").length, 0);
       // Explicit filters still select exactly their named epic; only the default
       // retains approval waits outside in-progress epics.
       chip(`epic:${FOCUS}`).click();
-      assert.equal(app.count(), String(total - 1));
+      assert.equal(app.count(), String(total - approvals));
       chip("all").click();
       assert.equal(app.count(), String(total));
       assert.equal(app.doc.querySelector<HTMLElement>(".inbox-cards > .card")!.dataset.key, row.dataset.key);
@@ -553,6 +560,7 @@ describe("Needs you from the pass's published list", () => {
       await app.until(() => app.count() === String(total - 1), "completed approval");
       assert.equal(chip("all").textContent, `Show everything · ${total - 1}`);
       assert.equal(chip("active").textContent, `In progress + approvals · ${total - 1}`);
+      assert.ok(app.doc.querySelector("#sec-needs")!.textContent!.includes(line(total - 1, 1)));
     } finally { await app.close(); }
   });
 
@@ -570,11 +578,11 @@ describe("Needs you from the pass's published list", () => {
       assert.equal(app.count(), "6", "the heading counts what the default filter shows");
       assert.equal(app.keys().filter((k) => !app.doc.querySelector<HTMLElement>(`[data-key="${k}"]`)!.hidden)[0], "cgwalters-forge/tracker#1261");
       assert.match(app.doc.querySelector(".epic-filter")!.textContent!, /2 epics in progress: tracker#976 \(focus, the operator's comment this week\), tracker#1100/);
-      assert.match(line(), /Hidden: 0 by the pass's cap, 2 by the epic filter\./);
+      assert.match(line(), /8 decisions reported: 8 listed, 0 not listed\. 8 rows \(7 with detail\): 6 waiting, 0 done here, 2 hidden by the epic filter\./);
       assert.deepEqual(app.reads.all.filter((r) => r.path !== HOLDS && r.path !== "/user").map((r) => r.path), [], "the filter reads nothing");
       chips().find((b) => b.textContent!.startsWith("Show everything"))!.click();
       assert.deepEqual([app.count(), pressed(), stored()], ["8", "all", '"all"']);
-      assert.match(line(), /Hidden: 0 by the pass's cap, 0 by the epic filter\./);
+      assert.match(line(), /8 rows \(7 with detail\): 8 waiting, 0 done here, 0 hidden by the epic filter\./);
       app.window.location.hash = "#epic-1100";
       await app.until(() => app.count() === "2", "the #epic-N deep link");
       assert.equal(pressed(), "epic:cgwalters-forge/tracker#1100");
@@ -585,7 +593,7 @@ describe("Needs you from the pass's published list", () => {
       chips()[0]!.click();
       await app.reload();
       assert.equal(app.count(), "6");
-      assert.match(line(), /Hidden: 2 by the pass's cap, 2 by the epic filter\./);
+      assert.match(line(), /10 decisions reported: 8 listed, 2 not listed\. 8 rows \(0 with detail\): 6 waiting, 0 done here, 2 hidden by the epic filter\./);
       assert.match(app.note(), /Incomplete \(2 past the pass's cap\)/);
     } finally {
       if (old) Object.defineProperty(globalThis, "localStorage", old);
@@ -610,8 +618,8 @@ describe("Needs you from the pass's published list", () => {
       const cards = [...app.doc.querySelectorAll<HTMLElement>(".inbox-cards > .card:not([hidden])")];
       const card = (key: string) => cards.find((c) => c.dataset.key === key)!;
       assert.equal(app.count(), "7");
-      assert.deepEqual(cards.map((c) => c.dataset.key), ["cgwalters-forge/tracker#1261", "cgwalters-forge/agentic-job#2900", "cgwalters-forge/tracker#1300", "cgwalters-forge/agent-board#650", group]);
-      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, /9 reported decisions · 9 published rows · 1 groups · 11 members · 0 locally completed\. 1 without details\. Hidden: 0 by the pass's cap, 2 by the epic filter\./);
+      assert.deepEqual(cards.map((c) => c.dataset.key), ["cgwalters-forge/tracker#1261", "cgwalters-forge/agentic-job#2900", "cgwalters-forge/tracker#1300", "cgwalters-forge/tracker#1310", "cgwalters-forge/agent-board#650"]);
+      assert.match(app.doc.querySelector("#sec-needs")!.textContent!, /9 decisions reported: 9 listed, 0 not listed\. 9 rows \(8 with detail\): 7 waiting, 0 done here, 2 hidden by the epic filter\. Groups: 1, members: 11\./);
       for (const c of cards) {
         // #237 added a "Published decision context" fold beside Context on every card.
         assert.deepEqual([...c.querySelectorAll(":scope > details:not(.card-full, .not-offered) > summary")].map((s) => s.textContent), c.querySelector(":scope > .card-note") ? ["Context"] : [], c.dataset.key);
@@ -623,7 +631,7 @@ describe("Needs you from the pass's published list", () => {
       assert.deepEqual([placeholder.querySelector(".kind")!.textContent, placeholder.querySelector(".title")!.textContent], ["Act", "Detail not published: inspect the source before acting"]);
       assert.equal(placeholder.querySelector(".warn, button, a[href], details"), null);
       // #242 drew nav buttons and bucket headings on the group before any read.
-      const members = card(group).querySelector(".members")!;
+      const members = app.doc.querySelector(`[data-key="${group}"] .members`)!;
       assert.equal(members.querySelector("nav, h4, button"), null);
       assert.deepEqual([...members.querySelectorAll<HTMLElement>(".member")].map((d) => d.dataset.member), [1, 2, 3].map((n) => `cgwalters-forge/bootc#${n}`));
       assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS], "drawing reads nothing else");

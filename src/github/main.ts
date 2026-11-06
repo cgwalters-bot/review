@@ -709,11 +709,13 @@ function paintInbox(state: State, force = false): void {
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
   const { text, settled } = publishedNote(state.published, Date.now());
   const list = state.published.list;
-  const { known, completed, outstanding } = inboxCounts(state.published, state.completedAsks);
-  // The heading counts what the filter shows; cap and filter are told apart.
+  const { known, listed, unlisted, completed, outstanding } = inboxCounts(state.published, state.completedAsks);
+  // The heading and chips count rows; decisions (the pass's unit) and rows
+  // each get one sentence whose parts add up to its total.
   const waiting = selection.selected.filter(waits).length;
+  const detailed = cards.filter((c) => !("ask" in c && c.ask.detailMissing)).length;
   inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text),
-    h("p", { class: "note" }, `${known} reported decisions · ${cards.length} published rows · ${list?.counts?.groups ?? "unknown"} groups · ${list?.counts?.members ?? "unknown"} members · ${completed} locally completed. ${list?.detailsOmitted ?? 0} without details. Hidden: ${list?.omitted ?? "unknown"} by the pass's cap, ${selection.hidden} by the epic filter.`));
+    h("p", { class: "note" }, `${known} decisions reported: ${listed} listed, ${unlisted} not listed. ${cards.length} rows (${detailed} with detail): ${waiting} waiting, ${selection.selected.length - waiting} done here, ${selection.hidden} hidden by the epic filter. Groups: ${list?.counts?.groups ?? "unknown"}, members: ${list?.counts?.members ?? "unknown"}.`));
   const contextOpen = inbox.filters.querySelector<HTMLDetailsElement>(".published-context")?.open;
   const context = publishedContext(list?.context);
   if (contextOpen) context.open = true;
