@@ -48,7 +48,8 @@ function needsYou(): Record<string, unknown> {
   };
 }
 
-const comment = `<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: [], needs_you: needsYou() })}\n\`\`\`\n`;
+const pass_view = fixture("pass-view.json").pass_view;
+const comment = `<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: [], needs_you: needsYou(), pass_view })}\n\`\`\`\n`;
 const dom = new JSDOM(readFileSync(resolve(checkout, "static/index.html"), "utf8"), { url: "https://review.example/#inbox", pretendToBeVisual: true, virtualConsole: new VirtualConsole() });
 const { window } = dom;
 window.scrollTo = () => {};

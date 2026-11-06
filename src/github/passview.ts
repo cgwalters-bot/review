@@ -1,5 +1,6 @@
 // Optional publication only: no log scraping, target discovery or write authority.
 import { h } from "../dom.ts";
+import { ago } from "../time.ts";
 import { isObject, time } from "./heartbeat.ts";
 
 interface Run { repository: string; id: number }
@@ -7,7 +8,7 @@ interface Start { item: string; kind: string; pool: string; run: Run }
 interface Reason { item: string | null; kind: "no-ready-work" | "replan-delay" | "capped" | "held"; reason: string; until: string | null }
 interface Pass { at: string; result: "success" | "partial" | "failure"; sections: { name: string; result: "success" | "skipped" | "failure"; error: string | null }[]; started: Start[]; reasons: Reason[]; omitted: number }
 interface Pool { name: string; used_percent: number | null; allowed_percent: number | null; resets_at: string | null; ready: number | null; under_pace: boolean | null }
-type Flight = { state: "running"; item: string; kind: string; pool: string; run: Run } | { state: "merge-queue" | "waiting-review"; repository: string; number: number };
+type Flight = { state: "running"; item: string; kind: string; pool: string; run: Run; started_at?: string | null } | { state: "merge-queue" | "waiting-review"; repository: string; number: number };
 export interface PassView { schema: "agent-board/pass-view/v1"; observed_at: string; complete: boolean; omitted: number; passes: Pass[]; pools: Pool[]; in_flight: Flight[] }
 
 // A hostile/oversized publication must not create unbounded DOM or arbitrary links.
@@ -30,7 +31,7 @@ export function parsePassView(raw: unknown): PassView | string {
       && list(p.started, 32, start)
       && list(p.reasons, 32, (r) => isObject(r) && (r.item === null || item(r.item)) && ["no-ready-work", "replan-delay", "capped", "held"].includes(r.kind as string) && text(r.reason) && (r.kind === "replan-delay" ? !!time(r.until) : r.until === null)))
     || !list(raw.pools, 16, (p) => isObject(p) && token(p.name) && percent(p.used_percent) && percent(p.allowed_percent) && (p.resets_at === null || !!time(p.resets_at)) && (p.ready === null || count(p.ready)) && (p.under_pace === null || typeof p.under_pace === "boolean"))
-    || !list(raw.in_flight, 100, (f) => isObject(f) && (f.state === "running" ? start(f) : ["merge-queue", "waiting-review"].includes(f.state as string) && repository(f.repository) && positive(f.number)))) {
+    || !list(raw.in_flight, 100, (f) => isObject(f) && (f.state === "running" ? start(f) && (f.started_at == null || !!time(f.started_at)) : ["merge-queue", "waiting-review"].includes(f.state as string) && repository(f.repository) && positive(f.number)))) {
     return "Pass view unavailable: malformed or over its publication bounds.";
   }
   // Only validated fields are consumed below; unknown extension fields are ignored.
@@ -56,13 +57,7 @@ function startLine(s: Start): HTMLElement {
 
 export function passView(data: PassView | string | undefined, now = Date.now(), unavailable?: string): HTMLElement {
   const el = h("section", { class: "pass-view", "aria-label": "Poller passes" }, h("h2", {}, "Poller passes"));
-  if (unavailable) el.append(h("p", { class: "warn" }, `Publication unavailable: ${unavailable}. Any facts below are last read, not current.`));
-  if (!data || typeof data === "string") {
-    el.append(h("p", { class: "note" }, data ?? "Pass view not published (off or older producer)."));
-    return el;
-  }
-  const age = now - Date.parse(data.observed_at);
-  el.append(h("p", { class: age > 3_600_000 || age < -60_000 ? "warn" : "note" }, `Observed ${data.observed_at}${age > 3_600_000 ? " · stale (over an hour)" : age < -60_000 ? " · clock is in the future" : ""} · ${data.complete ? "complete published sample" : "partial; unread work is unknown"} · ${data.omitted} records omitted`));
+  if (!publicationNote(el, data, now, unavailable)) return el;
   el.append(h("h3", {}, "Last passes"));
   if (!data.passes.length) el.append(h("p", {}, "No pass history published; not evidence that no pass ran."));
   for (const p of data.passes) {
@@ -83,5 +78,54 @@ export function passView(data: PassView | string | undefined, now = Date.now(), 
   el.append(h("h3", {}, "Work in flight"));
   if (!data.in_flight.length) el.append(h("p", {}, data.complete && data.omitted === 0 ? "No work in flight in this published sample." : "No work in flight listed; incomplete publication is not an empty queue."));
   el.append(h("ul", {}, ...data.in_flight.map((f) => f.state === "running" ? startLine(f) : h("li", {}, h("a", { href: `https://github.com/${f.repository}/pull/${f.number}` }, `${f.repository}#${f.number}`), ` · ${f.state}`))));
+  return el;
+}
+
+function publicationNote(el: HTMLElement, data: PassView | string | undefined, now: number, unavailable?: string): data is PassView {
+  if (unavailable) el.append(h("p", { class: "warn" }, `Publication unavailable: ${unavailable}. Any facts below are last read, not current.`));
+  if (!data || typeof data === "string") {
+    el.append(h("p", { class: "note" }, data ?? "Pass view not published (off or older producer)."));
+    return false;
+  }
+  const age = now - Date.parse(data.observed_at);
+  el.append(h("p", { class: age > 3_600_000 || age < -60_000 ? "warn" : "note" }, `Observed ${data.observed_at}${age > 3_600_000 ? " · stale (over an hour)" : age < -60_000 ? " · clock is in the future" : ""} · ${data.complete ? "complete published sample" : "partial; unread work is unknown"} · ${data.omitted} records omitted`));
+  return true;
+}
+
+/** Compact home summary of the same bounded publication used by Status. */
+export function activePassView(data: PassView | string | undefined, now = Date.now(), unavailable?: string): HTMLElement {
+  const el = h("section", { class: "active-pass", "aria-label": "Agents and capacity" }, h("h2", {}, "Agents and capacity"));
+  if (!publicationNote(el, data, now, unavailable)) return el;
+  const agents = h("div", {}, h("h3", {}, "Active agents"));
+  const running = data.in_flight.filter((f) => f.state === "running");
+  const rows = running.map((f) => {
+    const elapsed = f.started_at ? Date.parse(data.observed_at) - Date.parse(f.started_at) : NaN;
+    return h("li", {}, itemLink(f.item), ` · ${f.kind} · ${f.pool} · ${elapsed >= 0 ? `running ${Math.floor(elapsed / 60_000)}m at observation` : "runtime unknown"} · `, runLink(f.run));
+  });
+  agents.append(rows.length ? h("ul", {}, ...rows) : h("p", {}, data.complete && !data.omitted ? "No running jobs in this published sample." : "No running jobs listed; unread work is unknown."));
+  const capacity = h("div", {}, h("h3", {}, "Capacity"));
+  if (!data.pools.length) capacity.append(h("p", {}, "Capacity not published."));
+  for (const p of data.pools) {
+    const label = `${p.name}: ${p.used_percent ?? "unknown"}% used / ${p.allowed_percent ?? "unknown"}% allowed`;
+    capacity.append(h("div", { class: "capacity-pool" }, h("p", { class: p.under_pace === true ? "warn" : "" }, `${label} · reset ${p.resets_at ?? "unknown"}${p.under_pace === true ? " · under pace (publisher assessment)" : ""}`),
+      p.used_percent === null ? h("p", { class: "note" }, "Usage unknown") : h("meter", { min: "0", max: "100", value: String(p.used_percent), low: String(p.allowed_percent ?? 100), high: String(p.allowed_percent ?? 100), optimum: "0", "aria-label": label }, label)));
+  }
+  const last = h("div", {}, h("h3", {}, "Last pass"));
+  const p = data.passes[0];
+  if (!p) last.append(h("p", {}, "Last pass not published."));
+  else {
+    last.append(h("p", {}, h("time", { datetime: p.at, title: p.at }, ago(p.at, now)), ` · ${p.result} · Started ${p.started.length}${p.omitted ? " shown" : ""}`));
+    if (p.started.length) last.append(h("ul", {}, ...p.started.map(startLine)));
+    else {
+      const counts = new Map<string, number>();
+      for (const r of p.reasons) {
+        const key = `${r.kind}: ${r.reason}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      last.append(counts.size ? h("ul", {}, ...[...counts].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([reason, n]) => h("li", {}, `${reason} · ${n}`))) : h("p", { class: "warn" }, "Started nothing; reason not published."));
+    }
+    if (p.omitted) last.append(h("p", { class: "warn" }, `${p.omitted} pass records omitted; starts and reasons may be incomplete.`));
+  }
+  el.append(h("div", { class: "active-pass-grid" }, agents, capacity, last));
   return el;
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { HOLDS_MARKER, parseHolds } from "../src/github/holds.ts";
-import { parsePassView, passView, type PassView, retainPassView } from "../src/github/passview.ts";
+import { activePassView, parsePassView, passView, type PassView, retainPassView } from "../src/github/passview.ts";
 import { fixture, installDom } from "./helpers.ts";
 
 installDom();
@@ -10,6 +10,55 @@ const publication = (raw: unknown) => `${HOLDS_MARKER}\n\n\`\`\`json\n${JSON.str
 const now = Date.parse("2026-11-05T12:00:00Z");
 
 describe("pass publication replay", () => {
+  it("summarizes running agents, pool bars and the latest pass from the populated fixture", () => {
+    const data = parseHolds(publication(snapshot()))?.passView;
+    const el = activePassView(data, now);
+    for (const s of ["Active agents", "implement · claude", "running 5m at observation", "10% used / 60% allowed", "14:00:00Z", "under pace", "Last pass", "just now", "Started 0"]) assert.ok(el.textContent?.includes(s), s);
+    assert.equal(el.querySelectorAll("meter").length, 2);
+    assert.equal(el.querySelector("meter")?.getAttribute("value"), "10");
+    assert.equal(el.querySelector("meter")?.getAttribute("low"), "60");
+    assert.equal(el.querySelector("a[href$='/issues/11']")?.textContent, "example/work#11");
+    assert.ok(el.querySelector("a[href='https://github.com/example/runner/actions/runs/42']"));
+    assert.doesNotMatch(el.textContent!, /merge-queue|waiting-review|HTTP 503/);
+    assert.equal(el.querySelectorAll(".active-pass-grid > div:last-child li").length, 3);
+  });
+
+  it("counts matching hold reasons and shows only the top three when nothing started", () => {
+    const data = snapshot().pass_view;
+    const reasons = data.passes[0]!.reasons;
+    reasons.push({ ...reasons[3]!, item: "example/work#16" }, { ...reasons[3]!, item: "example/work#17" });
+    const el = activePassView(data, now);
+    const rows = el.querySelectorAll(".active-pass-grid > div:last-child li");
+    assert.equal(rows.length, 3);
+    assert.equal(rows[0]!.textContent, "held: Needs operator · 3");
+    data.passes.shift();
+    const started = activePassView(data, now);
+    assert.match(started.textContent!, /5m ago · success · Started 1/);
+    assert.ok(started.querySelector(".active-pass-grid > div:last-child a[href$='/actions/runs/42']"));
+  });
+
+  it("labels missing, stale, unavailable, partial and unknown home publications explicitly", () => {
+    assert.match(activePassView(undefined, now).textContent!, /not published/);
+    assert.match(activePassView(parsePassView({}), now).textContent!, /unavailable/);
+    const data = snapshot().pass_view;
+    const stale = activePassView(data, now + 7_200_000, "HTTP 503");
+    assert.match(stale.textContent!, /not current/);
+    assert.match(stale.textContent!, /stale \(over an hour\)/);
+    assert.match(stale.textContent!, /running 5m at observation/);
+    assert.match(activePassView(data, now - 120_000).textContent!, /clock is in the future/);
+    const flight = data.in_flight[0]!;
+    assert.equal(flight.state, "running");
+    if (flight.state === "running") delete flight.started_at;
+    assert.match(activePassView(data, now).textContent!, /runtime unknown/);
+    data.complete = false;
+    data.omitted = 1;
+    data.in_flight = [];
+    data.passes = [];
+    data.pools = [];
+    const partial = activePassView(data, now);
+    for (const s of ["partial", "1 records omitted", "unread work is unknown", "Last pass not published", "Capacity not published"]) assert.ok(partial.textContent?.includes(s), s);
+  });
+
   it("renders the exact producer fixture through the holds parser", () => {
     const data = parseHolds(publication(snapshot()))?.passView;
     assert.equal(typeof data, "object");
@@ -64,6 +113,7 @@ describe("pass publication replay", () => {
       (v) => { v.passes[0]!.reasons = Array(33).fill(v.passes[0]!.reasons[0]); },
       (v) => { v.pools = Array(17).fill(v.pools[0]); },
       (v) => { v.in_flight = Array(101).fill(v.in_flight[0]); },
+      (v) => { Object.assign(v.in_flight[0]!, { started_at: "bad clock" }); },
       (v) => { v.passes[0]!.sections[0]!.error = "HTTP 503\nsecret detail"; },
       (v) => { v.passes[0]!.sections[0]!.error = "x".repeat(241); },
       (v) => { v.passes[0]!.reasons[1]!.until = null; },

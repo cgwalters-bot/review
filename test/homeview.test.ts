@@ -17,9 +17,10 @@ function tracked(n: number, over: Partial<Item> = {}): Item {
 }
 
 describe("Needs you and published Status", () => {
-  it("mounts only the inbox, opt-in people and published status, with no redundant panels", () => {
+  it("mounts the active summary first, then inbox, opt-in people and published status", () => {
     const home = homeSkeleton(hooks);
-    assert.deepEqual([...home.el.children].map((el) => el.getAttribute("data-view")), ["inbox", "inbox", "status", "status", "status", null]);
+    assert.equal(home.el.firstElementChild, home.slots.active);
+    assert.deepEqual([...home.el.children].map((el) => el.getAttribute("data-view")), ["inbox", "inbox", "inbox", "status", "status", "status", null]);
     assert.equal(text(home.sections.needs.details.querySelector(".sec-title")), "Needs you");
     assert.equal(home.sections.needs.details.open, true);
     assert.equal(home.el.querySelector<HTMLDetailsElement>("#sec-people")?.open, false);
