@@ -28,7 +28,9 @@ and maintain digest asks, including configured decisions-document entries
 and review drafts. The producer's ranked `identities` inventory determines
 membership; `detail_key` joins its optional detailed cards. Missing
 details produce read-only two-line placeholders ("Detail not published"),
-not target discovery. The browser
+not target discovery. Descriptors joined by `detail_key` still restrict their
+navigation and chat; foreign, missing or unreadable descriptors never restore
+GitHub targets in a descriptor-bearing publication. The browser
 does not search the board, decisions or draft issues to assemble this list.
 
 Above the cards, **Agents and capacity** summarizes the same optional
@@ -73,10 +75,42 @@ Questions stay as short asks (wrapping on narrow screens,
 never clipped); a card's note and its published request context share one
 collapsed **Context** fold, and answer forms are collapsed. An approval row has
 the ask, its PR, an Approve at the published head and a link to review the
-diff. The pass publishes no diff size or check state, so the row says so;
-`review-withheld` is marked as the review agent withholding approval. The
+diff. Optional `agent-board/approval-evidence/v1` supplies exact-head diff counts,
+CI completeness/state, review verdict/time and observation time. Missing,
+malformed, evicted, carried, unread, wrong-head or stale evidence stays unknown;
+partial CI never appears green. The existing 70-minute publication freshness
+bound also applies to evidence, and future observation clocks stay unknown.
+Facts refresh beside pending/sent/uncertain receipts without changing their
+outcomes or lending a new head's evidence to an old button. `review-withheld`
+remains visibly labelled with or without evidence. The
 list's question and recommendation are display text, not instructions;
 links are made from its typed action references, never read from it.
+
+The concrete threat is displaying another head's green/reviewed assessment as
+evidence for an approval. The producer's optional contract shipped in agent-board
+at `957cb9362a16f4fd13471c7d1c6252a0597eda6d`, capped at 50 entries and joined by
+typed PR identity and full assessed head. `test/fixtures/approval-evidence-needs-you.json`
+is its verbatim shared serialization projection, not a live capture. The browser
+adds no setting or reads; the producer's existing `holds.approvalEvidence` is off
+by default. Caller enablement remains tracker#1336, outside this change.
+Filtering keeps editors and unsent text; **Show everything** recovers a departed
+draft without restoring its write authority.
+
+For #239 (continuing #243 after #247/#253), LF counts across tracked production
+`src/**/*.ts`, including root modules, comments and blank lines, fall from 19,502
+on main `5c01b18` to 19,477 (25 fewer). `dist/app.js` falls from 540,965 to
+532,287 bytes (8,678 fewer), with the same lockfile and `npm ci`/build. Removed
+unused decisions-refresh orchestration and the browser's legacy state derivation;
+the CLI retains `review-state/v1`, while browser debugging uses
+`review-inbox-state/v1` with published facts and source freshness.
+`npm run check` passes 1,878 tests, typecheck and build; the redacted replay still
+makes two cold requests and one poll request, without target discovery. The full,
+capped and grouped 174-decision replays retain approval-first ordering and
+additive decision/row counts. Offline Chromium screenshots at 390px and 1280px
+were inspected for evidence wrapping and readable withheld labels; the 390px
+grouped replay preserves the approval-first row. Images are local-only, not
+included in the patch. These checks do not establish current signed-in publication
+or deployed caller enablement. No live writes ran.
 
 ### Approval publication dependency (#251)
 

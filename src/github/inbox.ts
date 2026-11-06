@@ -123,6 +123,7 @@ export function cardOutstanding(c: Card, asks: readonly Ask[], completed: Readon
  * the card acts as it always did.
  */
 export function refusal(a: Ask, step?: string): string | undefined {
+  if (a.detailMissing) return "Details unavailable; inspect the source before acting";
   if (a.requestsUnreadable) return "this request's descriptors could not be read safely; it is read-only";
   const forge = a.requests?.find((r) => r.forge !== GITHUB_FORGE)?.forge;
   if (forge) return `this request is on ${forge}, and this page writes only to ${GITHUB_FORGE}`;
@@ -280,7 +281,7 @@ export function inboxCards(input: InboxInput): Card[] {
       const detail = details.get(i.detailKey);
       if (detail) return [detail];
       const [repository = "", n = ""] = i.item.split("#");
-      return [{ ...i, key: i.detailKey, ask: "Detail not published: inspect the source before acting", recommendation: null, action: { type: "issue", repository, number: Number(n) }, requestsUnreadable: true, detailMissing: true }];
+      return [{ ...i, key: i.detailKey, ask: "Detail not published: inspect the source before acting", recommendation: null, action: { type: i.source === "reviews" ? "pull_request" : "issue", repository, number: Number(n) }, detailMissing: true }];
     });
   }
   const published = p?.list?.identities ? asks.map((a) => askCard(a, p.unavailable)) : publishedCards(asks, p?.unavailable);

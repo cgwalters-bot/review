@@ -4,7 +4,6 @@
 
 import { formatAnswer, parseQuestion } from "../answer.ts";
 import { h } from "../dom.ts";
-import { pageState, type PageState } from "./state.ts";
 import { readSource, type Sources } from "./freshness.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
@@ -705,7 +704,7 @@ function paintInbox(state: State, force = false): void {
   const waits = (c: Card) => cardOutstanding(c, state.published.asks, state.completedAsks);
   const selection = epicSelection(cards, epics, epics ? choice : "all", waits);
   const filtered = !!selection?.hidden;
-  fillInbox(inbox.list, selection?.ordered ?? cards, inboxHooks(state), force, filtered ? new Set(selection.selected.map((c) => c.key)) : undefined);
+  fillInbox(inbox.list, selection.ordered, inboxHooks(state), force, epics && choice !== "all" ? new Set(selection.selected.map((c) => c.key)) : undefined);
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
   const { text, settled } = publishedNote(state.published, Date.now());
   const list = state.published.list;
@@ -762,8 +761,13 @@ function currentNeeds(state: State): Need[] {
   return state.published.asks.filter((a) => githubTarget(a) && state.completedAsks?.get(a.key) !== decisionKey(a)).map((a) => ({ key: a.key, action: "review", title: a.ask, where: a.item, href: askHref(a.action), inPlace: false }));
 }
 
-function snapshot(state: State): PageState {
-  return pageState({ active: state.active, entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, sources: state.sources });
+export function snapshot(state: State) {
+  const sources = { ...state.active?.sources, ...state.sources };
+  if (state.active?.fromCache) for (const name of Object.keys(state.active.sources ?? {})) {
+    const source = sources[name];
+    if (source?.state === "ok") sources[name] = { ...source, state: "cached" };
+  }
+  return { schema: "review-inbox-state/v1", generatedAt: new Date().toISOString(), status: state.active?.status ?? null, published: state.published, sources };
 }
 
 /**
