@@ -86,12 +86,18 @@ const ADDRESS_RES: RegExp[] = [
   /\b[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)*:\d{1,5}\b/gi,
 ];
 
+// MagicDNS can be a bare word. In network errors, redact the named target
+// even when it has neither a suffix nor a port, and whether or not it is
+// quoted. The target ends where hostname characters end; connecting words
+// such as "to" or "host" are never taken for it. Keep the operation and any
+// quotes as context.
+const TARGET = String.raw`(["'\`\u201c\u2018]?)(?!(?:to|host|at|on|tcp|udp)(?![a-z0-9_.-]))(?:\[address\]|[a-z0-9][a-z0-9_.-]*)(?![a-z0-9_.-])`;
+const NETWORK_TARGET_RE = new RegExp(String.raw`\b((?:lookup|resolv(?:e|ing)(?: host)?|dial(?: tcp| udp)?|connect(?:ing)?(?: to)?|connection to|request to|reach(?:ing)?|(?:unknown|to) host|(?:broker|inference|tailnet|proxy) at)\s+)` + TARGET, "gi");
+const HOST_FIELD_RE = new RegExp(String.raw`\b((?:host|hostname|server|endpoint|to)(?:\s*[:=]\s*|\s+(?=["'\`\u201c\u2018])))` + TARGET, "gi");
+
 export function redactAddresses(text: string): string {
   const redacted = ADDRESS_RES.reduce((t, re) => t.replace(re, "[address]"), text);
-  // MagicDNS can be a bare word. In network errors, redact the named target
-  // even when it has neither a suffix nor a port. Keep the operation as context.
-  return redacted.replace(/\b((?:lookup|resolve|resolving|dial(?: tcp)?|connect(?:ing)?(?: to)?|connection to|request to|reach(?:ing)?|(?:broker|inference|tailnet) at)\s+)(?:\[address\]|[a-z0-9][a-z0-9_.-]*)(?=[:\s]|$)/gi, "$1[address]")
-    .replace(/\b((?:host|hostname|server|endpoint)\s*[:=]\s*)[a-z0-9][a-z0-9_.-]*(?=[:\s]|$)/gi, "$1[address]");
+  return redacted.replace(NETWORK_TARGET_RE, "$1$2[address]").replace(HOST_FIELD_RE, "$1$2[address]");
 }
 
 const isToken = (v: unknown): v is string => typeof v === "string" && TOKEN_RE.test(v);
