@@ -32,3 +32,15 @@ jobs:
           cache: npm
       - if: hashFiles('package-lock.json') != ''
         run: npm ci && npm run check
+      # The browser test against the fixtures, in Playwright's own Chromium
+      # (test/browser/app.spec.ts); --with-deps installs its system libraries.
+      - if: hashFiles('package-lock.json') != ''
+        run: npx playwright install --with-deps chromium && npm run test:browser
+      # Its fixture-data screenshots, for a PR whose author could not attach them.
+      - if: always() && hashFiles('package-lock.json') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: screenshots
+          path: dist/screenshots
+          if-no-files-found: ignore
+          retention-days: 14

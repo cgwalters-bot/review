@@ -145,8 +145,8 @@ and round-trip the resulting publication through this app's fixture tests.
 
 This run cannot file an issue in another repository; the exact producer handoff
 above must be filed there before claiming #251's publishing half complete.
-Generate a phone replay with `node test/e2e/render-needs-you.ts . 174-grouped
-/tmp/needs-you-174.html`, then capture it with Chromium at 390px width.
+Generate a phone replay with `BROWSER_DATA=174-grouped npm run test:browser`
+(see [AGENTS.md](AGENTS.md)); it writes `dist/screenshots/inbox-phone.png`.
 
 The parser accepts the producer's compact identities and epic map, and the
 older detailed-only publication. `test/fixtures/needs-you-661.json` is a
@@ -154,7 +154,8 @@ older detailed-only publication. `test/fixtures/needs-you-661.json` is a
 (`crates/board-forge/src/pass/holds.rs`), not a capture: the live
 publication on `bot-ops#1` was not readable to the run that wrote it.
 `test/e2e/render-needs-you.ts` draws Needs you from any checkout against these
-fixtures, offline, for desktop and phone screenshots that compare commits. Inventory
+fixtures, offline, for desktop and phone screenshots that compare commits;
+`npm run test:browser` screenshots this checkout in Chromium. Inventory
 and detailed records are bounded at 10,000 each. Published question,
 recommendation, ownership and resolution text is display-only: hostile or
 stale publisher prose must not become write authorization. A collapsed
