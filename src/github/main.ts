@@ -76,7 +76,8 @@ import { loadProjectStatus } from "./backend.ts";
 import { type Need, needStops } from "./needs.ts";
 import { type Ask, holdAsks, loadPassPublications, readHoldAsk } from "./holds.ts";
 import { repositoriesView, type ReportBlock } from "./repositories.ts";
-import { activePassView, type PassView, passView, retainPassView } from "./passview.ts";
+import { activePassView, type PassView, retainPassView } from "./passview.ts";
+import { type PassesRead, readPasses, schedulerPassView } from "./passesview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -184,6 +185,7 @@ interface State {
   activeRunning: boolean;
   /** The last pass view read, kept while a refresh of the publication fails. */
   passView?: PassView | undefined;
+  passes: PassesRead;
   repositories?: ReportBlock[];
   /** The page's sections, while it is shown. */
   home?: Home;
@@ -825,10 +827,11 @@ function paintActive(state: State): void {
   const model = snapshot(state);
   const source = model.sources.holds;
   const unavailable = source && source.state !== "ok" ? source.error ?? source.state : undefined;
-  const pass = retainPassView(state.passView, state.active?.holds?.passView, !!unavailable);
+  const passUnavailable = state.active?.passPublicationError ?? unavailable;
+  const pass = retainPassView(state.passView, state.active?.passPublicationError ? undefined : state.active?.holds?.passView, !!passUnavailable);
   state.passView = typeof pass === "object" ? pass : undefined;
-  state.home.slots.active.replaceChildren(activePassView(pass, Date.now(), unavailable));
-  state.home.slots.passes.replaceChildren(passView(pass, Date.now(), unavailable));
+  state.home.slots.active.replaceChildren(activePassView(pass, Date.now(), passUnavailable));
+  state.home.slots.passes.replaceChildren(schedulerPassView(state.passes, pass, Date.now(), passUnavailable));
   if (state.active?.repositories) state.repositories = state.active.repositories;
   state.home.slots.repositories.replaceChildren(repositoriesView(state.repositories ?? [], Date.now(), unavailable));
   fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError, Date.now(), state.active?.board);
@@ -868,7 +871,11 @@ async function loadInboxContext(gh: GitHub): Promise<Active> {
   const holds = publication?.holds;
   const active: Active = { at: Date.now(), sources, warnings: Object.entries(sources).flatMap(([name, source]) => source.error ? [`Couldn't read ${name}: ${source.error}`] : []) };
   if (holds) active.holds = holds;
-  if (publication) active.repositories = publication.repositories;
+  if (publication) {
+    active.repositories = publication.repositories;
+    active.passes = publication.passes ?? null;
+    active.passPublicationError = publication.uncertain;
+  }
   return active;
 }
 
@@ -907,6 +914,9 @@ async function refreshActive(state: State): Promise<boolean> {
     if (!state.active) {
       const cached = state.gh.cacheOnly();
       const active = await loadInboxContext(cached);
+      // History is independent of holds, including on a cold cache-only startup.
+      const passes = state.passes.data ? undefined : readPasses(state.passes, active);
+      if (passes?.data) state.passes = passes;
       if (!state.active && active.holds) {
         active.at = cached.oldest ?? active.at;
         active.fromCache = true;
@@ -915,12 +925,13 @@ async function refreshActive(state: State): Promise<boolean> {
         if (typeof active.holds?.needsYou === "object" && !state.published.list) state.published = readPublished(state.published, active);
         paintActive(state);
         paintNeeds(state);
-      }
+      } else if (passes?.data) paintActive(state);
     }
     const active = await loadInboxContext(state.gh);
     if (state.closed) return false;
     state.active = { ...active, ...(state.active?.status === undefined ? {} : { status: state.active.status }) };
     state.published = readPublished(state.published, active);
+    state.passes = readPasses(state.passes, active);
     paintActive(state);
     paintNeeds(state);
     return Object.values(active.sources ?? {}).every((s) => s.state !== "unavailable");
@@ -1718,6 +1729,7 @@ async function start(source: TokenSource): Promise<void> {
     activeRunning: false,
     decisionsAnswered: new Set(),
     published: { asks: [], unavailable: false },
+    passes: {},
   };
   state.gh.onUnauthorized = () => void rejected(state);
   byId("meta").textContent = "Checking the token…";

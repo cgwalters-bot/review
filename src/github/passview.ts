@@ -2,6 +2,7 @@
 import { h } from "../dom.ts";
 import { ago } from "../time.ts";
 import { isObject, time } from "./heartbeat.ts";
+import { redactAddresses } from "./passes.ts";
 
 interface Run { repository: string; id: number }
 interface Start { item: string; kind: string; pool: string; run: Run }
@@ -62,10 +63,10 @@ export function passView(data: PassView | string | undefined, now = Date.now(), 
   if (!data.passes.length) el.append(h("p", {}, "No pass history published; not evidence that no pass ran."));
   for (const p of data.passes) {
     const row = h("article", { class: "pass-record" }, h("h4", {}, `${p.at} · ${p.result}`));
-    row.append(h("ul", {}, ...p.sections.map((s) => h("li", { class: s.result === "failure" ? "warn" : "" }, `${s.name}: ${s.result}${s.error ? ` — ${s.error}` : ""}`))));
+    row.append(h("ul", {}, ...p.sections.map((s) => h("li", { class: s.result === "failure" ? "warn" : "" }, `${s.name}: ${s.result}${s.error ? ` — ${redactAddresses(s.error)}` : ""}`))));
     row.append(h("p", {}, `Started ${p.started.length}${p.omitted ? " shown" : ""}`), h("ul", {}, ...p.started.map(startLine)));
     if (!p.started.length && !p.reasons.length) row.append(h("p", { class: "warn" }, "Started nothing; reason not published."));
-    row.append(h("ul", {}, ...p.reasons.map((r) => h("li", {}, r.item ? itemLink(r.item) : "New runs", ` · ${r.kind}: ${r.reason}${r.until ? ` · until ${r.until}` : ""}`))));
+    row.append(h("ul", {}, ...p.reasons.map((r) => h("li", {}, r.item ? itemLink(r.item) : "New runs", ` · ${r.kind}: ${redactAddresses(r.reason)}${r.until ? ` · until ${r.until}` : ""}`))));
     if (p.omitted) row.append(h("p", { class: "warn" }, `${p.omitted} pass records omitted; starts and reasons may be incomplete.`));
     el.append(row);
   }
@@ -73,22 +74,23 @@ export function passView(data: PassView | string | undefined, now = Date.now(), 
   if (!data.pools.length) el.append(h("p", {}, "Pool pace not published."));
   for (const p of data.pools) {
     const reset = p.resets_at ? Math.ceil((Date.parse(p.resets_at) - now) / 60_000) : null;
-    el.append(h("p", { class: p.under_pace === true && p.ready === 0 ? "warn" : "" }, `${p.name}: ${p.used_percent ?? "unknown"}% used / ${p.allowed_percent ?? "unknown"}% allowed · reset ${p.resets_at ?? "unknown"}${reset === null ? "" : reset > 0 ? ` (in ${reset}m)` : " (due; awaiting reading)"} · ready ${p.ready ?? "unknown"}${p.under_pace === true && p.ready === 0 ? " · well under pace with nothing ready (publisher assessment)" : ""}`));
+    el.append(h("p", {}, `${p.name}: ${p.used_percent ?? "unknown"}% used / ${p.allowed_percent ?? "unknown"}% allowed · reset ${p.resets_at ?? "unknown"}${reset === null ? "" : reset > 0 ? ` (in ${reset}m)` : " (due; awaiting reading)"} · ready ${p.ready ?? "unknown"}${p.under_pace === true ? " · under pace (publisher assessment; readiness coverage unknown)" : ""}`));
   }
   el.append(h("h3", {}, "Work in flight"));
-  if (!data.in_flight.length) el.append(h("p", {}, data.complete && data.omitted === 0 ? "No work in flight in this published sample." : "No work in flight listed; incomplete publication is not an empty queue."));
+  if (!data.in_flight.length) el.append(h("p", {}, "No work in flight listed; incomplete publication is not an empty queue."));
   el.append(h("ul", {}, ...data.in_flight.map((f) => f.state === "running" ? startLine(f) : h("li", {}, h("a", { href: `https://github.com/${f.repository}/pull/${f.number}` }, `${f.repository}#${f.number}`), ` · ${f.state}`))));
   return el;
 }
 
 function publicationNote(el: HTMLElement, data: PassView | string | undefined, now: number, unavailable?: string): data is PassView {
-  if (unavailable) el.append(h("p", { class: "warn" }, `Publication unavailable: ${unavailable}. Any facts below are last read, not current.`));
+  if (unavailable) el.append(h("p", { class: "warn" }, `Publication unavailable: ${redactAddresses(unavailable)}. Any facts below are last read, not current.`));
   if (!data || typeof data === "string") {
     el.append(h("p", { class: "note" }, data ?? "Pass view not published (off or older producer)."));
     return false;
   }
   const age = now - Date.parse(data.observed_at);
-  el.append(h("p", { class: age > 3_600_000 || age < -60_000 ? "warn" : "note" }, `Observed ${data.observed_at}${age > 3_600_000 ? " · stale (over an hour)" : age < -60_000 ? " · clock is in the future" : ""} · ${data.complete ? "complete published sample" : "partial; unread work is unknown"} · ${data.omitted} records omitted`));
+  el.append(h("p", { class: age > 3_600_000 || age < -60_000 ? "warn" : "note" }, `Observed ${data.observed_at}${age > 3_600_000 ? " · stale (over an hour)" : age < -60_000 ? " · clock is in the future" : ""} · ${data.complete ? "publisher reports complete" : "partial; unread work is unknown"} · ${data.omitted} records omitted`));
+  el.append(h("p", { class: "note" }, "Legacy pass view: section errors, readiness and queued/review-wait PR coverage may be missing; missing facts are unknown."));
   return true;
 }
 
@@ -102,7 +104,7 @@ export function activePassView(data: PassView | string | undefined, now = Date.n
     const elapsed = f.started_at ? Date.parse(data.observed_at) - Date.parse(f.started_at) : NaN;
     return h("li", {}, itemLink(f.item), ` · ${f.kind} · ${f.pool} · ${elapsed >= 0 ? `running ${Math.floor(elapsed / 60_000)}m at observation` : "runtime unknown"} · `, runLink(f.run));
   });
-  agents.append(rows.length ? h("ul", {}, ...rows) : h("p", {}, data.complete && !data.omitted ? "No running jobs in this published sample." : "No running jobs listed; unread work is unknown."));
+  agents.append(rows.length ? h("ul", {}, ...rows) : h("p", {}, "No running jobs listed; unread work is unknown."));
   const capacity = h("div", {}, h("h3", {}, "Capacity"));
   if (!data.pools.length) capacity.append(h("p", {}, "Capacity not published."));
   for (const p of data.pools) {
@@ -119,7 +121,7 @@ export function activePassView(data: PassView | string | undefined, now = Date.n
     else {
       const counts = new Map<string, number>();
       for (const r of p.reasons) {
-        const key = `${r.kind}: ${r.reason}`;
+        const key = `${r.kind}: ${redactAddresses(r.reason)}`;
         counts.set(key, (counts.get(key) ?? 0) + 1);
       }
       last.append(counts.size ? h("ul", {}, ...[...counts].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([reason, n]) => h("li", {}, `${reason} · ${n}`))) : h("p", { class: "warn" }, "Started nothing; reason not published."));
