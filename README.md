@@ -31,6 +31,15 @@ details produce read-only two-line placeholders ("Detail not published"),
 not target discovery. The browser
 does not search the board, decisions or draft issues to assemble this list.
 
+Above the cards, **Agents and capacity** summarizes the same optional
+`pass_view` publication as Status: running jobs with item/run links and runtime
+at the observation, pool usage bars against published allowed percentages and
+reset clocks, and the latest pass's starts. When it started nothing, the panel
+groups identical reason kind/text pairs, showing the three largest counts
+(ties retain publication order). Missing, stale, future-clock, partial and
+unavailable publications are labelled, not treated as idle health. The panel
+wraps into one column on phones and adds no reads or browser setting.
+
 Each identity and card carries agent-board#661's `epic` (nearest live epic)
 and `topEpic`, `none` or `unknown`, and `epics` maps each live epic to
 `active`, `activeWhy` (`focus`, `recent-run`, `open-pr`,
@@ -406,8 +415,14 @@ Producer requirements for a follow-up in `cgwalters-forge/agent-board`:
 - Pools carry used/allowed percentages, reset clock, ready count and the
   producer's `under_pace` assessment. Null means unknown; do not turn failed
   readings into zero. The app uses no independent under-pace threshold.
-  In-flight records distinguish running (same fields as a start), merge-queue
-  and waiting-review (typed repository and PR number).
+   In-flight records distinguish running (same fields as a start), merge-queue
+   and waiting-review (typed repository and PR number).
+   Running records may additionally publish `started_at`, an ISO timestamp or
+   null. The home summary measures runtime from it to `observed_at`, not the
+   browser clock, so stale samples cannot imply a job is still running. Missing
+   or future start clocks show runtime unknown. The fixture includes this
+   optional field; older publications remain readable. The producer must supply
+   it to show elapsed runtime rather than unknown.
 - `complete` describes the current source sample, not a guarantee that every
   historical pass was observed. `omitted` counts records dropped outside passes;
   each pass's `omitted` counts its dropped starts/sections/reasons. All are

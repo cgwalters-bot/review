@@ -44,7 +44,7 @@
       {"name": "other", "used_percent": null, "allowed_percent": null, "resets_at": null, "ready": null, "under_pace": null}
     ],
     "in_flight": [
-      {"state": "running", "item": "example/work#11", "kind": "implement", "pool": "claude", "run": {"repository": "example/runner", "id": 42}},
+      {"state": "running", "item": "example/work#11", "kind": "implement", "pool": "claude", "run": {"repository": "example/runner", "id": 42}, "started_at": "2026-11-05T11:55:00Z"},
       {"state": "merge-queue", "repository": "example/work", "number": 14},
       {"state": "waiting-review", "repository": "example/work", "number": 15}
     ]

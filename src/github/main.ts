@@ -77,7 +77,7 @@ import { loadProjectStatus } from "./backend.ts";
 import { type Need, needStops } from "./needs.ts";
 import { type Ask, holdAsks, loadPassPublications, readHoldAsk } from "./holds.ts";
 import { repositoriesView, type ReportBlock } from "./repositories.ts";
-import { type PassView, passView, retainPassView } from "./passview.ts";
+import { activePassView, type PassView, passView, retainPassView } from "./passview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -823,6 +823,7 @@ function paintActive(state: State): void {
   const unavailable = source && source.state !== "ok" ? source.error ?? source.state : undefined;
   const pass = retainPassView(state.passView, state.active?.holds?.passView, !!unavailable);
   state.passView = typeof pass === "object" ? pass : undefined;
+  state.home.slots.active.replaceChildren(activePassView(pass, Date.now(), unavailable));
   state.home.slots.passes.replaceChildren(passView(pass, Date.now(), unavailable));
   if (state.active?.repositories) state.repositories = state.active.repositories;
   state.home.slots.repositories.replaceChildren(repositoriesView(state.repositories ?? [], Date.now(), unavailable));
