@@ -64,10 +64,54 @@ Questions stay as short asks (wrapping on narrow screens,
 never clipped); a card's note and its published request context share one
 collapsed **Context** fold, and answer forms are collapsed. An approval row has
 the ask, its PR, an Approve at the published head and a link to review the
-diff. The pass publishes no diff size or check state, so the row says so;
+diff. Optional published diff, CI and review facts are head-bound; without
+fresh matching evidence the row says unknown, not success;
 `review-withheld` is marked as the review agent withholding approval. The
 list's question and recommendation are display text, not instructions;
 links are made from its typed action references, never read from it.
+
+### Compact approval evidence (#239, continuation of draft #243)
+
+The optional `agent-board/approval-evidence/v1` extension is informational,
+not approval authority. The concrete threat is stale, partial or another
+head's evidence looking like verified success. The parser consumes the
+producer contract in `crates/board-forge/src/poll/approval.rs` and
+`docs/pass.md` at agent-board revision
+`6260e0a7da91c07404013a35d9313064dd19b9d6`.
+`test/fixtures/approval-evidence-needs-you.json` is the verbatim shared
+`fixtures/approval-evidence-needs-you.json` projection at that revision,
+not a current publication capture.
+
+At most 50 evidence records are accepted. An uncarried, ungrouped approval
+from a wholly read reviews source may show additions/deletions, CI state
+and review verdict/time only at its displayed head. Invalid records are
+unknown; incomplete CI never says green. Missing, evicted, carried,
+wrong-head, future or older-than-70-minute evidence stays unknown. Facts
+refresh beside retained drafts and receipts without reading targets or
+changing write handlers. Review-withheld remains readable without evidence.
+The viewer-token, current-head and `commit_id` approval preflight is unchanged.
+
+Descriptors join identities by `detail_key` even when detail was evicted.
+Foreign, missing or unreadable descriptors cannot regain GitHub navigation,
+chat or writes via a placeholder. A safe identity-only row can be inspected,
+but cannot answer. No browser option or permission is added. Producer
+publication remains off by default (`holds.approvalEvidence: false`);
+optional caller enablement stays tracker#1336, separate from producer cap/pin work.
+
+Against implementation-start main `2f32c368b94ea3c6ef7c60bbfab29bf58124e33a`,
+production TypeScript (tracked `src/**/*.ts`, LF count including comments and
+blank lines) falls from **19,456 to 19,442 lines**; minified `dist/app.js`
+falls from **538,724 to 530,350 bytes** with the same lockfile and build.
+Superseded decision-refresh orchestration and browser-derived legacy queue
+snapshots are removed; the CLI's richer state loader stays separate.
+
+Offline DOM acceptance includes the redacted replay (2 cold reads, 1 poll
+read, no target fan-out), full/capped/grouped needs-you-174, epic filters,
+bare epic links, blocked storage and departed-draft recovery. These are not
+current signed-in captures. Desktop/390px screenshots and geometry acceptance
+remain outstanding: this run has no authorized image artifact channel.
+Current signed-in publication acceptance also remains outstanding; no live
+writes, new tabs or promotion were performed.
 
 ### Approval publication dependency (#251)
 

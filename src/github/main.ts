@@ -4,7 +4,6 @@
 
 import { formatAnswer, parseQuestion } from "../answer.ts";
 import { h } from "../dom.ts";
-import { pageState, type PageState } from "./state.ts";
 import { readSource, type Sources } from "./freshness.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
@@ -50,7 +49,7 @@ import { type Card, askHref, cardOutstanding, decisionKey, githubTarget, inboxCa
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { CHAT_CONFIG } from "./chatconfig.ts";
 import { type ChatAnswer, chatItem, type ChatItem, startChatButton } from "./chatitem.ts";
-import { CARD_CLASS, CARD_DONE_CLASS, cardEl, fillInbox, type InboxHooks, publishedContext } from "./inboxview.ts";
+import { CARD_CLASS, CARD_DONE_CLASS, cardEl, fillInbox, type InboxHooks, publishedContext, tickInboxEvidence } from "./inboxview.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
@@ -92,14 +91,12 @@ import {
   submitReview,
   type VerdictEntry,
   type WaitingPr,
-  type WaitingRead,
 } from "./prs.ts";
 import { APPROVE_ACTION, canReview, type PrPane, prView, REVIEW_FORM_CLASS, type ReviewAskInfo } from "./prview.ts";
 import { buildEntries, type Entry, itemHref, onBot } from "./queue.ts";
 import { DEFAULT_VIEW, fillNav, SECTION_VIEW, showView, VIEW_ATTR, VIEW_TITLE, type ViewId, viewHash, VIEWS, visibleView } from "./shell.ts";
 import { checkedText, SourceLayer } from "./sourcelayer.ts";
 import { loadAdvance, saveAdvance } from "./store.ts";
-import type { Decision } from "./triage.ts";
 import { agoLabel, answerForm, answerState, type BoardHref, clock, type ContextHooks, CONTEXT_CLASS, contextView, itemView, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, type RowLabel, STATE_LABEL, tickAges } from "./view.ts";
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
@@ -138,17 +135,10 @@ interface State {
   others: OtherPr[];
   /** Those of them the queue lists, and why, from the last read. */
   waiting: WaitingPr[];
-  /** Their reads that only a change to the PR moves, for the next read to reuse (see loadWaiting). */
-  waitingReads: Map<string, WaitingRead>;
   /** Their verdicts and heads, by refKey. */
   verdicts: Map<string, VerdictEntry>;
-  lastForgePoll: number;
-  /** Search the forge on the next poll if the minimum interval allows. */
-  forceForge: boolean;
   /** Whether a forge search has succeeded, so missing forge PRs mean gone. */
   forgeKnown: boolean;
-  verdictsRunning: boolean;
-  waitingRunning: boolean;
   poller: Poller;
   /** The ranked queue. */
   entries: Entry[];
@@ -162,8 +152,6 @@ interface State {
   rerunsSent: Set<string>;
   /** Open questions he has answered on GitHub and the bot hasn't acted on, by node id. */
   answered: Set<string>;
-  /** Bumped per board change, so an older answered read can't land over a newer one. */
-  answeredSeq: number;
   /** PRs reviewed from this tab, by refKey, with the head reviewed (see stillReviewed). */
   reviewed: Map<string, string>;
   /** Those reviews' verdicts, shown until GitHub's reads agree (see overlayVerdicts); by refKey. */
@@ -198,8 +186,6 @@ interface State {
   /** Why GitHub hasn't confirmed `login` (it is then the cache's, or unknown); retried at each poll. */
   loginError?: string;
   loginChecking?: boolean;
-  /** Keys of questions answered from the page: kept in the list, dimmed, until a reload. */
-  answeredHere: Set<string>;
   /** The open PR's pane, which handles its own keys. */
   pane?: PrPane;
   /** The capture bar, shown to OPERATOR only. */
@@ -221,11 +207,6 @@ interface State {
   cachedAt?: number;
   /** PR details shown from the cache, by refKey: when they were fetched. */
   prCachedAt: Map<string, number>;
-  /** The open decisions, in order, and when a cached copy was fetched. */
-  decisions?: Decision[];
-  decisionsCachedAt?: number;
-  /** Decisions he answered (on GitHub, or from this tab until the next read) and the bot hasn't acted on, by issue node id. */
-  decisionsAnswered: Set<string>;
   error?: string;
   forgeError?: string;
   /** What the token lacks, e.g. classic scopes. */
@@ -332,6 +313,7 @@ function viewChecked(layer: SourceLayer<ViewId>, view: ViewId, now: number): HTM
 /** Meta line and notices only: never touches the view, or a half-typed answer. */
 function renderChrome(state: State): void {
   if (state.closed) return;
+  if (state.inbox) tickInboxEvidence(state.inbox.list, Date.now());
   renderMeta(state);
   const json = document.getElementById("state-json");
   const model = snapshot(state);
@@ -705,7 +687,7 @@ function paintInbox(state: State, force = false): void {
   const waits = (c: Card) => cardOutstanding(c, state.published.asks, state.completedAsks);
   const selection = epicSelection(cards, epics, epics ? choice : "all", waits);
   const filtered = !!selection?.hidden;
-  fillInbox(inbox.list, selection?.ordered ?? cards, inboxHooks(state), force, filtered ? new Set(selection.selected.map((c) => c.key)) : undefined);
+  fillInbox(inbox.list, selection?.ordered ?? cards, inboxHooks(state), force, selection && choice !== "all" ? new Set(selection.selected.map((c) => c.key)) : undefined);
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
   const { text, settled } = publishedNote(state.published, Date.now());
   const list = state.published.list;
@@ -762,8 +744,13 @@ function currentNeeds(state: State): Need[] {
   return state.published.asks.filter((a) => githubTarget(a) && state.completedAsks?.get(a.key) !== decisionKey(a)).map((a) => ({ key: a.key, action: "review", title: a.ask, where: a.item, href: askHref(a.action), inPlace: false }));
 }
 
-function snapshot(state: State): PageState {
-  return pageState({ active: state.active, entries: state.entries, decisions: state.decisions, decisionsAnswered: state.decisionsAnswered, answeredHere: state.answeredHere, sources: state.sources });
+export function snapshot(state: State) {
+  const sources = { ...state.active?.sources, ...state.sources };
+  if (state.active?.fromCache) for (const name of Object.keys(state.active.sources ?? {})) {
+    const source = sources[name];
+    if (source?.state === "ok") sources[name] = { ...source, state: "cached" };
+  }
+  return { schema: "review-inbox-state/v1", generatedAt: new Date().toISOString(), status: state.active?.status ?? null, published: state.published, sources };
 }
 
 /**
@@ -926,7 +913,7 @@ async function refreshActive(state: State): Promise<boolean> {
 
 /** The item `#item/<id>` opens: a board item, or a decision's issue that is not on the board. */
 function routedItem(state: State, id: string): Item | undefined {
-  return findRouteItem([...state.items, ...state.linked, ...(state.active?.board ?? []), ...(state.decisions?.map((d) => d.item) ?? [])], id)
+  return findRouteItem([...state.items, ...state.linked, ...(state.active?.board ?? [])], id)
     ?? (state.routed?.id === id ? state.routed.item : undefined);
 }
 
@@ -1049,7 +1036,6 @@ async function rerunPr(state: State, ref: { owner: string; repo: string; number:
   state.rerunning.add(url);
   try {
     const out = await rerunPrRun(state.gh, ref, url, allowed);
-    state.forceForge = true;
     return out;
   } finally {
     state.rerunning.delete(url);
@@ -1686,19 +1672,13 @@ async function start(source: TokenSource): Promise<void> {
     prs: [],
     others: [],
     waiting: [],
-    waitingReads: new Map(),
     verdicts: new Map(),
-    lastForgePoll: 0,
-    forceForge: false,
     forgeKnown: false,
-    verdictsRunning: false,
-    waitingRunning: false,
     entries: [],
     sent: new Set(),
     answered: new Set(),
     rerunning: new Set(),
     rerunsSent: new Set(),
-    answeredSeq: 0,
     reviewed: new Map(),
     pending: new Map(),
     context: new Map(),
@@ -1709,9 +1689,7 @@ async function start(source: TokenSource): Promise<void> {
     advance: loadAdvance(),
     selected: undefined,
     needs: [],
-    answeredHere: new Set(),
     activeRunning: false,
-    decisionsAnswered: new Set(),
     published: { asks: [], unavailable: false },
   };
   state.gh.onUnauthorized = () => void rejected(state);
@@ -1786,9 +1764,9 @@ async function start(source: TokenSource): Promise<void> {
   installAdvance(state);
   // Mobile Safari suspends a page in the background, often without a
   // visibilitychange on return; any of these may be the first sign of it.
-  document.addEventListener("visibilitychange", () => state.poller.visibilityChanged(frozenSince(state)));
+  document.addEventListener("visibilitychange", () => { renderChrome(state); state.poller.visibilityChanged(frozenSince(state)); });
   window.addEventListener("pagehide", () => state.poller.suspend());
-  for (const ev of ["pageshow", "focus"]) window.addEventListener(ev, () => state.poller.wake(frozenSince(state)));
+  for (const ev of ["pageshow", "focus"]) window.addEventListener(ev, () => { renderChrome(state); state.poller.wake(frozenSince(state)); });
   state.metaTicker = setInterval(() => {
     state.tickedAt = Date.now();
     if (state.loaded && !document.hidden) {

@@ -7,6 +7,7 @@ import { GitHub } from "../src/github/api.ts";
 import { type Ask, type ReviewBucket, parseNeedsYou } from "../src/github/holds.ts";
 import { type Card, inboxCards, publishedCards, refusal } from "../src/github/inbox.ts";
 import { fillInbox } from "../src/github/inboxview.ts";
+import { fillState, homeSkeleton } from "../src/github/homeview.ts";
 import { newestDraft, type ReviewDraftConfig } from "../src/github/reviewdrafts.ts";
 import { fields, fixture, rawAsk, rawNeedsYou, scriptedFetch, type Scripted } from "./helpers.ts";
 
@@ -14,13 +15,27 @@ const dom = new JSDOM(readFileSync(new URL("../static/index.html", import.meta.u
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, Node: dom.window.Node, HTMLElement: dom.window.HTMLElement,
   ResizeObserver: class { observe() {} disconnect() {} }, fetch: async () => { throw new Error("network forbidden"); } });
 dom.window.confirm = () => true;
-const { inboxHooks } = await import("../src/github/main.ts");
+const { inboxHooks, snapshot } = await import("../src/github/main.ts");
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 const target = "cgwalters-forge/tracker#50";
 const url = "https://github.com/cgwalters-forge/tracker/issues/50";
 const path = "/repos/cgwalters-forge/tracker/issues/50";
 const head = "a".repeat(40);
 const replacement = "b".repeat(40);
+for (const cached of [false, true]) test(`browser snapshot retains ${cached ? "cached" : "failed"} freshness without legacy discovery`, () => {
+  const r = setup(() => undefined);
+  const source = { state: cached ? "ok" as const : "unavailable" as const, fetchedAt: 100, ...(cached ? {} : { error: "publication read failed" }) };
+  r.state.active = { at: 100, fromCache: cached, sources: { holds: source }, warnings: [] };
+  r.state.sources = {};
+  const model = snapshot(r.state);
+  assert.equal(model.schema, "review-inbox-state/v1");
+  assert.equal(model.sources.holds!.state, cached ? "cached" : "unavailable");
+  assert.equal(source.state, cached ? "ok" : "unavailable");
+  const home = homeSkeleton({ toggled() {} });
+  fillState(home, model);
+  assert.equal(home.slots.freshness.hidden, false);
+  assert.match(home.slots.freshness.textContent!, cached ? /holds: cached/ : /holds: unavailable.*publication read failed/);
+});
 const bucketFixture = fixture("draft-review-needs-you.json") as { schema: string; group: { reason: string; numbers: number[] }; review_buckets: Record<string, ReviewBucket> };
 function bucketCard(over: Record<string, unknown> = {}, askOver: Record<string, unknown> = {}): Card {
   const a = rawAsk(1, { key: "cgwalters-forge/bootc#1", item: "cgwalters-forge/bootc#1", source: "reviews", kind: "review-promote",
@@ -43,7 +58,52 @@ function asks(...raw: Record<string, unknown>[]): Ask[] {
 const cards = (...raw: Record<string, unknown>[]): Card[] => publishedCards(asks(...raw));
 /** The pass's hold on tracker#50, as its card. */
 const answerCard = (kind = "needs-human"): Card => cards(rawAsk(50, { kind, ask: "Which way?" }))[0]!;
+
+for (const restriction of ["foreign", "missing", "malformed", "unreadable"]) test(`latest ${restriction} descriptor survives detail eviction, retires draft, navigation and chat`, async () => {
+  const r = setup((method, p) => method === "GET" && p === path ? { body: shown() } : undefined);
+  const initial = answerCard();
+  r.paint(initial);
+  await settle();
+  const form = r.list.querySelector("form")!;
+  form.querySelector("textarea")!.value = "Keep my draft";
+  const raw = rawAsk(50, { ask: "Which way?" });
+  const descriptor = { key: raw.key, forge: restriction === "foreign" ? "forge.example" : "github.com", quality: "decision", actions: restriction === "malformed" ? "bad" : [] };
+  const list = parseNeedsYou(rawNeedsYou([], "2026-11-05T12:00:00Z", { identities: [{ ...raw, detail_key: raw.key }], requests: restriction === "missing" ? [] : restriction === "unreadable" ? {} : [descriptor] }));
+  assert.ok(typeof list === "object");
+  const placeholder = inboxCards({ published: { asks: [], list, unavailable: false } })[0]!;
+  r.paint(placeholder);
+  assert.equal(r.list.querySelector("form"), form);
+  assert.equal(form.querySelector("textarea")!.value, "Keep my draft");
+  assert.equal(r.list.querySelector("a[href]"), null);
+  assert.equal(r.list.firstElementChild!.getAttribute("data-href"), "#");
+  assert.equal(inboxHooks(r.state).chatItem?.(placeholder), undefined);
+  form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  await settle();
+  assert.equal(r.writes().length, 0);
+  r.paint(placeholder, true);
+  assert.equal(r.list.querySelector("button, form, a[href]"), null);
+});
+
 const questionIssue = () => ({ ...shown(), labels: [{ name: "question" }, ...shown().labels], user: { login: "cgwalters-bot" }, assignees: [{ login: "cgwalters" }] });
+
+test("real answer hooks recover a filtered then departed draft without release authority", async () => {
+  const r = setup((method, p) => method === "GET" && p === path ? { body: shown() } : undefined);
+  const c = answerCard();
+  r.paint(c); await settle();
+  const text = r.list.querySelector("textarea")!;
+  text.value = "Keep this unsent answer";
+  fillInbox(r.list, [c], inboxHooks(r.state), false, new Set());
+  assert.equal((r.list.firstElementChild as HTMLElement).hidden, true);
+  r.state.published = { asks: [], unavailable: false };
+  fillInbox(r.list, [], inboxHooks(r.state), false, new Set());
+  assert.equal(fillInbox(r.list, [], inboxHooks(r.state)), 0);
+  assert.equal((r.list.firstElementChild as HTMLElement).hidden, false);
+  assert.equal(r.list.querySelector("textarea"), text);
+  assert.equal(text.value, "Keep this unsent answer");
+  text.form!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); await settle();
+  assert.equal(r.writes().length, 0);
+  assert.equal(r.list.querySelector("a[href]"), null);
+});
 function setup(route: (method: string, path: string) => Scripted | undefined, login = "cgwalters", drafts?: ReviewDraftConfig) {
   const f = scriptedFetch((method, url) => new URL(url).pathname === "/user" ? { body: { login } } : route(method, new URL(url).pathname) ?? (new URL(url).pathname === "/graphql" ? { body: { data: { repository: { issueOrPullRequest: { comments: { nodes: [] } } } } } } : undefined));
   const state = { gh: new GitHub(async () => "test", f.fetchImpl) } as Parameters<typeof inboxHooks>[0];

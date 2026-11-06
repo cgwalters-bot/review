@@ -57,8 +57,8 @@ it("Repositories shares the pass read, retains unavailable facts, and replaces i
 });
 
 /** The app signed in at #inbox, its clock at T0, the holds comment answering as `holds` says. */
-async function boot(t: TestContext, holds: Holds) {
-  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+async function boot(t: TestContext, holds: Holds, tickIntervals = false) {
+  t.mock.timers.enable({ apis: tickIntervals ? ["Date", "setInterval"] : ["Date"], now: T0 });
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error: Error) => {
     // Sign-out reloads the page; jsdom implements only hash navigation.
@@ -167,6 +167,38 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 const listed = (at: number, items: unknown[], over: Record<string, unknown> = {}) => [holdsComment(iso(at), rawNeedsYou(items, iso(at), over))];
 
 describe("Needs you from the pass's published list", () => {
+  it("existing chrome timer and wake expire evidence without polls or replacing a draft/receipt", async (t) => {
+    const shared = fixture<{ approval_evidence: { observed_at: string; items: Record<string, { review: { at: string } | null }> } }>("approval-evidence-needs-you.json");
+    shared.approval_evidence.observed_at = iso(T0);
+    shared.approval_evidence.items["cgwalters-forge/tracker#1261"]!.review!.at = iso(T0 - MINUTE);
+    const approval = rawAsk(1261, { key: "cgwalters-forge/tracker#1261", source: "reviews", kind: "review-approve", action: { type: "approve_pull_request", repository: "cgwalters-forge/tracker", number: 1261, head: "a".repeat(40) } });
+    const holds: Holds = { status: 200, etag: '"evidence"', comments: listed(T0, [approval], { approval_evidence: shared.approval_evidence }) };
+    const app = await boot(t, holds, true);
+    try {
+      const row = app.doc.querySelector<HTMLElement>(".card")!;
+      const receipt = app.doc.createElement("p");
+      receipt.dataset.keep = "";
+      receipt.textContent = "Uncertain receipt retained";
+      row.append(receipt);
+      assert.match(row.querySelector(".approval-evidence")!.textContent!, /CI green/);
+      t.mock.timers.setTime(T0 + 71 * MINUTE);
+      t.mock.timers.tick(15_000);
+      assert.doesNotMatch(row.querySelector(".approval-evidence")!.textContent!, /CI green|Review approved/);
+      assert.equal(row, app.doc.querySelector(".card"));
+      assert.equal(receipt.parentElement, row);
+      assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS]);
+      // A wake must expire near-boundary facts before its asynchronous read lands.
+      t.mock.timers.setTime(T0);
+      await app.reload();
+      assert.match(row.querySelector(".approval-evidence")!.textContent!, /CI green/);
+      holds.gate = new Promise(() => {});
+      t.mock.timers.setTime(T0 + 71 * MINUTE);
+      app.window.dispatchEvent(new app.window.Event("focus"));
+      assert.doesNotMatch(row.querySelector(".approval-evidence")!.textContent!, /CI green|Review approved/);
+      assert.deepEqual(app.reads.writes, []);
+    } finally { await app.close(); }
+  });
+
   const decision = () => rawAsk(1, { key: "cgwalters-forge/operator#1/decision-12", item: "cgwalters-forge/operator#1", source: "decisions", kind: "document-decision", action: { type: "issue", repository: "cgwalters-forge/operator", number: 1 } });
 
   it("excludes a successfully answered document decision immediately, before the publication changes", async (t) => {

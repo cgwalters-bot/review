@@ -13,7 +13,7 @@ import type { MemberPr } from "./backend.ts";
 import type { IssueRef } from "./board.ts";
 import { refKey } from "./forge.ts";
 import type { Ask, Holds, InboxContext } from "./holds.ts";
-import { askHref, type Card, CARD_LABEL, githubTarget, members, refusal } from "./inbox.ts";
+import { askHref, type Card, CARD_LABEL, githubTarget, members, NEEDS_YOU_MAX_AGE_MS, refusal } from "./inbox.ts";
 import { approvalKey, type ApproveItem, type ApproveResult } from "./maintain.ts";
 import { approveGroup, KEEP_ATTR, KEEP_BUSY } from "./maintainview.ts";
 import { age, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
@@ -226,7 +226,7 @@ const LIMIT_ATTR = "data-limit";
 /** What a card shows, so an unchanged card is not redrawn. Its age is left out: the ticker moves it in place. */
 export function cardSignature(c: Card): string {
   const base = [c.kind, c.key, c.title, c.where, c.url, c.since, c.answered === true, c.note, c.priority, c.unavailable === true];
-  return JSON.stringify([...base, ...("ask" in c ? [c.ask.action, c.ask.group, c.ask.requests, c.ask.requestsUnreadable, c.ask.reviewBuckets, c.ask.carried] :
+  return JSON.stringify([...base, ...("ask" in c ? [c.ask.action, c.ask.group, c.ask.requests, c.ask.requestsUnreadable, c.ask.reviewBuckets, c.ask.approvalEvidence, c.ask.detailMissing, c.ask.carried] :
     c.kind === "digest" ? [c.items] : c.kind === "send" ? [c.draft.issue.body, c.draft.box, c.draft.found?.raw, c.draft.refused] : [c.entry.text, c.mark])]);
 }
 
@@ -341,10 +341,11 @@ export function cardEl(c: Card, hooks: InboxHooks, inspected?: string, refresh =
   // An answer keeps its own receipts (answerBody), and an Open card writes nothing; the rest by what they write.
   const key = JSON.stringify(c.kind === "digest" ? [c.kind, c.items.map((a) => [a.pr, a.head])] : c.kind === "send" ? [c.kind, c.key, c.draft.issue.body, c.draft.found?.raw] : c.kind === "document" ? [c.kind, c.key, cardSignature(c)] : [c.kind, c.key, c.ask.action, members(c.ask), policySignature(c)]);
   const previous = hooks.writes?.get(key);
-  if (c.kind !== "answer" && c.kind !== "promote" && c.kind !== "open" && previous?.querySelector("[data-sent], [data-keep]")) return previous;
+  if (c.kind !== "answer" && c.kind !== "promote" && c.kind !== "open" && previous?.querySelector("[data-sent], [data-keep]")) return refreshEvidence(previous, c, hooks.now);
   const head = h("div", { class: "card-head" },
     h("span", { class: `kind c-${c.kind}` }, CARD_LABEL[c.kind]),
     c.priority ? pill(c.priority) : null,
+    "ask" in c && c.ask.kind === "review-withheld" ? pill("Review agent withheld") : null,
     h("span", { class: "title", title: c.title }, c.url && !("ask" in c && c.ask.group) ? link(c.url, c.title) : c.title),
     h("span", { class: "age", ...(c.since ? { [SINCE_ATTR]: c.since, title: c.since } : {}) }, age(c.since, hooks.now)));
   const ask = "ask" in c ? c.ask : undefined;
@@ -358,11 +359,7 @@ export function cardEl(c: Card, hooks: InboxHooks, inspected?: string, refresh =
     [POLICY_ATTR]: policySignature(c),
   }, head, h("p", { class: "card-where" }, c.where),
   c.unavailable ? h("p", { class: "card-note warn" }, "Unavailable: from the last list read; the pass's list can't be read now.") : null);
-  // The pass publishes the kind and head, not the diff or checks: say so rather than guess.
-  if (c.kind === "approve") el.append(h("div", { class: "approval-evidence" },
-    c.ask.kind === "review-withheld" ? pill("Review agent withheld") : null,
-    h("span", {}, "Diff size and CI not published"),
-    githubTarget(c.ask) ? h("a", { href: askHref(c.ask.action) }, "Review the diff") : null));
+  refreshEvidence(el, c, hooks.now);
   if (ask?.requests?.some((r) => r.quality !== "decision")) el.append(h("small", { class: "note" }, [...new Set(ask.requests.map((r) => r.quality).filter((q) => q !== "decision"))].join(" · ")));
   // The note and the published request context share one collapsed fold, so a card stays a few lines.
   const descriptions = ask?.requests?.filter((r) => r.detail) ?? [];
@@ -397,9 +394,36 @@ export function cardEl(c: Card, hooks: InboxHooks, inspected?: string, refresh =
   return el;
 }
 
+const evidenceCards = new WeakMap<HTMLElement, Card>();
+
+/** Expire facts even while polling is paused; never redraw drafts or perform reads. */
+export function tickInboxEvidence(root: ParentNode, now: number): void {
+  for (const row of root.querySelectorAll<HTMLElement>(".approval-evidence")) refreshEvidence(row.parentElement!, evidenceCards.get(row.parentElement!), now);
+}
+
+/** Update facts without replacing receipts or lending a new head's evidence to an old button. */
+function refreshEvidence(el: HTMLElement, c?: Card, now = Date.now()): HTMLElement {
+  const a = c?.kind === "approve" ? c.ask : undefined;
+  const row = el.querySelector<HTMLElement>(":scope > .approval-evidence") ?? (a ? el.appendChild(h("div", { class: "approval-evidence", "data-action": JSON.stringify(a.action) })) : null);
+  if (!row) return el;
+  if (c) evidenceCards.set(el, c);
+  else evidenceCards.delete(el);
+  const candidate = a?.approvalEvidence;
+  const fresh = candidate && now >= Date.parse(candidate.observed_at) && now - Date.parse(candidate.observed_at) <= NEEDS_YOU_MAX_AGE_MS;
+  const e = a && fresh && !c?.unavailable && !a.carried && githubTarget(a) && a.requests?.every((r) => r.quality === "decision") !== false && row.dataset.action === JSON.stringify(a.action) && candidate.assessed_head === a.action.head ? candidate : undefined;
+  const text = e ? `${typeof e.diff === "object" ? `Diff +${e.diff.additions}/−${e.diff.deletions}` : "Diff unknown"} · CI ${e.ci.complete ? e.ci.state : `${e.ci.state === "failing" ? "failing" : "unknown"} (partial)`} · Review ${e.review ? `${e.review.verdict} at ${e.review.at}` : "unknown"} · head ${e.assessed_head.slice(0, 7)} · observed ${e.observed_at} (published, not live)` : "Diff, CI and review unknown: no fresh matching published evidence";
+  const href = a && githubTarget(a) && !retired.has(el) ? askHref(a.action) : null;
+  if (row.firstElementChild?.textContent !== text) (row.firstElementChild ?? row.appendChild(h("span"))).textContent = text;
+  if (row.querySelector("a")?.getAttribute("href") !== href) {
+    row.querySelector("a")?.remove();
+    if (href) row.append(h("a", { href }, "Review the diff"));
+  }
+  return el;
+}
+
 /** A retained draft or receipt must not retain authority a newer list removed. */
 function policySignature(c: Card): string {
-  return JSON.stringify("ask" in c ? [c.ask.requests, c.ask.requestsUnreadable] : c.kind === "digest" ? c.items.map((a) => [a.pr, a.head]) : null);
+  return JSON.stringify("ask" in c ? [c.ask.requests, c.ask.requestsUnreadable, c.ask.detailMissing] : c.kind === "digest" ? c.items.map((a) => [a.pr, a.head]) : null);
 }
 
 /** Keep typed text and receipts, but retire their old handlers until an explicit reload. */
@@ -467,6 +491,7 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
     shown.delete(c.key);
     // r clears a write's kept report too, reading the card's state again.
     const report = force && el?.querySelector(`[${KEEP_ATTR}=""]`);
+    if (el) refreshEvidence(el, c, hooks.now);
     if (el && el.getAttribute(SIG_ATTR) === cardSignature(c) && !el.classList.contains(CARD_STALE_CLASS) && !report && !(force && "ask" in c && (c.kind === "promote" || c.ask.group || ["decisions", "drafts"].includes(c.ask.source)))) return el;
     // A newly published group revokes the representative's old single-item form.
     if (el && keep(el) && !("ask" in c && (c.ask.group || c.kind === "promote"))) {
@@ -493,6 +518,7 @@ export function fillInbox(list: HTMLElement, cards: readonly Card[], hooks: Inbo
       // A filtered-out digest has no replacement key to compare policies
       // with. Keep its report/text, never its obsolete approval handlers.
       retireActions(el);
+      refreshEvidence(el);
       staleNote(el, CARD_GONE_NOTE);
       // A poll must not hide an already-visible draft when its key leaves
       // the publication. Show everything also recovers drafts hidden earlier.

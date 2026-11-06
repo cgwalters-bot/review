@@ -27,7 +27,7 @@ test("661 publication: epic chain, activity map and an identity without its deta
   assert.equal(parsed.items.find((a) => a.key === key("tracker#1300"))!.epic, "unknown");
   assert.equal(cards.length, 8, "every published identity is a card, detail or not");
   assert.equal(cards.at(-1)!.key, key("tracker#1310"));
-  assert.deepEqual([parsed.complete, parsed.count, parsed.omitted, parsed.detailsOmitted], [true, 8, 0, 1]);
+  assert.deepEqual([parsed.complete, parsed.count, parsed.omitted, parsed.detailsOmitted], [false, 8, 0, 1], "the evicted identity also lacks its descriptor");
 });
 
 test("661 publication: in-progress default, focus first, approvals first, honest chip counts", () => {
@@ -60,7 +60,7 @@ test("a capped publication: placeholders only, approvals still first, the cap co
   assert.ok(typeof capped === "object");
   assert.deepEqual([capped.complete, capped.omitted, capped.items.length, capped.identities?.length], [false, 2, 0, 8]);
   const placeholders = inboxCards({ published: { asks: [], list: capped, unavailable: false } });
-  assert.ok(placeholders.every((c) => "ask" in c && c.ask.requestsUnreadable));
+  assert.ok(placeholders.every((c) => "ask" in c && c.ask.detailMissing && c.kind === "open"));
   const model = epicSelection(placeholders, capped.epics, "active");
   assert.deepEqual(model.ordered.slice(0, 4).map((c) => c.key), [key("tracker#1261"), key("agentic-job#2900"), key("tracker#1310"), key("tracker#1300")]);
 });
@@ -121,11 +121,11 @@ test("approve rows: one line with what the pass publishes, and Approve submits i
   const row = list.querySelector<HTMLElement>(`[data-key="${key("tracker#1261")}"]`)!;
   assert.ok(row.classList.contains("c-approve"));
   assert.match(row.textContent!, /Controller PR approved by the review job.*cgwalters-forge\/tracker#1261 · review-approve/);
-  assert.match(row.querySelector(".approval-evidence")!.textContent!, /^Diff size and CI not publishedReview the diff$/);
+  assert.match(row.querySelector(".approval-evidence")!.textContent!, /^Diff, CI and review unknown: no fresh matching published evidenceReview the diff$/);
   assert.equal(row.querySelector<HTMLAnchorElement>(".approval-evidence a")!.getAttribute("href"), "#pr/cgwalters-forge/tracker/1261");
   const withheld = document.createElement("div");
   fillInbox(withheld, cards.filter((c) => c.key === key("tracker#1300")), hooks);
-  assert.match(withheld.querySelector(".approval-evidence")!.textContent!, /^Review agent withheld/);
+  assert.match(withheld.querySelector(".card-head")!.textContent!, /Review agent withheld/);
   assert.equal(row.querySelector(".card-full"), null, "nothing to unfold: the row is the action");
   row.querySelector<HTMLButtonElement>("button")!.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
