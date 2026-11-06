@@ -143,6 +143,27 @@ describe("address redaction", () => {
     ["connection to gpu-box refused", "connection to [address] refused"],
     ["broker at gpu-box refused", "broker at [address] refused"],
     ["endpoint=gpu-box refused", "endpoint=[address] refused"],
+    ['lookup "gpu-box": no such host', 'lookup "[address]": no such host'],
+    ["connect to 'gpu-box' refused", "connect to '[address]' refused"],
+    ["dial tcp `gpu-box`, refused", "dial tcp `[address]`, refused"],
+    ['host="gpu-box") refused', 'host="[address]") refused'],
+    ['connect "gpu-box:7" refused', 'connect "[address]" refused'],
+    ["Could not resolve host: gpu-box", "Could not resolve host: [address]"],
+    ["resolve host gpu-box", "resolve host [address]"],
+    ["connect to gpu-box, refused", "connect to [address], refused"],
+    ["connect to: gpu-box", "connect to: [address]"],
+    ["connect to \u201cgpu-box\u201d refused", "connect to \u201c[address]\u201d refused"],
+    ["dial gpu-box; refused", "dial [address]; refused"],
+    ["lookup gpu-box) failed", "lookup [address]) failed"],
+    ["server: gpu-box,", "server: [address],"],
+    ["failed to connect gpu-box/v1", "failed to connect [address]/v1"],
+    ["unknown host gpu-box", "unknown host [address]"],
+    ["no route to host gpu-box", "no route to host [address]"],
+    ["host 'gpu-box' unreachable", "host '[address]' unreachable"],
+    ["proxy at gpu-box", "proxy at [address]"],
+    ["lookup \"gpu-box' x", "lookup \"[address]' x"],
+    ["dial tcp: lookup gpu-box on [::1]:53", "dial tcp: lookup [address] on [address]"],
+    ["connected to the queue", "connected to the queue"],
   ];
   for (const [input, want] of cases) it(input!, () => assert.equal(redactAddresses(input!), want));
 
@@ -162,7 +183,7 @@ describe("address redaction", () => {
     }
   });
 
-  for (const error of ["lookup inference.example: no such host", "connect broker.corp failed", "lookup gpu-box on 100.100.100.100:53 failed"]) {
+  for (const error of ["lookup inference.example: no such host", "connect broker.corp failed", "lookup gpu-box on 100.100.100.100:53 failed", 'lookup "gpu-box": no such host', "connect to 'gpu-box', refused", 'server: "gpu-box" closed', "Could not resolve host: gpu-box", "connect to gpu-box, refused", "dial gpu-box; refused"]) {
     it(`redacts DNS targets through parser and DOM: ${error}`, () => {
       const json = raw();
       json.passes[2].sections[0].error = error;
