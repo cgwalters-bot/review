@@ -43,8 +43,10 @@ export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[
     return ids.includes(f.slice(5));
   };
   const selected = cards.filter((c) => matches(c, choice));
-  // Full approvals first across epics, other full rows next, placeholders last.
-  // Unknowns remain distinct from explicit none and reachable through Other / All.
+  // Approvals first across epics, placeholders included: a detail the pass cut
+  // must not bury a decision that only needs his review. Full rows before
+  // placeholders within each tier. Unknowns remain distinct from explicit none
+  // and reachable through Other / All.
   const epicRanks = new Map(active.map((e, i) => [e.item, i]));
   const groups = new Map(cards.map((c) => {
     const ids = refs(c);
@@ -56,8 +58,8 @@ export function epicSelection(cards: readonly Card[], epics: readonly InboxEpic[
     const ag = groups.get(a)!, bg = groups.get(b)!;
     return Number(a.answered === true) - Number(b.answered === true)
       || Number(local(a)) - Number(local(b))
-      || Number("ask" in a && !!a.ask.detailMissing) - Number("ask" in b && !!b.ask.detailMissing)
       || Number(approval(b)) - Number(approval(a))
+      || Number("ask" in a && !!a.ask.detailMissing) - Number("ask" in b && !!b.ask.detailMissing)
       || (epics === undefined ? 0 : ag.rank - bg.rank
       // Code point order: "~" (no epic) sorts after every OWNER/REPO#N and "unknown".
       || Number(ag.item > bg.item) - Number(ag.item < bg.item)
