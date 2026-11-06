@@ -10,6 +10,21 @@ const publication = (raw: unknown) => `${HOLDS_MARKER}\n\n\`\`\`json\n${JSON.str
 const now = Date.parse("2026-11-05T12:00:00Z");
 
 describe("pass publication replay", () => {
+  it("replays #729's exact docs/pass.md JSON example (not captured live output)", () => {
+    const raw = fixture<PassView>("pass-view-producer-729.json");
+    const data = parsePassView(raw);
+    assert.equal(typeof data, "object");
+    const el = activePassView(data, now);
+    assert.match(el.textContent!, /running 20m at observation/);
+    assert.ok(el.querySelector("a[href$='/actions/runs/41']"));
+    assert.match(passView(data, now).textContent!, /ready unknown/);
+    raw.in_flight = [];
+    for (const rendered of [passView(raw, now), activePassView(raw, now)]) {
+      assert.match(rendered.textContent!, /unknown/);
+      assert.doesNotMatch(rendered.textContent!, /No running jobs in|No work in flight in|nothing ready/);
+    }
+  });
+
   it("summarizes running agents, pool bars and the latest pass from the populated fixture", () => {
     const data = parseHolds(publication(snapshot()))?.passView;
     const el = activePassView(data, now);
@@ -59,11 +74,11 @@ describe("pass publication replay", () => {
     for (const s of ["partial", "1 records omitted", "unread work is unknown", "Last pass not published", "Capacity not published"]) assert.ok(partial.textContent?.includes(s), s);
   });
 
-  it("renders the exact producer fixture through the holds parser", () => {
+  it("renders the synthetic legacy contract fixture through the holds parser", () => {
     const data = parseHolds(publication(snapshot()))?.passView;
     assert.equal(typeof data, "object");
     const el = passView(data, now);
-    for (const s of ["API rate limit exceeded", "HTTP 503", "Started 0", "no-ready-work", "replan-delay", "12:30:00Z", "capped", "held", "10% used / 60% allowed", "in 120m", "well under pace with nothing ready", "merge-queue", "waiting-review", "implement · claude"]) assert.ok(el.textContent?.includes(s), s);
+    for (const s of ["API rate limit exceeded", "HTTP 503", "Started 0", "no-ready-work", "replan-delay", "12:30:00Z", "capped", "held", "10% used / 60% allowed", "in 120m", "readiness coverage unknown", "merge-queue", "waiting-review", "implement · claude"]) assert.ok(el.textContent?.includes(s), s);
     assert.equal(el.querySelector("a[href$='/actions/runs/42']")?.getAttribute("href"), "https://github.com/example/runner/actions/runs/42");
     assert.equal(el.querySelector("a[href$='/pull/14']")?.textContent, "example/work#14");
     assert.match(el.textContent!, /Started nothing; reason not published/);

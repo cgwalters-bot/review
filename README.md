@@ -378,69 +378,44 @@ characters; links use validated typed components. Overflow is labelled.
 `test/fixtures/maintainer-report.json` is synthetic offline replay of the
 published v1 schema, not live publication evidence.
 
-### Pass publication contract (producer dependency)
+### Pass publications (partial implementation of #245)
 
-This is an app-side proposal, **not yet published by agent-board**. The exact
-synthetic JSON shape is [test/fixtures/pass-view.json](test/fixtures/pass-view.json):
-add optional `pass_view` beside `needs_you` in the existing
-`agent-board/holds/v1` bot comment. Its schema is `agent-board/pass-view/v1`.
-Absent means off/older producer, never a healthy idle pass. There is no new
-browser option, endpoint, target read, write permission or independent poll.
-Publication should remain off by default with the producer's existing
-`holds.needsYou` setting; no additional control is proposed.
+Agent-board#729 **does publish** the legacy `agent-board/pass-view/v1` extension
+inside holds, with its own `holds.passView` option (off by default), not
+`holds.needsYou`. It reports five published passes, known-run starts,
+hold-kind aggregates, rounded pool percentages and listed running jobs.
+It does not provide section errors, full readiness, detailed per-item waits,
+queue/review-wait PRs or independent failure publication. Legacy `complete`
+does not prove that all these sources were read. Missing facts remain unknown.
+The home **Agents and capacity** summary still uses this extension and measures
+runtime at the observation, never extrapolating stale job runtime.
 
-The concrete threats are unbounded publisher data creating unbounded DOM,
-and publisher-supplied addresses becoming navigation. The consumer accepts
-at most 8 passes, 12 sections per pass, 32 starts and 32 reasons per pass,
-16 pools and 100 in-flight records. It rejects an invalid extension as a
-whole without losing the inbox. Display strings are single-line, at most
-240 characters; names are lower-case tokens up to 32 characters. Links are
-constructed only from validated GitHub repository/item/run/PR components.
-Unknown fields are ignored. Publisher prose is text, not Markdown or authority.
+The recovered #248 **Scheduler passes** consumer reads the proposed independent
+`agent-board/passes/v1` bot comment in the same existing bounded request. It
+replaces, not duplicates, the legacy Status pass panel when present, and
+supports confirmed (including accepted dispatches without known run IDs),
+uncertain and preview starts, failed sections, detailed reasons and PRs.
+No browser setting, target discovery, write permission or extra polling is added.
+Any full 100-comment page is uncertain even with an older matching comment:
+a replacement may be unread on page two. Previously read facts stay labelled
+unavailable, not current. Inbox membership and write authorization are unchanged.
 
-Producer requirements for a follow-up in `cgwalters-forge/agent-board`:
+The concrete consumer threats are unbounded DOM from hostile publications and
+publisher-supplied addresses becoming navigation or leaking into error text.
+Both formats are bounded; links use typed references only, prose is text, and
+display errors redact addresses including trailing-compressed/unspecified IPv6.
+Missing, stale, future, partial, cached or unavailable evidence never proves
+idle success. A 304 does not advance producer clocks. Only fresh, complete,
+unheld independent pool evidence with a future reset and no ready candidates
+can show the fixed 20-point under-pace/nothing-ready flag.
 
-- Use the fixture's exact keys and enums. `passes` is newest first; `at` is
-  each pass's clock and `observed_at` is the latest pool/in-flight observation.
-  `result` is success/partial/failure, with per-section success/skipped/failure.
-  A failed section requires `error`: only the first sanitized error line,
-  never a request URL, response body, credential, inference, broker or tailnet
-  address. Successful/skipped sections have null error. Do not scrape logs:
-  collect these from the same typed outcomes that generate the log lines.
-- `started` records confirmed starts (not preview intentions), with the run's
-  actual repository and numeric id. Preserve accepted dispatches even if later
-  bookkeeping fails. If no start was confirmed, publish `reasons`: no-ready-work,
-  replan-delay with its `until` timestamp, capped, or held; `item: null` denotes
-  a global reason. Missing reasons are unknown, not no-ready-work.
-- Pools carry used/allowed percentages, reset clock, ready count and the
-  producer's `under_pace` assessment. Null means unknown; do not turn failed
-  readings into zero. The app uses no independent under-pace threshold.
-   In-flight records distinguish running (same fields as a start), merge-queue
-   and waiting-review (typed repository and PR number).
-   Running records may additionally publish `started_at`, an ISO timestamp or
-   null. The home summary measures runtime from it to `observed_at`, not the
-   browser clock, so stale samples cannot imply a job is still running. Missing
-   or future start clocks show runtime unknown. The fixture includes this
-   optional field; older publications remain readable. The producer must supply
-   it to show elapsed runtime rather than unknown.
-- `complete` describes the current source sample, not a guarantee that every
-  historical pass was observed. `omitted` counts records dropped outside passes;
-  each pass's `omitted` counts its dropped starts/sections/reasons. All are
-  nonnegative integers up to 1,000,000. Keep publication within the comment cap,
-  dropping pass-view detail before inbox identities, marking omissions and
-  incomplete sources rather than claiming idle health. Publish failed sections
-  even when scheduling fails; gaps from a failed publication remain unknown.
-  The publication mechanism must not rely on the existing success-only holds
-  path to report a failed pass. Carry at most the seven previous pass records;
-  do not refresh old observation clocks when sources fail.
-
-The panel labels observations older than an hour as stale, future clocks as
-suspect, and read/cache failures as unavailable rather than current. A GitHub
-304 cannot advance the pass's observation time. Partial or omitted data never
-claims an empty queue. Fixtures and replay tests are offline evidence only;
-producer publication and authenticated live parity remain acceptance work.
-This run cannot file the required cross-repository producer issue; the contract
-above and exact fixture are the handoff for that issue/linked PR.
+See [docs/passes.md](docs/passes.md) for the exact audited #729 implementation,
+the independent contract and the file/symbol/test handoff in
+`cgwalters-forge/agent-board`. That producer is **not implemented here** and no
+linked producer PR was authorized. No caller settings are enabled. The producer
+documentation JSON is replayed, but the richer fixtures/screens are synthetic;
+actual emitted JSON replay and staging failure publication remain prerequisites.
+This is Part of #245, not Closes.
 
 The old Agents, Board, Activity, Usage, Ops and Dashboard hashes resolve to
 Status. Maintain and Chat resolve to Needs you. Old board-filter hashes
