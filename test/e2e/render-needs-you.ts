@@ -10,7 +10,8 @@
 // data is `real` (the redacted 3 Nov capture), `661` (the published
 // shape), `174` / `174-capped` / `174-grouped` (synthetic operator-path
 // approval; see its fixture), or
-// `group` (661 plus a #680 promote group with review buckets).
+// `group` (661 plus a #680 promote group with review buckets), or `approval`
+// (the producer's compact evidence projection, with its observation clock rebased).
 // CARD_KEY opens that card's details and its first two members. Writes
 // are refused; PR reads answer a draft with green CI.
 
@@ -21,7 +22,7 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import { needsYou174 } from "../fixtures/needs-you-174.ts";
 
 const [checkout, data, out, open] = process.argv.slice(2);
-if (!checkout || !data || !out) throw new Error("usage: render-needs-you.ts CHECKOUT real|661|group|174|174-capped|174-grouped OUT.html [CARD_KEY]");
+if (!checkout || !data || !out) throw new Error("usage: render-needs-you.ts CHECKOUT real|661|group|approval|174|174-capped|174-grouped OUT.html [CARD_KEY]");
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`../fixtures/${name}`, import.meta.url), "utf8"));
 const SETTLE_MS = 200;
 const at = new Date(Date.now() - 60_000).toISOString();
@@ -32,6 +33,13 @@ function needsYou(): Record<string, unknown> {
   if (Object.hasOwn(variant, data!)) return { ...needsYou174(variant[data as keyof typeof variant]), validated_at: at, changed_at: at };
   if (data === "real") return { ...fixture("needs-you-real-2026-11-03.json").needs_you, validated_at: at, changed_at: at };
   const published = { ...fixture("needs-you-661.json"), validated_at: at, changed_at: at };
+  if (data === "approval") {
+    const evidence = fixture("approval-evidence-needs-you.json");
+    const items = evidence.rows.map((row: { key: string; head: string }, i: number) => ({ key: row.key, item: row.key, source: "reviews", kind: i === 1 ? "review-withheld" : "review-approve", priority: null, waiting_since: at,
+      ask: "Approve the published head", recommendation: null, action: { type: "approve_pull_request", repository: row.key.split("#")[0], number: Number(row.key.split("#")[1]), head: row.head }, carried: false, epic: "none", topEpic: "none" }));
+    return { ...published, items, identities: undefined, requests: undefined, epics: {}, sources: { reviews: "complete" }, count: items.length, counts: { decisions: items.length, groups: 0, members: items.length }, details_omitted: 0,
+      approval_evidence: { ...evidence.approval_evidence, observed_at: at } };
+  }
   if (data === "661") return published;
   if (data !== "group") throw new Error(`unknown data ${data}: real, 661 or group`);
   const bucketed = fixture("draft-review-needs-you.json");

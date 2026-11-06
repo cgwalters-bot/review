@@ -83,6 +83,15 @@ export interface Ask {
   detailMissing?: boolean;
   /** Informational evidence for exact members, never approval authority. */
   reviewBuckets?: Record<string, ReviewBucket>;
+  approvalEvidence?: ApprovalEvidence;
+}
+
+export interface ApprovalEvidence {
+  assessed_head: string;
+  observed_at: string;
+  diff: "unavailable" | { additions: number; deletions: number };
+  ci: { state: "unknown" | "failing" | "pending" | "green"; complete: boolean };
+  review: { verdict: "approved" | "changes_requested" | "withheld"; at: string } | null;
 }
 
 export interface ReviewBucket {
@@ -138,17 +147,9 @@ export interface NeedsYou {
   refused: number;
 }
 
-export interface InboxIdentity {
+export interface InboxIdentity extends Pick<Ask, "item" | "source" | "kind" | "priority" | "waitingSince" | "carried" | "epic" | "topEpic" | "requests" | "requestsUnreadable"> {
   key: string;
   detailKey: string;
-  item: string;
-  source: string;
-  kind: string;
-  priority: string | null;
-  waitingSince: string;
-  carried: boolean;
-  epic?: string;
-  topEpic?: string;
 }
 
 export interface InboxContext {
@@ -252,6 +253,25 @@ function reviewBuckets(raw: unknown): Record<string, ReviewBucket> {
       Object.keys(v).every((k) => ["bucket", "assessed_head", "reason", "summary", "ci"].includes(k)) && (v.bucket === "quick" || v.bucket === "deep") && str(v.assessed_head, HEAD_RE) &&
       (v.ci === "green" || v.ci === "unknown") && [v.reason, v.summary].every((s) => typeof s === "string" && s.trim() && s.length <= TEXT_MAX);
   })) as Record<string, ReviewBucket>;
+}
+
+/** Stops another head's or a partial read's success looking like evidence for this approval.
+ * Optional/off on older publishers; the producer caps this extension at 50 rows. */
+function approvalEvidence(raw: unknown): Record<string, ApprovalEvidence> {
+  if (!isObject(raw) || raw.schema !== "agent-board/approval-evidence/v1" || !time(raw.observed_at) || !isCount(raw.omitted) || !isObject(raw.items) || Object.keys(raw.items).length > 50) return {};
+  const result: Record<string, ApprovalEvidence> = {};
+  for (const [key, v] of Object.entries(raw.items)) {
+    if (!str(key, KEY_RE) || !isObject(v) || !str(v.assessed_head, HEAD_RE) || !isObject(v.ci) || !["unknown", "failing", "pending", "green"].includes(v.ci.state as string) || typeof v.ci.complete !== "boolean") continue;
+    if (v.diff !== "unavailable" && (!isObject(v.diff) || ![v.diff.additions, v.diff.deletions].every((n) => Number.isSafeInteger(n) && (n as number) >= 0))) continue;
+    if (v.review !== null && (!isObject(v.review) || !["approved", "changes_requested", "withheld"].includes(v.review.verdict as string) || !time(v.review.at))) continue;
+    result[key] = {
+      assessed_head: v.assessed_head as string, observed_at: raw.observed_at as string,
+      diff: v.diff === "unavailable" ? "unavailable" : { additions: (v.diff as Record<string, number>).additions!, deletions: (v.diff as Record<string, number>).deletions! },
+      ci: { state: v.ci.state as ApprovalEvidence["ci"]["state"], complete: v.ci.complete },
+      review: v.review === null ? null : { verdict: (v.review as Record<string, unknown>).verdict as NonNullable<ApprovalEvidence["review"]>["verdict"], at: (v.review as Record<string, string>).at! },
+    };
+  }
+  return result;
 }
 
 function parseRef(raw: unknown): AskRef | undefined {
@@ -379,20 +399,27 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
     else allUnreadable = true;
   }
   const buckets = reviewBuckets(raw.review_buckets);
+  const evidence = approvalEvidence(raw.approval_evidence);
   for (const a of items) {
+    const e = evidence[a.key];
+    if (e && a.source === "reviews" && a.key === `${a.action.repository}#${a.action.number}`.toLowerCase() && !a.carried && !a.group && a.action.type === "approve_pull_request" && a.action.head === e.assessed_head && sources.some(([k, v]) => k === a.source && v === "complete")) a.approvalEvidence = e;
     if (raw.review_buckets !== undefined && !a.carried && raw.sources && (raw.sources as Record<string, unknown>)[a.source] === "complete") a.reviewBuckets = Object.fromEntries(
       (a.group?.numbers ?? [a.action.number]).flatMap((n) => {
         const key = `${a.action.repository}#${n}`.toLowerCase();
         return buckets[key] ? [[key, buckets[key]]] : [];
       }));
-    const mine = requests.filter(([k]) => k === a.key).map(([, r]) => r);
+  }
+  // An evicted detail must not restore GitHub navigation or chat authority.
+  for (const a of [...items, ...(identities ?? [])]) {
+    const key = "detailKey" in a ? a.detailKey : a.key;
+    const mine = requests.filter(([k]) => k === key).map(([, r]) => r);
     if (mine.length) a.requests = mine;
-    if (allUnreadable || unreadable.has(a.key) || (raw.requests !== undefined && !mine.length)) a.requestsUnreadable = true;
+    if (allUnreadable || unreadable.has(key) || (raw.requests !== undefined && !mine.length)) a.requestsUnreadable = true;
   }
   const refused = raw.items.length - items.length + (Array.isArray(raw.identities) ? raw.identities.length - identities!.length : 0);
   if (identities && new Set(identities.map((i) => i.key)).size !== identities.length) return "the needs-you inventory has duplicate identities";
   const counts = isObject(raw.counts) && isCount(raw.counts.decisions) && isCount(raw.counts.groups) && isCount(raw.counts.members) ? { decisions: raw.counts.decisions, groups: raw.counts.groups, members: raw.counts.members } : undefined;
-  const complete = raw.complete === true && (raw.counts === undefined || counts !== undefined) && refused === 0 && !items.some((a) => a.requestsUnreadable) && raw.count === (identities?.length ?? raw.items.length) && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
+  const complete = raw.complete === true && (raw.counts === undefined || counts !== undefined) && refused === 0 && ![...items, ...(identities ?? [])].some((a) => a.requestsUnreadable) && raw.count === (identities?.length ?? raw.items.length) && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
   const epics = parseEpics(raw.epics);
   const context = parseContext(raw.context);
   const omittedSources = isObject(raw.omitted_sources) ? Object.fromEntries(Object.entries(raw.omitted_sources).filter(([k, v]) => str(k, MODE_RE) && isCount(v))) as Record<string, number> : undefined;

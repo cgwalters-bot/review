@@ -4,9 +4,10 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { GitHub } from "../src/github/api.ts";
-import { type Ask, type ReviewBucket, parseNeedsYou } from "../src/github/holds.ts";
+import { type ApprovalEvidence, type Ask, type ReviewBucket, parseNeedsYou } from "../src/github/holds.ts";
 import { type Card, inboxCards, publishedCards, refusal } from "../src/github/inbox.ts";
 import { fillInbox } from "../src/github/inboxview.ts";
+import { fillState, homeSkeleton } from "../src/github/homeview.ts";
 import { newestDraft, type ReviewDraftConfig } from "../src/github/reviewdrafts.ts";
 import { fields, fixture, rawAsk, rawNeedsYou, scriptedFetch, type Scripted } from "./helpers.ts";
 
@@ -14,13 +15,142 @@ const dom = new JSDOM(readFileSync(new URL("../static/index.html", import.meta.u
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, Node: dom.window.Node, HTMLElement: dom.window.HTMLElement,
   ResizeObserver: class { observe() {} disconnect() {} }, fetch: async () => { throw new Error("network forbidden"); } });
 dom.window.confirm = () => true;
-const { inboxHooks } = await import("../src/github/main.ts");
+const { inboxHooks, snapshot } = await import("../src/github/main.ts");
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 const target = "cgwalters-forge/tracker#50";
 const url = "https://github.com/cgwalters-forge/tracker/issues/50";
 const path = "/repos/cgwalters-forge/tracker/issues/50";
 const head = "a".repeat(40);
 const replacement = "b".repeat(40);
+
+for (const cached of [false, true]) test(`browser snapshot retains ${cached ? "cached" : "failed"} freshness without legacy derivation`, () => {
+  const r = setup(() => undefined);
+  const source = { state: cached ? "ok" as const : "unavailable" as const, fetchedAt: 100, ...(cached ? {} : { error: "publication read failed" }) };
+  r.state.active = { at: 100, fromCache: cached, sources: { holds: source }, warnings: [] };
+  r.state.sources = {};
+  const model = snapshot(r.state);
+  assert.equal(model.schema, "review-inbox-state/v1");
+  assert.equal(model.sources.holds!.state, cached ? "cached" : "unavailable");
+  assert.equal(source.state, cached ? "ok" : "unavailable");
+  const home = homeSkeleton({ toggled() {} });
+  fillState(home, model);
+  assert.equal(home.slots.freshness.hidden, false);
+  assert.match(home.slots.freshness.textContent!, cached ? /holds: cached/ : /holds: unavailable.*publication read failed/);
+});
+
+// Verbatim producer projection at agent-board 957cb936, not a live capture.
+const approvalFixture = fixture<{ rows: { key: string; head: string }[]; approval_evidence: { schema: string; observed_at: string; omitted: number; items: Record<string, Omit<ApprovalEvidence, "observed_at">> } }>("approval-evidence-needs-you.json");
+function approvalPublication(extension: unknown = approvalFixture.approval_evidence, over: Record<string, unknown> = {}) {
+  const items = approvalFixture.rows.map((row) => rawAsk(Number(row.key.split("#")[1]), { key: row.key, item: row.key, source: "reviews", kind: "review-approve", epic: "none", topEpic: "none",
+    action: { type: "approve_pull_request", repository: "cgwalters-forge/tracker", number: Number(row.key.split("#")[1]), head: row.head } }));
+  const parsed = parseNeedsYou(JSON.parse(JSON.stringify(rawNeedsYou(items, "2026-11-05T12:00:00Z", { approval_evidence: extension, ...over }))));
+  assert.ok(typeof parsed === "object");
+  return parsed;
+}
+
+test("producer approval projection: exact-head facts, unknown omissions, no drawing/poll reads", (t) => {
+  t.mock.method(Date, "now", () => Date.parse(approvalFixture.approval_evidence.observed_at));
+  const r = setup(() => { throw new Error("No target reads on draw"); });
+  const list = approvalPublication();
+  r.state.published = { asks: list.items, list, unavailable: false };
+  for (let poll = 0; poll < 2; poll++) fillInbox(r.list, inboxCards({ published: r.state.published }), inboxHooks(r.state));
+  const rows = [...r.list.querySelectorAll(".approval-evidence")];
+  assert.match(rows[0]!.textContent!, /Diff \+12\/−3 · CI green · Review approved at .* · head a{40} · observed .*published, not live/);
+  assert.match(rows[1]!.textContent!, /Diff unknown · CI unknown \(partial\) · Review unknown/);
+  assert.ok(rows.slice(2).every((row) => /no matching published evidence/.test(row.textContent!)));
+  assert.equal(r.calls.length, 0);
+});
+
+test("approval evidence fails closed on malformed, oversized, unread and wrong-head success", (t) => {
+  t.mock.method(Date, "now", () => Date.parse(approvalFixture.approval_evidence.observed_at));
+  const extension = approvalFixture.approval_evidence;
+  const key = approvalFixture.rows[0]!.key;
+  const good = extension.items[key]!;
+  for (const bad of [null, { ...extension, schema: "future/v2" }, { ...extension, observed_at: "bad" },
+    { ...extension, items: Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`o/r#${i + 1}`, good])) },
+    ...[{ assessed_head: replacement }, { diff: { additions: -1, deletions: 3 } }, { ci: { state: "success", complete: true } }, { review: { verdict: "approved", at: "bad" } }].map((v) => ({ ...extension, items: { [key]: { ...good, ...v } } }))]) {
+    assert.equal(approvalPublication(bad).items[0]!.approvalEvidence, undefined);
+  }
+  for (const state of ["partial", "unread"]) assert.equal(approvalPublication(extension, { sources: { reviews: state } }).items[0]!.approvalEvidence, undefined);
+  const wrong = rawAsk(1, { key, source: "reviews", action: { type: "approve_pull_request", repository: "other/repo", number: 1, head } });
+  assert.equal(approvalPublication(extension, { items: [wrong] }).items[0]!.approvalEvidence, undefined);
+  const r = setup(() => undefined);
+  const a = approvalPublication().items[0]!;
+  for (const patch of [{ carried: true }, { requestsUnreadable: true }, { requests: [{ forge: "github.com", quality: "unverified-carried", actions: [] }] }]) {
+    fillInbox(r.list, publishedCards([{ ...a, ...patch }]), inboxHooks(r.state), true);
+    assert.match(r.list.querySelector(".approval-evidence")!.textContent!, /no matching published evidence/);
+  }
+  const partial = { ...a, approvalEvidence: { ...a.approvalEvidence!, ci: { state: "green" as const, complete: false } } };
+  fillInbox(r.list, publishedCards([partial]), inboxHooks(r.state), true);
+  assert.match(r.list.querySelector(".approval-evidence")!.textContent!, /CI unknown \(partial\)/);
+  fillInbox(r.list, publishedCards([a], true), inboxHooks(r.state), true);
+  assert.match(r.list.querySelector(".approval-evidence")!.textContent!, /no matching published evidence/);
+  assert.equal(r.calls.length, 0);
+});
+
+for (const state of ["busy", "", "sent"]) test(`evidence refreshes beside a retained ${state || "uncertain"} receipt, never across heads`, (t) => {
+  t.mock.method(Date, "now", () => Date.parse(approvalFixture.approval_evidence.observed_at));
+  const r = setup(() => undefined);
+  const card = publishedCards(approvalPublication().items)[0]!;
+  fillInbox(r.list, [card], inboxHooks(r.state));
+  const original = r.list.firstElementChild!;
+  const receipt = document.createElement("p");
+  receipt.setAttribute(state === "sent" ? "data-sent" : "data-keep", state);
+  original.append(receipt);
+  fillInbox(r.list, publishedCards(approvalPublication(null).items).slice(0, 1), inboxHooks(r.state));
+  assert.equal(r.list.firstElementChild, original);
+  assert.match(original.querySelector(".approval-evidence")!.textContent!, /no matching published evidence/);
+  fillInbox(r.list, [card], inboxHooks(r.state));
+  assert.match(original.querySelector(".approval-evidence")!.textContent!, /CI green/);
+  assert.ok("ask" in card);
+  const moved = { ...card, ask: { ...card.ask, action: { ...card.ask.action, head: replacement }, approvalEvidence: { ...card.ask.approvalEvidence!, assessed_head: replacement } } };
+  fillInbox(r.list, [moved], inboxHooks(r.state));
+  assert.doesNotMatch(original.querySelector(".approval-evidence")!.textContent!, /CI green|b{40}/);
+  if (state !== "sent") {
+    fillInbox(r.list, [], inboxHooks(r.state));
+    assert.equal(r.list.firstElementChild, original);
+    assert.match(original.querySelector(".approval-evidence")!.textContent!, /no matching published evidence/);
+  }
+  assert.equal(r.calls.length, 0);
+});
+
+for (const evidence of [null, approvalFixture.approval_evidence]) test(`withheld indicator remains readable ${evidence ? "with" : "without"} evidence`, () => {
+  const r = setup(() => undefined);
+  const a = { ...approvalPublication(evidence).items[0]!, kind: "review-withheld" };
+  fillInbox(r.list, publishedCards([a]), inboxHooks(r.state));
+  assert.match(r.list.querySelector(".card-head")!.textContent!, /Review withheld/);
+});
+
+test("stale and future-clock evidence stays unknown without changing approval authority", (t) => {
+  const r = setup(() => undefined);
+  const cards = publishedCards(approvalPublication().items);
+  for (const minutes of [-1, 71]) {
+    t.mock.method(Date, "now", () => Date.parse(approvalFixture.approval_evidence.observed_at) + minutes * 60_000);
+    fillInbox(r.list, cards, inboxHooks(r.state));
+    assert.match(r.list.querySelector(".approval-evidence")!.textContent!, /no matching published evidence/);
+    assert.equal(cards[0]!.kind, "approve");
+  }
+  assert.equal(r.calls.length, 0);
+});
+
+for (const [name, requests, navigation] of [
+  ["legacy", undefined, true], ["GitHub", [{ key: "o/r#7", forge: "github.com", quality: "decision", actions: [] }], true],
+  ["foreign", [{ key: "o/r#7", forge: "other.example", quality: "decision", actions: [] }], false],
+  ["malformed", [{ key: "o/r#7", forge: "github.com", quality: "broken", actions: [] }], false],
+  ["missing", [], false], ["oversized", Array.from({ length: 501 }, () => ({ key: "o/r#7" })), false],
+] as const) test(`missing detail preserves ${name} descriptor restrictions without Answer authority`, () => {
+  const r = setup(() => undefined);
+  const list = parseNeedsYou(rawNeedsYou([], "2026-11-05T12:00:00Z", { count: 1, identities: [{ key: "o/r#7", detail_key: "o/r#7", item: "o/r#7", source: "reviews", kind: "review-withheld", priority: null, waiting_since: "2026-11-05T11:00:00Z" }], ...(requests === undefined ? {} : { requests }) }));
+  assert.ok(typeof list === "object");
+  const cards = inboxCards({ published: { asks: [], list, unavailable: false } });
+  assert.equal(cards[0]!.kind, "open");
+  fillInbox(r.list, cards, inboxHooks(r.state));
+  assert.equal(!!r.list.querySelector("a[href]"), navigation);
+  assert.equal(r.list.querySelector("form, .card-full, button[type=submit]"), null);
+  assert.match(r.list.textContent!, /Review withheld/);
+  assert.equal(r.calls.length, 0);
+});
+
 const bucketFixture = fixture("draft-review-needs-you.json") as { schema: string; group: { reason: string; numbers: number[] }; review_buckets: Record<string, ReviewBucket> };
 function bucketCard(over: Record<string, unknown> = {}, askOver: Record<string, unknown> = {}): Card {
   const a = rawAsk(1, { key: "cgwalters-forge/bootc#1", item: "cgwalters-forge/bootc#1", source: "reviews", kind: "review-promote",

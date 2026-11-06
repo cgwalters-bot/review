@@ -8,7 +8,7 @@ import type { People } from "./people.ts";
 import { peopleView } from "./peopleview.ts";
 import { PREVIEW_ROWS, SECTION_TITLE, type SectionId } from "./sections.ts";
 import { VIEW_ATTR } from "./shell.ts";
-import type { PageState } from "./state.ts";
+import type { Sources } from "./freshness.ts";
 import { agoLabel, ROW_CLASS } from "./view.ts";
 
 export const HOME_CLASS = "home";
@@ -54,7 +54,7 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   return { el, sections: { needs: { details, count, body } }, slots: { active, people, peopleCount, statusNote, passes, repositories, freshness } };
 }
 
-export function fillState(home: Home, state: PageState): void {
+export function fillState(home: Home, state: { sources: Sources }): void {
   const now = Date.now();
   home.slots.freshness.hidden = Object.values(state.sources).every((s) => s.state === "ok" || s.state === "pending");
   home.slots.freshness.replaceChildren(...Object.entries(state.sources).flatMap(([name, source], i) => [
