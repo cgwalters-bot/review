@@ -127,6 +127,8 @@ export interface Request {
 export interface NeedsYou {
   /** Hold decisions superseded by this snapshot's operator-hold inventory. */
   excludedHolds?: number;
+  /** Optional producer-certified actionable rows, grouped by detailed ask key. Absent means off. */
+  actNow?: { key: string; unblocks: number }[];
   count?: number;
   counts?: { decisions: number; groups: number; members: number };
   identities?: InboxIdentity[];
@@ -372,6 +374,30 @@ const FORGE_RE = /^[A-Za-z0-9.:/_-]{1,200}$/;
 const REQUESTS_MAX = 500;
 const ACTIONS_MAX = 8;
 
+/** Bound optional ranking evidence; never mine hold prose for dependencies or readiness. */
+const ACT_NOW_CANDIDATES = 10;
+
+function parseActNow(raw: unknown, items: readonly Ask[], identities: readonly InboxIdentity[] | undefined): NeedsYou["actNow"] {
+  if (!Array.isArray(raw) || raw.length > ACT_NOW_CANDIDATES) return undefined;
+  const seen = new Set<string>();
+  const result: NonNullable<NeedsYou["actNow"]> = [];
+  for (const entry of raw) {
+    if (!isObject(entry) || !str(entry.key, KEY_RE) || !isCount(entry.unblocks) || entry.unblocks === 0 || seen.has(entry.key as string)) return undefined;
+    const key = entry.key as string;
+    const matches = items.filter((a) => a.key === key);
+    if (matches.length !== 1 || (identities && !identities.some((i) => i.detailKey === key))) return undefined;
+    const ask = matches[0]!;
+    const action = parseRef(entry.action);
+    // Certification is for this exact action, not another head at the same key.
+    if (!action || Object.keys(entry).some((k) => !["key", "unblocks", "priority", "waiting_since", "action"].includes(k)) ||
+        !isObject(entry.action) || Object.keys(entry.action).some((k) => !["type", "repository", "number", "comment", "head"].includes(k)) ||
+        JSON.stringify(action) !== JSON.stringify(ask.action) || entry.priority !== ask.priority || time(entry.waiting_since) !== ask.waitingSince) return undefined;
+    seen.add(key);
+    result.push({ key, unblocks: entry.unblocks });
+  }
+  return result;
+}
+
 /** A descriptor and the card key it joins, or undefined where it is malformed. */
 function parseRequest(raw: unknown): [string, Request] | undefined {
   if (!isObject(raw) || !Array.isArray(raw.actions) || raw.actions.length > ACTIONS_MAX) return undefined;
@@ -429,8 +455,10 @@ export function parseNeedsYou(raw: unknown): NeedsYou | string {
   const complete = raw.complete === true && (raw.counts === undefined || counts !== undefined) && refused === 0 && ![...items, ...(identities ?? [])].some((a) => a.requestsUnreadable) && raw.count === (identities?.length ?? raw.items.length) && raw.omitted === 0 && sources.length === Object.keys(raw.sources as object).length && sources.every(([, v]) => v === "complete" || v === "off");
   const epics = parseEpics(raw.epics);
   const context = parseContext(raw.context);
+  // Malformed optional evidence disables only the shortlist, not the inbox.
+  const actNow = parseActNow(raw.act_now, items, identities);
   const omittedSources = isObject(raw.omitted_sources) ? Object.fromEntries(Object.entries(raw.omitted_sources).filter(([k, v]) => str(k, MODE_RE) && isCount(v))) as Record<string, number> : undefined;
-  return { complete, validatedAt, changedAt, sources: Object.fromEntries(sources), summaries: raw.summaries as string, omitted: raw.omitted, items, refused, ...(isCount(raw.count) ? { count: raw.count } : {}), ...(counts ? { counts } : {}), ...(identities ? { identities } : {}), ...(isCount(raw.details_omitted) ? { detailsOmitted: raw.details_omitted } : {}), ...(omittedSources ? { omittedSources } : {}), ...(context ? { context } : {}), ...(epics ? { epics } : {}) };
+  return { complete, validatedAt, changedAt, sources: Object.fromEntries(sources), summaries: raw.summaries as string, omitted: raw.omitted, items, refused, ...(actNow ? { actNow } : {}), ...(isCount(raw.count) ? { count: raw.count } : {}), ...(counts ? { counts } : {}), ...(identities ? { identities } : {}), ...(isCount(raw.details_omitted) ? { detailsOmitted: raw.details_omitted } : {}), ...(omittedSources ? { omittedSources } : {}), ...(context ? { context } : {}), ...(epics ? { epics } : {}) };
 }
 
 /** The holds in a comment's body, or undefined if it isn't a well-formed snapshot. */

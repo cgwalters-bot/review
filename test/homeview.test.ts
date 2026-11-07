@@ -20,8 +20,10 @@ describe("Needs you and published Status", () => {
   it("mounts the active summary first, then inbox, opt-in people and published status", () => {
     const home = homeSkeleton(hooks);
     assert.equal(home.el.firstElementChild, home.slots.active);
-    assert.deepEqual([...home.el.children].map((el) => el.getAttribute("data-view")), ["inbox", "inbox", "inbox", "inbox", "status", "status", "status", null]);
+    assert.deepEqual([...home.el.children].map((el) => el.getAttribute("data-view")), ["inbox", "inbox", "inbox", "inbox", "inbox", "status", "status", "status", null]);
     assert.equal(home.sections.needs.details.nextElementSibling, home.slots.today);
+    assert.equal(home.slots.active.nextElementSibling, home.slots.actNow.parentElement);
+    assert.equal(home.slots.actNow.hidden, true, "off without a producer publication");
     assert.equal(text(home.sections.needs.details.querySelector(".sec-title")), "Needs you");
     assert.equal(home.sections.needs.details.open, true);
     assert.equal(home.el.querySelector<HTMLDetailsElement>("#sec-people")?.open, false);

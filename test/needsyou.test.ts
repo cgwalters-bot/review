@@ -8,7 +8,7 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import { usagePath } from "../src/github/usage.ts";
-import { fields, fixture, holdsComment, rawAsk, rawNeedsYou, realNeedsYouSnapshot } from "./helpers.ts";
+import { fields, fixture, holdsComment, rawActNow, rawAsk, rawNeedsYou, realNeedsYouSnapshot } from "./helpers.ts";
 import { needsYou174 } from "./fixtures/needs-you-174.ts";
 
 const T0 = Date.parse("2026-10-30T12:00:00Z");
@@ -22,7 +22,7 @@ const proposalComment = (n: number) => ({ id: `IC_${n}`, databaseId: n, updatedA
   body: `\`\`\`agent-board-action\n${JSON.stringify({ schema: "agent-board/operator-action/v1", title: `Decision ${n}`, why: `Reason ${n}`, actions: [{ type: "add_label", repo: "cgwalters-forge/tracker", number: 1013, label: `choice-${n}` }] })}\n\`\`\`` });
 
 /** What the holds comment read answers next: a status, the comments, and whether an unchanged one is a 304. */
-interface Holds { status: number; comments: unknown[]; etag: string; gate?: Promise<void>; approvals?: Record<number, string[]>; fail?: number; labels?: string[]; reviewError?: number; writeGate?: Promise<void>; document?: string }
+interface Holds { status: number; comments: unknown[]; etag: string; gate?: Promise<void>; approvals?: Record<number, string[]>; fail?: number; labels?: string[]; reviewError?: number; writeGate?: Promise<void>; document?: string; merge?: "merged" | "enqueued" | "moved" | "denied" }
 
 let runs = 0;
 
@@ -156,6 +156,10 @@ async function boot(t: TestContext, holds: Holds) {
         return sent === holds.etag ? json(null, 304, { ETag: holds.etag }) : json(holds.comments, 200, { ETag: holds.etag });
       }
       if (url.pathname === "/user") return json({ login: "cgwalters" });
+      if (url.pathname.endsWith("/merge") && method === "PUT") {
+        assert.equal(JSON.parse(String(init?.body)).sha, "a".repeat(40));
+        return holds.merge === "denied" ? json({ message: "Policy refused" }, 403) : json({ merged: true });
+      }
       const pull = url.pathname.match(/\/pulls\/(\d+)(\/reviews)?$/);
       if (pull) {
         const n = Number(pull[1]);
@@ -182,6 +186,17 @@ async function boot(t: TestContext, holds: Holds) {
       }
       if (url.pathname === "/graphql") {
         const { query } = JSON.parse(String(init?.body)) as { query: string };
+        if (query.includes("enqueuePullRequest")) {
+          assert.equal(JSON.parse(String(init?.body)).variables.head, "a".repeat(40));
+          reads.writes.push("POST enqueuePullRequest");
+          return json({ data: { enqueuePullRequest: { mergeQueueEntry: { id: "MQ_1" } } } });
+        }
+        if (query.includes("mergeStateStatus")) return json({ data: { repository: {
+          squashMergeAllowed: true, mergeCommitAllowed: false, rebaseMergeAllowed: false,
+          pullRequest: { id: "PR_1", url: "https://github.com/cgwalters-forge/tracker/pull/1", state: "OPEN", isDraft: false,
+            headRefOid: (holds.merge === "moved" ? "b" : "a").repeat(40), mergeStateStatus: "CLEAN", viewerCanUpdate: true,
+            isMergeQueueEnabled: holds.merge === "enqueued", mergeQueueEntry: null },
+        } } });
         if (query.includes("issueOrPullRequest")) return json({ data: { repository: { issueOrPullRequest: { comments: { nodes: [] } } } } });
         if (query.includes("comments(first")) return json({ data: { repository: { issue: { state: "OPEN", comments: { nodes: [1, 2].map(proposalComment), pageInfo: { hasNextPage: false } } } } } });
         return json({ data: {} });
@@ -350,6 +365,82 @@ describe("Needs you from the pass's published list", () => {
   });
 
   const approval = (n: number, digest = false) => rawAsk(n, { key: `up/proj#${n}${digest ? "/digest" : ""}`, item: `up/proj#${n}`, kind: digest ? "digest-approve" : "review-approve", source: digest ? "digest" : "reviews", action: { type: "approve_pull_request", repository: "up/proj", number: n, head: "a".repeat(40) } });
+
+  const mergeAsk = () => rawAsk(1, { action: { type: "pull_request", repository: "cgwalters-forge/tracker", number: 1, head: "a".repeat(40) } });
+  const mergeRequest = () => ({ key: mergeAsk().key, forge: "github.com", quality: "decision", actions: [{ kind: "merge-or-enqueue", supported: true, reason: "checked" }] });
+
+  it("never offers a new merge operation through the legacy missing-descriptor fallback", async (t) => {
+    const a = mergeAsk();
+    const app = await boot(t, { status: 200, etag: '"no-merge-policy"', comments: listed(T0, [a], { act_now: [rawActNow(a)] }) });
+    try {
+      assert.equal(app.doc.querySelector(".act-now button"), null);
+      assert.match(app.doc.querySelector(".act-now")!.textContent!, /No supported merge-or-enqueue descriptor/);
+      assert.deepEqual(app.reads.writes, []);
+      assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS]);
+    } finally { await app.close(); }
+  });
+
+  for (const merge of ["merged", "enqueued", "moved", "denied"] as const) it(`keeps the ${merge} outcome visible through completion redraw and poll`, async (t) => {
+    const a = mergeAsk();
+    const holds: Holds = { status: 200, etag: '"merge"', merge, comments: listed(T0, [a], { act_now: [rawActNow(a)], requests: [mergeRequest()] }) };
+    const app = await boot(t, holds);
+    try {
+      app.doc.querySelector<HTMLButtonElement>(".act-now button")!.click();
+      const expected = merge === "merged" ? /Merged:/ : merge === "enqueued" ? /Enqueued, not merged/ : merge === "moved" ? /PR head moved/ : /Policy refused/;
+      const receipt = () => app.doc.querySelector(".merge-receipts")?.textContent ?? "";
+      await app.until(() => expected.test(receipt()), "merge outcome after redraw");
+      await app.wake(2 * MINUTE);
+      assert.match(receipt(), expected);
+      const button = app.doc.querySelector<HTMLButtonElement>(".act-now li button");
+      if (merge === "moved" || merge === "denied") assert.equal(button?.disabled, true, "no automatic fresh handler after refusal");
+      else assert.equal(button, null, "completed ask leaves shortlist but keeps its receipt");
+      assert.deepEqual(app.reads.writes, merge === "moved" ? [] : merge === "enqueued" ? ["POST enqueuePullRequest"] : ["PUT /repos/cgwalters-forge/tracker/pulls/1/merge"]);
+    } finally { await app.close(); }
+  });
+
+  it("Act now uses only the pass read, ranks groups and approves through the canonical card", async (t) => {
+    const question = rawAsk(1, { ask: "Choose A or B" });
+    const group = rawAsk(2, { ask: "Approve the named PRs", action: { type: "pull_request", repository: "cgwalters-forge/tracker", number: 2 }, group: { reason: "shared verdict", numbers: [2, 3, 4] } });
+    const act_now = [rawActNow(approval(7), 63), rawActNow(group, 3), rawActNow(question)];
+    const holds: Holds = { status: 200, etag: '"act-now"', comments: listed(T0, [question, group, approval(7)], { act_now }) };
+    const app = await boot(t, holds);
+    try {
+      const slot = app.doc.querySelector<HTMLElement>(".act-now")!;
+      assert.equal(slot.hidden, false);
+      assert.equal(slot.parentElement?.nextElementSibling?.id, "sec-needs");
+      assert.deepEqual([...slot.querySelectorAll("li > a:first-child")].map((a) => a.textContent), ["up/proj#7", "cgwalters-forge/tracker#2", "cgwalters-forge/tracker#1"]);
+      assert.match(slot.textContent!, /3 PRs: shared verdict/);
+      assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS], "no target reads to assemble Act now");
+      slot.querySelector<HTMLButtonElement>("button")!.click();
+      await app.until(() => app.count() === "2", "completed approval excluded");
+      assert.equal(slot.querySelectorAll("li").length, 2);
+      assert.deepEqual(app.reads.writes, ["POST /repos/up/proj/pulls/7/reviews"]);
+      assert.match(app.doc.querySelector('.card[data-key="up/proj#7"]')!.textContent!, /Approved:/);
+      holds.status = 503;
+      await app.reload();
+      assert.equal(slot.hidden, true, "an unavailable publication cannot retain an Act now list");
+    } finally { await app.close(); }
+  });
+
+  it("Act now refreshes an idle paginated approval when its ask key changes at the same head", async (t) => {
+    const first = [1, 2, 3, 4, 5].map((n) => ({ ...approval(n), priority: "P0" }));
+    const old = approval(7);
+    old.priority = "P2";
+    const replacement = { ...old, key: `${old.key}/comment-123` };
+    const holds: Holds = { status: 200, etag: '"idle-old"', comments: listed(T0, [...first, old], { act_now: [rawActNow(old, 63)] }) };
+    const app = await boot(t, holds);
+    try {
+      assert.equal(app.doc.querySelector('.card[data-key="up/proj#7"]'), null, "approval is past the first page");
+      assert.ok(app.doc.querySelector(".act-now button"));
+      holds.etag = '"idle-new"';
+      holds.comments = listed(T0, [...first, replacement], { act_now: [rawActNow(replacement, 63)] });
+      await app.reload();
+      assert.equal(app.doc.querySelector(`.card[data-key="${replacement.key}"]`), null);
+      app.doc.querySelector<HTMLButtonElement>(".act-now button")!.click();
+      await app.until(() => app.count() === "5", "replacement approval completed");
+      assert.deepEqual(app.reads.writes, ["POST /repos/up/proj/pulls/7/reviews"]);
+    } finally { await app.close(); }
+  });
 
   it("hourly renewal advances validation without changing the change clock", async (t) => {
     const changedAt = iso(T0 - 2 * 60 * MINUTE);
