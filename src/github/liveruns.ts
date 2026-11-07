@@ -34,6 +34,9 @@ const LISTED_STATUSES = ["in_progress", "queued", "pending"] as const;
 /** Every status of a run not yet finished, which Cancel accepts. */
 const UNFINISHED = ["in_progress", "queued", "waiting", "pending", "requested"];
 const PAGE_SIZE = 100;
+// GitHub can leave un-cancellable records in_progress indefinitely. No agent
+// job can run beyond six hours; don't present those records as live work.
+const MAX_RUN_AGE_MS = 6 * 60 * 60 * 1000;
 
 export interface LiveRun {
   /** OWNER/REPO#N, from the run-name; null where it doesn't parse. */
@@ -82,17 +85,21 @@ export function parseRunName(title: string): { kind: string; item: string; pool:
 
 const runsPath = (s: LiveSource, status: string) => `/repos/${s.repository}/actions/workflows/${s.workflow}/runs?status=${status}&per_page=${PAGE_SIZE}`;
 
-/** The unfinished runs of every source; a source that fails is an error, not an empty list. */
+/** The recent unfinished runs of every source; a source that fails is an error, not an empty list. */
 export async function loadLiveRuns(gh: GitHub, sources: readonly LiveSource[] = LIVE_SOURCES, now = Date.now()): Promise<LiveRuns> {
   const errors: string[] = [];
   const byRun = new Map<string, LiveRun>();
   await Promise.all(sources.flatMap((source) => LISTED_STATUSES.map(async (status) => {
     try {
-      const { data } = await gh.get<{ total_count?: number; workflow_runs?: RawLiveRun[] }>(runsPath(source, status));
+      const { data } = await gh.get<{ workflow_runs?: RawLiveRun[] }>(runsPath(source, status));
       const runs = Array.isArray(data.workflow_runs) ? data.workflow_runs : [];
-      if ((data.total_count ?? 0) > runs.length) errors.push(`${source.repository} ${source.workflow}: over ${PAGE_SIZE} ${status} runs; only the newest are listed`);
+      // total_count and the returned status-filtered list can disagree, even
+      // on a short page. Only a full page reaches this reader's request bound.
+      if (runs.length >= PAGE_SIZE) errors.push(`${source.repository} ${source.workflow}: first ${PAGE_SIZE} ${status} runs read; more may exist`);
       for (const raw of runs) {
         if (!Number.isSafeInteger(raw.id) || (raw.repository?.full_name ?? source.repository).toLowerCase() !== source.repository.toLowerCase()) continue;
+        const startedAt = raw.run_started_at ?? raw.created_at ?? "";
+        if (now - Date.parse(startedAt) > MAX_RUN_AGE_MS) continue;
         const title = (raw.display_title ?? "").trim() || `run ${raw.id}`;
         const named = parseRunName(title);
         const key = `${source.repository.toLowerCase()}/${raw.id}`;
@@ -102,7 +109,7 @@ export async function loadLiveRuns(gh: GitHub, sources: readonly LiveSource[] = 
         byRun.set(key, {
           item: named?.item ?? null, kind: named?.kind ?? null, pool: named?.pool ?? null, title,
           status: raw.status ?? status,
-          startedAt: raw.run_started_at ?? raw.created_at ?? "",
+          startedAt,
           run: { repository: source.repository, id: raw.id! },
           source, listed: false,
         });
