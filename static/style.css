@@ -39,6 +39,17 @@
 .agent-actions { margin-inline-start: 6px; }
 .agent-actions .note { margin-inline-start: 4px; }
 .capacity-pool meter { display: block; width: 100%; }
+.live-agents { margin-block-end: 12px; }
+.live-agents h3 .count { font-size: var(--type-meta); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; vertical-align: middle; }
+.live-runs { list-style: none; padding: 0 !important; margin-block: 8px; display: grid; gap: 8px; }
+.live-run { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--surface); min-width: 0; }
+.live-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.live-item { font-weight: 600; overflow-wrap: anywhere; }
+.live-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-block-start: 4px; font-size: var(--type-secondary); color: var(--muted); }
+.live-run .chip { font-size: var(--type-meta); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; background: var(--surface-2); color: inherit; }
+.live-run .chip.unknown { font-style: italic; }
+.live-meta .agent-actions { margin-inline-start: auto; }
+@media (min-width: 900px) { .live-runs { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); } }
 .run-pass-control { margin-block-start: 12px; padding-block-start: 8px; border-block-start: 1px solid var(--line); }
 .run-pass-control button { min-height: 44px; margin: 4px 8px 4px 0; }
 .run-pass-control button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

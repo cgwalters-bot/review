@@ -38,6 +38,7 @@ export const STATUS_PHRASES: readonly RegExp[] = [
   /\bNot every summary was read/,
   /\bHolds, review waits, proposals and digest asks are not listed/,
   /\bPass view (?:stale|incomplete)\b/,
+  /\bPass view not in the pass.s snapshot\b/,
   /— stale\b(?:: the pass may have stopped, or failed to publish)?/,
   /\bstale \(over (?:an hour|two hours|a day old)\)/,
   /\bprevious UTC day, not today's activity/,

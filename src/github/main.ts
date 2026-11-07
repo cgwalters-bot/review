@@ -80,10 +80,13 @@ import { type Need, needStops } from "./needs.ts";
 import { type Ask, holdAsks, loadPassPublications, readHoldAsk } from "./holds.ts";
 import { repositoriesView, type ReportBlock } from "./repositories.ts";
 import type { BoardPublication } from "./repositoryboard.ts";
-import { activePassView, type AgentActions, type PassView, retainPassView } from "./passview.ts";
+import { actionButton, activePassView, type AgentActions, type PassView, retainPassView } from "./passview.ts";
+import { cancelLiveRun, LIVE_POLL_MS, liveAgentsView, loadLiveRuns, type LiveRuns } from "./liveruns.ts";
 import { runPassControl, type PassControl } from "./runpass.ts";
 import { cancelRun, redispatch, retryRun } from "./agentruns.ts";
 import { type PassesRead, readPasses, schedulerPassView } from "./passesview.ts";
+import { stale } from "./passes.ts";
+import { ago } from "../time.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -191,6 +194,9 @@ interface State {
   activeRunning: boolean;
   /** The last pass view read, kept while a refresh of the publication fails. */
   passView?: PassView | undefined;
+  /** The agent workflows' unfinished runs, read from the Actions API (liveruns.ts). */
+  liveRuns?: LiveRuns;
+  liveRunning?: boolean;
   passControl?: PassControl;
   passes: PassesRead;
   repositories?: ReportBlock[];
@@ -847,6 +853,21 @@ async function refreshPeople(state: State): Promise<boolean> {
   }
 }
 
+/** Re-read the agent workflows' unfinished runs; false if nothing was read. */
+async function refreshLive(state: State): Promise<boolean> {
+  if (state.liveRunning || state.closed) return false;
+  state.liveRunning = true;
+  try {
+    const live = await loadLiveRuns(state.gh);
+    if (state.closed) return false;
+    state.liveRuns = live;
+    paintActive(state);
+    return live.errors.length === 0;
+  } finally {
+    state.liveRunning = false;
+  }
+}
+
 function paintActive(state: State): void {
   if (!state.home) return;
   const model = snapshot(state);
@@ -864,7 +885,14 @@ function paintActive(state: State): void {
     redispatch: (r) => redispatch(state.gh, view, r),
     confirm: (m) => window.confirm(m),
   } : undefined;
-  state.home.slots.active.replaceChildren(activePassView(pass, Date.now(), passUnavailable, actions, runPassControl(state.gh, facts, state.passControl ??= {})));
+  const cancel = state.login === OPERATOR
+    ? (r: Parameters<typeof cancelLiveRun>[1]) => actionButton("Cancel", "Cancel", { item: r.item ?? r.title, kind: r.kind ?? "agent", pool: r.pool ?? "", run: r.run }, () => cancelLiveRun(state.gh, r), (m) => window.confirm(m))
+    : undefined;
+  const live = liveAgentsView(state.liveRuns, state.passView, Date.now(), cancel);
+  // A snapshot without a pass view says how old it is: an old one is a pass not publishing, not a setting.
+  const at = state.active?.holds?.at;
+  const missing = pass === undefined && at ? `Pass view not in the pass's snapshot, written ${ago(at, Date.now())}${stale(at, Date.now()) ? ": the pass may have stopped publishing it." : " (off or older producer)."}` : pass;
+  state.home.slots.active.replaceChildren(activePassView(missing, Date.now(), passUnavailable, actions, runPassControl(state.gh, facts, state.passControl ??= {}), live));
   state.home.slots.passes.replaceChildren(schedulerPassView(state.passes, pass, Date.now(), passUnavailable));
   if (state.active?.repositories) state.repositories = state.active.repositories;
   const work = state.active?.passPublicationError ? undefined : state.active?.holds;
@@ -897,6 +925,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
         paintActive(state);
         return status !== undefined;
       } },
+      { name: "live", path: "the agent workflows' unfinished runs (Actions API)", cadence: LIVE_POLL_MS, views: ["inbox"], read: () => refreshLive(get()) },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
     ],
     () => (get().closed ? undefined : visibleView(document, HOME_CLASS)),

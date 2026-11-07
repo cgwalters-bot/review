@@ -38,7 +38,7 @@ function runRef(r: AgentRun, verb: string): RunRef {
 }
 
 /** Refuse a viewer other than OPERATOR (read fresh: the token may have changed) or a classic token that can't write. */
-async function checkViewer(gh: GitHub, verb: string, needs: typeof ACTIONS_SCOPE): Promise<void> {
+export async function checkViewer(gh: GitHub, verb: string, needs: typeof ACTIONS_SCOPE): Promise<void> {
   const { login } = await gh.send<{ login?: string }>("GET", "/user");
   if (login !== OPERATOR) throw new Error(`not ${verb}: signed in as ${login ?? "an unknown user"}; only ${OPERATOR} acts on agent runs`);
   if (missingScopes(gh.scopes, needs).length) throw new Error(`not ${verb}: this token needs the ${needs[0]!.any.join(" or ")} scope`);
@@ -51,7 +51,7 @@ function sameRun(ref: RunRef, raw: RawRun): string | undefined {
 }
 
 /** A write GitHub refused (4xx) did nothing; anything else may have gone out. */
-async function write<T>(gh: GitHub, method: string, path: string, what: string, body?: unknown): Promise<T> {
+export async function write<T>(gh: GitHub, method: string, path: string, what: string, body?: unknown): Promise<T> {
   try {
     return await gh.send<T>(method, path, body);
   } catch (e) {

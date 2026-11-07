@@ -93,6 +93,18 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
     return compressedHolds(`<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${holds}\n\`\`\`\n`, at, FIXTURE_PART_CHARS);
   }
   if (pathname === "/repos/cgwalters-forge/tracker/actions/workflows/poll.yml/runs") return { total_count: 0, workflow_runs: [] };
+  // Live agents: the same runs answer every status query; the app keeps each once.
+  const agents = /^\/repos\/([^/]+\/[^/]+)\/actions\/workflows\/(?:dispatch|agent)\.yml\/runs$/.exec(pathname);
+  if (agents) {
+    const run = (id: number, title: string, minutes: number) => {
+      const started = new Date(Date.now() - minutes * 60_000).toISOString();
+      return { id, display_title: title, status: "in_progress", created_at: started, run_started_at: started, repository: { full_name: agents[1] } };
+    };
+    const runs = agents[1] === "cgwalters-forge/tracker"
+      ? [run(42, "implement cgwalters-forge/agent-board#733 (claude)", 7), run(43, "fix cgwalters-forge/agentic-job#3189 (openai)", 19)]
+      : [run(44, "research bootc-dev/cgwalters-devspace-sandbox#36 (claude, 64c)", 95)];
+    return { total_count: runs.length, workflow_runs: runs };
+  }
   const pull = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(pathname);
   if (pull) return { html_url: `https://github.com/${pull[1]}/pull/${pull[2]}`, title: `Draft ${pull[2]}`, state: "open", draft: true, body: "", user: { login: "cgwalters-bot" }, head: { sha: (pull[2] === "2" ? "b" : "a").repeat(40) } };
   if (pathname.endsWith("/check-runs")) return { total_count: 1, check_runs: [{ name: "ci", status: "completed", conclusion: "success" }] };

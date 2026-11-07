@@ -21,8 +21,13 @@ function holdsComment(over: Record<string, unknown> = {}) {
 
 type Route = Parameters<typeof scriptedFetch>[0];
 
+/** The agent workflows' run lists: one in flight on tracker's dispatch.yml unless the route answers. */
+const WORKFLOW_RUNS = /\/actions\/workflows\/(dispatch|agent)\.yml\/runs\?status=(\w+)&per_page=100$/;
+const LIVE = { id: 7, display_title: "implement example/work#11 (claude)", status: "in_progress", created_at: "2026-11-06T11:00:00Z", run_started_at: "2026-11-06T11:00:00Z", repository: { full_name: "cgwalters-forge/tracker" } };
+
 async function cli(argv: string[], comments: unknown = holdsComment(), route: Route = () => undefined) {
-  const { fetchImpl, calls } = scriptedFetch((method, url, headers) => method === "GET" && url === `${API}${usagePath}` ? { body: comments } : route(method, url, headers));
+  const { fetchImpl, calls } = scriptedFetch((method, url, headers) => method === "GET" && url === `${API}${usagePath}` ? { body: comments }
+    : route(method, url, headers) ?? (method === "GET" && WORKFLOW_RUNS.exec(url) ? { body: { total_count: 1, workflow_runs: url.includes("tracker/actions/workflows/dispatch.yml/runs?status=in_progress") ? [LIVE] : [] } } : undefined));
   let stdout = "";
   let stderr = "";
   const io: Io = { fetch: fetchImpl, token: async () => "t", stdout: (s) => (stdout += s), stderr: (s) => (stderr += s), isTty: false, now: () => NOW };
@@ -43,8 +48,11 @@ describe("control-plane", () => {
     assert.deepEqual(doc.pools.map((p: { name: string }) => p.name), ["openai", "claude", "other"]);
     assert.deepEqual(doc.passes[0].noStart.map((n: { kind: string }) => n.kind), ["no-ready-work", "replan-delay", "capped", "held"]);
     assert.equal(doc.passes[1].started.length, 2);
-    // Every request was a read of the one publication.
-    assert.deepEqual(r.calls.map((c) => c.method), ["GET"]);
+    assert.equal(doc.snapshotAt, "2026-11-06T12:00:00Z");
+    assert.deepEqual(doc.agents, [{ item: "example/work#11", kind: "implement", pool: "claude", status: "in_progress", startedAt: "2026-11-06T11:00:00Z", title: "implement example/work#11 (claude)", listedByPass: false, url: "https://github.com/example/work/issues/11", run: "https://github.com/cgwalters-forge/tracker/actions/runs/7" }]);
+    // Every request was a read: the publication and the agent workflows' run lists.
+    assert.deepEqual([...new Set(r.calls.map((c) => c.method))], ["GET"]);
+    assert.equal(r.calls.length, 1 + 6);
   });
 
   it("act-now: Home's shortlist, ranked by what it unblocks, with links", async () => {
@@ -108,11 +116,26 @@ describe("control-plane", () => {
     assert.deepEqual(r.json(), (await cli(["status"])).json());
   });
 
-  it("fails, naming why, without a usable publication", async () => {
+  it("status lists the agents in flight, naming why, without a usable publication", async () => {
     const none = await cli(["status"], []);
+    assert.equal(none.status, 0, none.stderr);
+    assert.match(none.json().passViewError, /no hold snapshot/);
+    assert.equal(none.json().agents.length, 1);
+    const missing = await cli(["status"], holdsComment({ pass_view: undefined }));
+    assert.equal(missing.status, 0, missing.stderr);
+    assert.match(missing.json().passViewError, /has no pass view/);
+    assert.equal(missing.json().snapshotAt, "2026-11-06T12:00:00Z");
+    assert.equal(missing.json().live, null);
+    const bad = await cli(["status"], holdsComment({ pass_view: { schema: "nope" } }));
+    assert.match(bad.json().passViewError, /pass view can't be used/);
+    assert.equal(bad.json().agents[0].item, "example/work#11");
+  });
+
+  it("the other read commands fail, naming why, without a usable publication", async () => {
+    const none = await cli(["act-now"], []);
     assert.equal(none.status, 1);
     assert.match(none.stderr, /no hold snapshot/);
-    const bad = await cli(["status"], holdsComment({ pass_view: { schema: "nope" } }));
+    const bad = await cli(["changes", "--since", "2026-11-01T00:00:00Z"], holdsComment({ pass_view: { schema: "nope" } }));
     assert.equal(bad.status, 1);
     assert.match(bad.stderr, /pass view can't be used/);
   });

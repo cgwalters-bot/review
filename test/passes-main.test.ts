@@ -69,7 +69,9 @@ for (const route of ["inbox", "status"]) it(`retains cold cached history without
     assert.doesNotMatch(panel()!.textContent!, /well under pace with nothing ready|None running/);
     assert.equal(window.document.querySelectorAll('[aria-label="Scheduler passes"], [aria-label="Poller passes"]').length, 1);
     assert.equal(requests.filter((p) => p.endsWith("/issues/1/comments")).length, 1);
-    assert.ok(!requests.some((p) => p.includes("/actions/") || p.endsWith("/items") || p === "/search/issues"), "no target/operations discovery");
+    // Live agents' own read of the agent workflows' runs is the one Actions read.
+    const live = (p: string) => /^\/repos\/[^/]+\/[^/]+\/actions\/workflows\/(dispatch|agent)\.yml\/runs$/.test(p);
+    assert.ok(!requests.some((p) => (p.includes("/actions/") && !live(p)) || p.endsWith("/items") || p === "/search/issues"), "no target/operations discovery");
   } finally {
     release();
     window.document.querySelector<HTMLButtonElement>("#signout")?.click();

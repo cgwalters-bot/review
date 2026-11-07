@@ -129,7 +129,7 @@ function paintAction(button: HTMLButtonElement, status: HTMLElement, key: string
   else status.replaceChildren();
 }
 
-function actionButton(label: string, verb: string, r: AgentRun, act: (r: AgentRun) => Promise<string>, confirm: (m: string) => boolean): HTMLElement {
+export function actionButton(label: string, verb: string, r: AgentRun, act: (r: AgentRun) => Promise<string>, confirm: (m: string) => boolean): HTMLElement {
   const key = `${r.run.repository}/${r.run.id}`;
   const button = h("button", { type: "button", class: "agent-action", [ACTION_ATTR]: key }, label);
   const status = h("span", { class: "note", role: "status" });
@@ -162,17 +162,23 @@ export function resetAgentActions(): void {
 }
 
 /** Compact home summary of the same bounded publication used by Status. */
-export function activePassView(data: PassView | string | undefined, now = Date.now(), unavailable?: string, actions?: AgentActions, control?: HTMLElement): HTMLElement {
+/**
+ * `live`, where given, is the Live agents list read from the Actions API
+ * (liveruns.ts): it shows first, and in place of the pass view's own list
+ * of running jobs, whether or not the pass view is published.
+ */
+export function activePassView(data: PassView | string | undefined, now = Date.now(), unavailable?: string, actions?: AgentActions, control?: HTMLElement, live?: HTMLElement): HTMLElement {
   const el = h("section", { class: "active-pass", "aria-label": "Agents and capacity" }, h("h2", {}, "Agents and capacity"));
+  if (live) el.append(live);
   if (!publicationNote(el, data, now, unavailable)) {
     if (control) el.append(control);
     return el;
   }
-  const agents = h("div", {}, h("h3", {}, "Live agents"));
+  const agents = h("div", {}, live ? "" : h("h3", {}, "Live agents"));
   const running = data.in_flight.flatMap((f) => (f.state === "running" ? [f] : []));
   const observed = Date.parse(data.observed_at);
   const fresh = !unavailable && now - observed <= FRESH_MS && now >= observed - 60_000;
-  const rows = running.map((f) => {
+  const rows = live ? [] : running.map((f) => {
     const elapsed = f.started_at ? observed - Date.parse(f.started_at) : NaN;
     // Ticks (tickAges) only while the observation is fresh; a stale one says what it saw.
     const frozen = `${Math.floor(elapsed / 60_000)}m at observation`;
@@ -183,7 +189,7 @@ export function activePassView(data: PassView | string | undefined, now = Date.n
     return h("li", {}, itemLink(f.item), ` · ${f.kind} · ${f.pool} · `, ...runtime, " · ", runLink(f.run),
       actions ? actionButton("Cancel", "Cancel", f, actions.cancel, actions.confirm) : null);
   });
-  agents.append(rows.length ? h("ul", {}, ...rows) : h("p", {}, "No running jobs listed; unread work is unknown."));
+  if (!live) agents.append(rows.length ? h("ul", {}, ...rows) : h("p", {}, "No running jobs listed; unread work is unknown."));
   // Started by a listed pass and no longer running: finished, or not yet listed. Its result is read only when acted on.
   const seen = new Set(running.map((f) => `${f.run.repository.toLowerCase()}/${f.run.id}`));
   const finished = data.passes.flatMap((p) => p.started.map((s) => ({ s, at: p.at }))).filter(({ s }) => {
@@ -221,6 +227,6 @@ export function activePassView(data: PassView | string | undefined, now = Date.n
     }
     if (p.omitted) last.append(h("p", { class: "warn" }, `${p.omitted} pass records omitted; starts and reasons may be incomplete.`));
   }
-  el.append(h("div", { class: "active-pass-grid" }, agents, capacity, last));
+  el.append(h("div", { class: "active-pass-grid" }, ...(agents.childNodes.length ? [agents] : []), capacity, last));
   return el;
 }
