@@ -122,7 +122,8 @@ test("Needs you and Status render without errors", async ({ page }) => {
   }
 
   await page.goto("#status");
-  await expect(page.getByRole("heading", { name: "Poller passes" })).toBeVisible();
+  // Scheduler passes where agent-board publishes holds.passes, else the pass view's Poller passes.
+  await expect(page.getByRole("heading", { name: /^(Scheduler|Poller) passes$/ })).toBeVisible();
   if (!LIVE_TOKEN) {
     const board = page.getByRole("region", { name: "Repositories", exact: true });
     await expect(board.getByRole("table")).toHaveCount(2);
