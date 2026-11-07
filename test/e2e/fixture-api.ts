@@ -6,11 +6,14 @@
 // shape), `174` / `174-capped` / `174-grouped` (synthetic operator-path
 // approval; see its fixture), or `group` (661 plus a #680 promote group
 // with review buckets), or `approval` (the producer's compact evidence
-// projection, with its observation clock rebased).
+// projection, with its observation clock rebased). Each but `259`, which
+// keeps the plain single comment, publishes its holds compressed across
+// comments as agent-board does past one (agent-board#774), in smaller
+// pieces so that every run reads more than one.
 
 import { readFileSync } from "node:fs";
 import { needsYou174 } from "../fixtures/needs-you-174.ts";
-import { publishedTestHolds } from "../helpers.ts";
+import { compressedHolds, publishedTestHolds } from "../helpers.ts";
 
 export const FIXTURE_DATA = ["real", "661", "group", "approval", "174", "174-capped", "174-grouped", "259"] as const;
 
@@ -18,6 +21,9 @@ export type FixtureData = (typeof FIXTURE_DATA)[number];
 
 /** A stand-in token the app accepts at sign-in; nothing checks it. */
 export const FIXTURE_TOKEN = ["ghp", "x".repeat(24)].join("_");
+
+/** The base64 each fixture comment carries: a fraction of agent-board's, for several parts. */
+const FIXTURE_PART_CHARS = 4_000;
 
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`../fixtures/${name}`, import.meta.url), "utf8"));
 
@@ -84,7 +90,7 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
     today.observed_at = at;
     today.cost.day = new Date(Date.parse(`${today.day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
     const holds = JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: publishedTestHolds(list), needs_you: list, pass_view, dispatchable_work, today });
-    return [{ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${holds}\n\`\`\`\n` }];
+    return compressedHolds(`<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${holds}\n\`\`\`\n`, at, FIXTURE_PART_CHARS);
   }
   if (pathname === "/repos/cgwalters-forge/tracker/actions/workflows/poll.yml/runs") return { total_count: 0, workflow_runs: [] };
   const pull = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(pathname);

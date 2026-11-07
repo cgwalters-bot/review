@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { run } from "../src/cli/controlplane.ts";
 import type { Io } from "../src/cli/queue.ts";
 import { usagePath } from "../src/github/usage.ts";
-import { fixture, publishedTestHolds, scriptedFetch } from "./helpers.ts";
+import { compressedHolds, fixture, publishedTestHolds, scriptedFetch } from "./helpers.ts";
 
 const API = "https://api.github.com";
 // A few minutes after the Act now fixture's validation; the pass view is a day older.
@@ -101,6 +101,13 @@ describe("control-plane", () => {
     });
   }
 
+  it("reads the pass view from a snapshot published compressed across comments (agent-board#774)", async () => {
+    const [plain] = holdsComment();
+    const r = await cli(["status"], compressedHolds(plain!.body, "2026-11-06T12:00:00Z", 2_000));
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.json(), (await cli(["status"])).json());
+  });
+
   it("fails, naming why, without a usable publication", async () => {
     const none = await cli(["status"], []);
     assert.equal(none.status, 1);
@@ -152,28 +159,39 @@ describe("control-plane", () => {
       const plan = JSON.parse(/```agent-board-plan\n([\s\S]*)\n```/.exec(write.body.body)![1]!);
       assert.deepEqual(plan, { schema: "agent-board/job-plan/v1", repo: "example/work", item: 8, kind: "implement", runner: "hosted", pool: "claude", brief: "Fix it." });
       assert.deepEqual(posts(r.calls), []);
+      assert.equal(r.json().runningChecked, true);
       for (const [argv, why] of [[["example/work#11", "--kind", "fix"], /lists example\/work#11 running/], [["example/work#8", "--kind", "deploy"], /not a valid/]] as const) {
         const refused = await cli(["dispatch", ...argv, "--brief", "b", "--yes"], holdsComment(), route);
         assert.equal(refused.status, 1);
         assert.match(refused.stderr, why);
         assert.deepEqual(posts(refused.calls), []);
       }
+      // Without a pass view, or any snapshot, it still dispatches, saying it couldn't check.
+      for (const comments of [holdsComment({ pass_view: undefined }), []]) {
+        const blind = await cli(["dispatch", "example/work#8", "--kind", "implement", "--brief", "Fix it.", "--dry-run"], comments, route);
+        assert.equal(blind.status, 0, blind.stderr);
+        assert.equal(blind.json().runningChecked, false);
+        assert.deepEqual(blind.json().wouldSend.map((w: { url: string }) => w.url), [`${API}/repos/example/work/issues/8/comments`]);
+      }
     });
 
-    it("run-pass --dry-run checks for an active pass and shows the dispatch", async () => {
-      const resets = new Date(Date.now() + 3_600_000).toISOString();
-      const pass_view = { ...fixture<{ pass_view: Record<string, unknown> }>("pass-view.json").pass_view, observed_at: new Date().toISOString(),
-        pools: [{ name: "openai", used_percent: 10, allowed_percent: 60, resets_at: resets, ready: 0, under_pace: true }] };
+    it("run-pass --dry-run checks for an active pass and shows the dispatch, with no pass view needed", async () => {
       const tracker = `${API}/repos/cgwalters-forge/tracker`;
-      const route: Route = (method, url) => operator(method, url, {}) ?? (method !== "GET" ? undefined
+      const runs = (active: number): Route => (method, url) => operator(method, url, {}) ?? (method !== "GET" ? undefined
         : url === tracker ? { body: { default_branch: "main", permissions: { push: true } } }
-          : url.startsWith(`${tracker}/actions/workflows/poll.yml/runs?`) ? { body: { total_count: 0, workflow_runs: [] } } : undefined);
-      const r = await cli(["run-pass", "--dry-run"], holdsComment({ pass_view }), route);
-      assert.equal(r.status, 0, r.stderr);
-      assert.deepEqual(r.json().wouldSend, [{ method: "POST", url: `${tracker}/actions/workflows/poll.yml/dispatches`, body: { ref: "main", inputs: { apply: "true" }, return_run_details: true } }]);
-      const refused = await cli(["run-pass", "--yes"], holdsComment(), route);
+          : url.startsWith(`${tracker}/actions/workflows/poll.yml/runs?status=in_progress`) ? { body: { total_count: active, workflow_runs: [] } }
+            : url.startsWith(`${tracker}/actions/workflows/poll.yml/runs?`) ? { body: { total_count: 0, workflow_runs: [] } } : undefined);
+      // The stale fixture view, none, or no snapshot at all: the view's checks are the caller's.
+      for (const comments of [holdsComment(), holdsComment({ pass_view: undefined }), []]) {
+        const r = await cli(["run-pass", "--dry-run"], comments, runs(0));
+        assert.equal(r.status, 0, r.stderr);
+        assert.deepEqual(r.json().wouldSend, [{ method: "POST", url: `${tracker}/actions/workflows/poll.yml/dispatches`, body: { ref: "main", inputs: { apply: "true" }, return_run_details: true } }]);
+        assert.ok(!r.calls.some((c) => c.url === `${API}${usagePath}`));
+      }
+      const refused = await cli(["run-pass", "--yes"], holdsComment(), runs(1));
       assert.equal(refused.status, 1);
-      assert.match(refused.stderr, /stale/);
+      assert.match(refused.stderr, /A pass is active \(in_progress\)/);
+      assert.deepEqual(posts(refused.calls), []);
     });
 
     it("file searches for duplicates, then files under the epic", async () => {

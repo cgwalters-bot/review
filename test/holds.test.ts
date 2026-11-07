@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import type { RawComment } from "../src/github/heartbeat.ts";
-import { findHolds, holdAsks, HOLDS_MARKER, loadHolds, parseHolds, parseNeedsYou } from "../src/github/holds.ts";
+import { assembleHolds, findHolds, holdAsks, HOLDS_MARKER, loadHolds, parseHolds, parseNeedsYou } from "../src/github/holds.ts";
 import { usagePath } from "../src/github/usage.ts";
-import { fixture, holdsComment, rawAsk, rawNeedsYou, REAL_NEEDS_YOU_AT, REAL_NEEDS_YOU_KEYS, realNeedsYouSnapshot, scriptedFetch } from "./helpers.ts";
+import { compressedHolds, fixture, holdsComment, rawAsk, rawNeedsYou, REAL_NEEDS_YOU_AT, REAL_NEEDS_YOU_KEYS, realNeedsYouSnapshot, scriptedFetch } from "./helpers.ts";
 
 const AT = "2026-10-26T00:00:00Z";
 /** As agent-board's pass renders it (pass/holds.rs). */
@@ -62,14 +62,14 @@ describe("parseHolds", () => {
 });
 
 describe("the recorded comments", () => {
-  it("replays the approved 3 Nov publication unchanged: 12 ordered asks, no observed groups", () => {
+  it("replays the approved 3 Nov publication unchanged: 12 ordered asks, no observed groups", async () => {
     const raw = realNeedsYouSnapshot();
     assert.equal(raw.at, REAL_NEEDS_YOU_AT);
     assert.equal(raw.needs_you.count, 12);
     assert.equal(raw.needs_you.items.length, 12);
     assert.equal(raw.needs_you.requests.length, 12);
     assert.ok(raw.needs_you.items.every((a) => !("group" in a)));
-    const replay = findHolds([comment(raw)]);
+    const replay = await findHolds([comment(raw)]);
     assert.ok(replay);
     const l = replay.needsYou;
     assert.ok(l && typeof l === "object", String(l));
@@ -91,12 +91,12 @@ describe("the recorded comments", () => {
 
   // As agent-board's pass/holds.rs renders them: compact, one entry a line; the older without wip and pass.
   const [older, newer] = fixture<RawComment[]>("holds-comments.json");
-  it("reads a comment from before wip and pass without them", () => {
-    const holds = findHolds([older!]);
+  it("reads a comment from before wip and pass without them", async () => {
+    const holds = await findHolds([older!]);
     assert.deepEqual([holds?.at, holds?.holds.length, holds?.wip, holds?.pass], ["2026-10-25T09:00:00Z", 3, undefined, undefined]);
   });
-  it("reads the current one with them", () => {
-    const holds = findHolds([older!, newer!]);
+  it("reads the current one with them", async () => {
+    const holds = await findHolds([older!, newer!]);
     assert.deepEqual([holds?.wip, holds?.pass], [{ limit: 4, inFlight: 4 }, { mode: "actions", candidates: 7, started: 1, liveEpics: 2 }]);
     assert.deepEqual(holds?.holds.map((h) => h.kind), ["wip", "epic-unplanned", "needs-human"]);
   });
@@ -111,7 +111,34 @@ describe("findHolds", () => {
     ["nothing, not an older one, when the newest doesn't parse", [comment(snapshot()), comment(snapshot([{ ...human, epic: null }]))], undefined],
     ["not the usage comment", [{ user: { login: "cgwalters-bot" }, body: "<!-- bot-usage v1 -->\n" }], undefined],
   ];
-  for (const [name, comments, want] of cases) it(name, () => assert.deepEqual(findHolds(comments)?.holds.map((h) => h.reason), want));
+  for (const [name, comments, want] of cases) it(name, async () => assert.deepEqual((await findHolds(comments))?.holds.map((h) => h.reason), want));
+});
+
+describe("assembleHolds", () => {
+  // A snapshot longer than one comment, as agent-board publishes it compressed (agent-board#774), in small parts.
+  const plain = body(snapshot([wip, ...Array.from({ length: 40 }, (_, n) => ({ ...human, item: `cgwalters-forge/tracker#${n + 1}`, url: `https://github.com/cgwalters-forge/tracker/issues/${n + 1}`, reason: `held ${n} `.repeat(20) }))]));
+  const next = "2026-10-26T00:10:00Z";
+  const [first, ...rest] = compressedHolds(plain, AT, 400);
+  const [, ...newer] = compressedHolds(plain.replaceAll(AT, next), next, 400);
+  const usage = { user: { login: "cgwalters-bot" }, body: "<!-- bot-usage v1 -->\n" };
+  it("splits the fixture into several parts", () => assert.ok(rest.length >= 2, String(rest.length)));
+  // name, the issue's comments oldest first, whether the plain comment is assembled
+  const cases: [string, RawComment[], boolean][] = [
+    ["its parts in order", [usage, first!, ...rest], true],
+    ["its parts in any order, among another snapshot's", [...[...rest].reverse(), ...newer, first!], true],
+    ["not with a part missing", [first!, ...rest.slice(1)], false],
+    ["not from another snapshot's parts", [first!, ...newer], false],
+    ["not from parts someone else wrote", [first!, ...rest.map((c) => ({ ...c, user: { login: "mallory" } }))], false],
+    ["not a corrupt piece", [first!, { ...rest[0]!, body: rest[0]!.body.replace("```text\n", "```text\nAAAA") }, ...rest.slice(1)], false],
+    ["not a header counting past agent-board's bound", [{ ...first!, body: first!.body.replace(/"parts":\d+/, '"parts":5') }, ...rest], false],
+  ];
+  for (const [name, comments, whole] of cases) it(name, async () => assert.equal(await assembleHolds(comments), whole ? plain : undefined));
+  it("reads a plain comment as it is", async () => assert.equal(await assembleHolds([comment(snapshot())]), body(snapshot())));
+  it("finds the holds it encodes", async () => assert.equal((await findHolds([first!, ...rest]))?.holds.length, 41));
+  it("refuses a piece that inflates past the bound", async () => {
+    const [bomb] = compressedHolds(`${HOLDS_MARKER}\n${"x".repeat(9_000_000)}`, AT);
+    assert.equal(await assembleHolds([bomb!]), undefined);
+  });
 });
 
 /** The example in agent-board's docs/pass.md, verbatim. */
@@ -128,10 +155,10 @@ describe("parseNeedsYou", () => {
     assert.deepEqual(l.items[1]!.action, { type: "operator_action", repository: "cgwalters-forge/bot-ops", number: 5, comment: 21 });
   });
 
-  it("reads it from the hold comment, and an older one without it as no list", () => {
+  it("reads it from the hold comment, and an older one without it as no list", async () => {
     const at = "2026-10-30T09:30:00Z";
-    assert.equal(typeof findHolds([holdsComment(at, rawNeedsYou([rawAsk(1)], at))])?.needsYou, "object");
-    assert.equal(findHolds([holdsComment(at)])?.needsYou, undefined);
+    assert.equal(typeof (await findHolds([holdsComment(at, rawNeedsYou([rawAsk(1)], at))]))?.needsYou, "object");
+    assert.equal((await findHolds([holdsComment(at)]))?.needsYou, undefined);
   });
 
   // name, the list: each says why it can't be used, rather than a list

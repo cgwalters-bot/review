@@ -10,7 +10,10 @@
 // bar's File), so they make the same checks and writes. A write is sent
 // only with --yes: a command run to see what it would do can't act. With
 // --dry-run the same code runs, its reads are sent and its writes are
-// recorded instead, each answered with an empty success.
+// recorded instead, each answered with an empty success. Only cancel, retry
+// and redispatch need the pass view, for its list of runs: dispatch checks
+// the item isn't running only where there is one, and run-pass skips the
+// view's capacity checks, which are the caller's to judge from status.
 
 import { type Fetch, GitHub, GitHubError } from "../github/api.ts";
 import { actNowRows, mergeRefusal } from "../github/actnow.ts";
@@ -22,7 +25,7 @@ import { type Holds, loadPassPublications } from "../github/holds.ts";
 import { askUrl } from "../github/inbox.ts";
 import { redactAddresses, stale } from "../github/passes.ts";
 import type { AgentRun, PassView } from "../github/passview.ts";
-import { dispatchPass } from "../github/runpass.ts";
+import { startPass } from "../github/runpass.ts";
 import { type Io, readOnly, run as runQueue } from "./queue.ts";
 
 export const PROG = "control-plane";
@@ -49,11 +52,13 @@ Act as the app's buttons do. Each needs --dry-run (send the reads, show the
 writes) or --yes (send them):
 
   dispatch OWNER/REPO#N --kind KIND [--pool POOL] --brief TEXT
-                       comment a job plan on the item for the next pass to start
+                       comment a job plan on the item for the next pass to
+                       start, unless the pass view (if published) lists it running
   cancel RUN           cancel a run the pass view lists as running
   retry RUN            rerun a listed run's failed jobs
   redispatch RUN       repeat the newest plan of a listed run's failed item
-  run-pass             start an applying pass (poll.yml)
+  run-pass             start an applying pass (poll.yml) unless one is active;
+                       it doesn't check capacity, as the app's button does
   file --epic N --title TEXT [--body TEXT] [--repo OWNER/REPO] [--label NAME]...
                        file a tracker issue under an epic, unless an open one
                        has the same title
@@ -297,17 +302,19 @@ async function act(gh: GitHub, a: Act) {
     const filed = await fileCapture(gh, draft);
     return { similar, url: filed.url ?? null, ...(filed.parentError ? { parentError: filed.parentError } : {}), ...(filed.boardError ? { boardError: filed.boardError } : {}) };
   }
-  const holds = await loadHolds(gh);
   if (a.command === "run-pass") {
-    const { login } = await gh.send<{ login?: string }>("GET", "/user");
-    const id = await dispatchPass(gh, () => ({ data: holds.passView, login }));
+    const id = await startPass(gh);
     return { url: id === undefined ? POLL_RUNS_URL : `https://github.com/${TRACKER_REPO}/actions/runs/${id}` };
   }
-  const view = part(holds.passView, "pass view");
   if (a.command === "dispatch") {
+    const { holds } = await loadPassPublications(gh);
+    const view = typeof holds?.passView === "object" ? holds.passView : undefined;
     const pool = one("--pool");
-    return { url: await dispatchItem(gh, view, { item: a.target!, kind: one("--kind")!, brief: one("--brief")!, ...(pool === undefined ? {} : { pool }) }) };
+    const url = await dispatchItem(gh, view, { item: a.target!, kind: one("--kind")!, brief: one("--brief")!, ...(pool === undefined ? {} : { pool }) });
+    // Without a pass view nothing says whether the item is running; the next pass's own checks still hold.
+    return { url, runningChecked: view !== undefined };
   }
+  const view = part((await loadHolds(gh)).passView, "pass view");
   const r = listedRun(view, a.target!);
   const fn = { cancel: cancelRun, retry: retryRun, redispatch }[a.command];
   return { item: r.item, kind: r.kind, run: runUrl(r.run), url: await fn(gh, view, r) };
