@@ -109,7 +109,17 @@ export function rawNeedsYou(items: unknown[], at: string, over: Record<string, u
 }
 
 /** The bot's hold comment holding `needsYou` (left out where undefined), as the pass renders it. */
-export function holdsComment(at: string, needsYou?: unknown, holds: unknown[] = []): { user: { login: string }; body: string } {
+export function holdsComment(at: string, needsYou?: unknown, holds: unknown[] = publishedTestHolds(needsYou)): { user: { login: string }; body: string } {
   const snapshot = { schema: "agent-board/holds/v1", at, truncated: 0, holds, ...(needsYou === undefined ? {} : { needs_you: needsYou }) };
   return { user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\nHolds as of ${at}.\n\n\`\`\`json\n${JSON.stringify(snapshot)}\n\`\`\`\n` };
+}
+
+/** Normal synthetic publications include the operator holds behind their asks. */
+export function publishedTestHolds(list: unknown): unknown[] {
+  const published = list as { items?: Record<string, unknown>[]; identities?: Record<string, unknown>[] } | undefined;
+  const items = [...new Map([...(published?.items ?? []), ...(published?.identities ?? [])].map((a) => [a.item, a])).values()];
+  return items.filter((a) => ["epics", "items", "pass", "holds"].includes(String(a.source))).map((a) => ({
+    item: a.item, url: `https://github.com/${String(a.item).replace("#", "/issues/")}`, epic: a.source === "epics", kind: a.kind,
+    reason: a.ask ?? "Waiting on the operator", operator: true, priority: a.priority ?? null, question: null,
+  }));
 }

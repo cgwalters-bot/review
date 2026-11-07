@@ -167,6 +167,31 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 const listed = (at: number, items: unknown[], over: Record<string, unknown> = {}) => [holdsComment(iso(at), rawNeedsYou(items, iso(at), over))];
 
 describe("Needs you from the pass's published list", () => {
+  it("#259 excludes superseded #727/#728 holds and counts only rendered operator rows", async (t) => {
+    const raw = fixture<Record<string, unknown>>("needs-you-259.json");
+    const comment = () => ({ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\`\`\`json\n${JSON.stringify(raw)}\n\`\`\`` });
+    const holds = { status: 200, etag: '"259"', comments: [comment()] };
+    const app = await boot(t, holds);
+    try {
+      assert.deepEqual(app.keys(), []);
+      assert.equal(app.count(), "0");
+      assert.equal(app.empty(), true);
+      assert.match(app.doc.querySelector("#sec-needs .empty")!.textContent!, /nothing needs you/);
+      assert.match(app.note(), /2 superseded hold decisions excluded/);
+      // An actual published operator hold stays, independent of label/assignment
+      // prose; a review wait also stays without an issue hold.
+      raw.needs_you = rawNeedsYou([rawAsk(50), rawAsk(51, { source: "reviews", kind: "review-approve", action: { type: "approve_pull_request", repository: "cgwalters-forge/tracker", number: 51, head: "a".repeat(40) } })], iso(T0));
+      raw.holds = [{ item: "cgwalters-forge/tracker#50", url: "https://github.com/cgwalters-forge/tracker/issues/50", epic: false, kind: "needs-human", reason: "Operator assigned", operator: true, priority: null, question: null }];
+      holds.etag = '"259-current"'; holds.comments = [comment()];
+      await app.reload();
+      assert.equal(app.keys().length, 2);
+      assert.equal(app.count(), "2");
+      assert.equal(app.empty(), false);
+      assert.equal(app.reads.writes.length, 0);
+      assert.ok(app.reads.all.every((r) => r.path === "/user" || r.path === HOLDS), "no per-target ownership discovery");
+    } finally { await app.close(); }
+  });
+
   it("actual main retains a typed answer through filtering, eviction and Show everything", async (t) => {
     const holds = { status: 200, etag: '"draft"', comments: listed(T0, [rawAsk(50, { epic: FOCUS, topEpic: FOCUS })], { epics }) };
     const app = await boot(t, holds);

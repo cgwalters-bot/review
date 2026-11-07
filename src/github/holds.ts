@@ -123,6 +123,8 @@ export interface Request {
 
 /** The pass's ranked list of what waits on the operator. */
 export interface NeedsYou {
+  /** Hold decisions superseded by this snapshot's operator-hold inventory. */
+  excludedHolds?: number;
   count?: number;
   counts?: { decisions: number; groups: number; members: number };
   identities?: InboxIdentity[];
@@ -440,9 +442,26 @@ export function parseHolds(body: string | null | undefined): Holds | undefined {
   if (wip) out.wip = wip;
   const pass = parsePass(raw.pass);
   if (pass) out.pass = pass;
-  if (raw.needs_you !== undefined) out.needsYou = parseNeedsYou(raw.needs_you);
+  if (raw.needs_you !== undefined) {
+    out.needsYou = parseNeedsYou(raw.needs_you);
+    if (typeof out.needsYou === "object") reconcileOperatorHolds(out.needsYou, out.holds, raw.truncated === undefined || raw.truncated === 0);
+  }
   if (raw.pass_view !== undefined) out.passView = parsePassView(raw.pass_view);
   return out;
+}
+
+/** A stale hold detail/identity must not resurrect work no longer waiting on
+ * the operator. Use the same snapshot, never labels, prose or target discovery.
+ * A truncated hold inventory cannot establish absence; explicit non-operator
+ * holds still supersede it. Reviews/proposals have their own published waits. */
+function reconcileOperatorHolds(list: NeedsYou, holds: readonly Hold[], whole: boolean): void {
+  const operator = new Set(holds.filter((h) => h.operator && h.item).map((h) => h.item!.toLowerCase()));
+  const listed = new Set(holds.flatMap((h) => h.item ? [h.item.toLowerCase()] : []));
+  const keep = (a: Pick<Ask, "item" | "source">) => !["epics", "items", "pass", "holds"].includes(a.source) || operator.has(a.item.toLowerCase()) || (!whole && !listed.has(a.item.toLowerCase()));
+  const before = list.identities?.length ?? list.items.length;
+  list.items = list.items.filter(keep);
+  if (list.identities) list.identities = list.identities.filter(keep);
+  list.excludedHolds = before - (list.identities?.length ?? list.items.length);
 }
 
 /** The bot's newest hold comment among an issue's comments, oldest first as GitHub lists them; nothing if it doesn't parse. */

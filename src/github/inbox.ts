@@ -98,7 +98,7 @@ export const decisionKey = (a: Ask): string => JSON.stringify([a.kind, a.action,
 export function inboxCounts(p: Published, completed: ReadonlyMap<string, string> = new Map()): { known: number; listed: number; unlisted: number; completed: number; outstanding: number } {
   const done = p.asks.filter((a) => completed.get(a.key) === decisionKey(a)).length;
   const listed = p.list?.identities?.length ?? p.asks.length;
-  const known = Math.max(listed, p.list?.counts?.decisions ?? p.list?.count ?? p.asks.length);
+  const known = Math.max(listed, (p.list?.counts?.decisions ?? p.list?.count ?? p.asks.length) - (p.list?.excludedHolds ?? 0));
   return { known, listed, unlisted: known - listed, completed: done, outstanding: Math.max(0, known - done) };
 }
 
@@ -246,6 +246,7 @@ export function publishedNote(p: Published, now: number): { text: string; settle
     const old = now - Date.parse(l.validatedAt) > NEEDS_YOU_MAX_AGE_MS;
     parts.push(`${p.unavailable ? "Cards from the list the pass" : "The pass's list:"} confirmed ${ago(l.validatedAt, now)}, changed ${ago(l.changedAt, now)}${p.checkedAt === undefined ? ", shown from this browser's cache" : `, checked on GitHub ${ago(new Date(p.checkedAt).toISOString(), now)}`}${p.unavailable ? "; marked unavailable until it can be read again." : "."}`);
     if (old) parts.push("The pass has not confirmed it for over an hour: it may have stopped, and this may be out of date.");
+    if (l.excludedHolds) parts.push(`${l.excludedHolds} superseded hold decisions excluded: this snapshot no longer lists them as waiting on the operator.`);
     const missing = [...shortfall(l), ...(l.omitted ? [`${l.omitted} past the pass's cap`] : []), ...(l.refused ? [`${l.refused} unreadable here`] : [])];
     if (!l.complete) parts.push(`Incomplete${missing.length ? ` (${missing.join(", ")})` : ""}: more may wait on you.`);
     if (l.summaries !== "complete") parts.push("Not every summary was read: some asks show the board's question or the hold's reason.");

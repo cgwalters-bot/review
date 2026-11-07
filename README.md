@@ -33,6 +33,16 @@ navigation and chat; foreign, missing or unreadable descriptors never restore
 GitHub targets in a descriptor-bearing publication. The browser
 does not search the board, decisions or draft issues to assemble this list.
 
+Hold-derived entries (`epics`, `items`, `pass`, `holds`) are reconciled with
+the same snapshot's `operator: true` holds. A superseded inventory identity
+or carried detail cannot put agent work or a resolved hold back in Needs you;
+its decision is excluded from the heading and named in the freshness note.
+An incomplete/truncated hold inventory cannot prove an absent hold resolved.
+Review waits and proposals retain their own publication rules. No label or
+ownership prose is interpreted as evidence, and this adds no discovery reads.
+`test/fixtures/needs-you-259.json` is a derived replay of the reported
+agent-board#727/#728 states, not a capture of the private publication.
+
 Above the cards, **Agents and capacity** summarizes the same optional
 `pass_view` publication as Status: running jobs with item/run links and runtime
 at the observation, pool usage bars against published allowed percentages and
