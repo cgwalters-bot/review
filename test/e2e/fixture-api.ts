@@ -64,6 +64,8 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
   if (/\/issues\/\d+\/comments$/.test(pathname)) {
     const at = new Date(now - 60_000).toISOString();
     const pass_view = fixture("pass-view.json").pass_view;
+    pass_view.observed_at = at;
+    pass_view.in_flight[0].started_at = new Date(now - 6 * 60_000).toISOString();
     if (data === "259") {
       const snapshot = fixture("needs-you-259.json");
       snapshot.at = snapshot.needs_you.validated_at = snapshot.needs_you.changed_at = at;
@@ -71,7 +73,8 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
       return [{ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\`\`\`json\n${JSON.stringify(snapshot)}\n\`\`\`` }];
     }
     const list = needsYou(data, at);
-    const holds = JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: publishedTestHolds(list), needs_you: list, pass_view });
+    const dispatchable_work = fixture("dispatchable-work.json");
+    const holds = JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: publishedTestHolds(list), needs_you: list, pass_view, dispatchable_work });
     return [{ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${holds}\n\`\`\`\n` }];
   }
   const pull = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(pathname);

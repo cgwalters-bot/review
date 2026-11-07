@@ -16,6 +16,7 @@ import { ITEM_RE, usagePath } from "./usage.ts";
 import { parsePassView, type PassView } from "./passview.ts";
 import { findMaintainerReports } from "./repositories.ts";
 import { findPasses } from "./passes.ts";
+import { parseDispatchableWork, type DispatchableWork } from "./repositoryboard.ts";
 
 /** The comment's first line. */
 export const HOLDS_MARKER = "<!-- agent-board-holds v1 -->";
@@ -199,6 +200,7 @@ export interface Holds {
   /** The ranked list, or why the snapshot's can't be used; absent where the snapshot has none (holds.needsYou off, an older pass, or past the comment's cap). */
   needsYou?: NeedsYou | string;
   passView?: PassView | string;
+  dispatchableWork?: DispatchableWork | string;
 }
 
 const isText = (v: unknown): v is string => typeof v === "string";
@@ -447,6 +449,7 @@ export function parseHolds(body: string | null | undefined): Holds | undefined {
     if (typeof out.needsYou === "object") reconcileOperatorHolds(out.needsYou, out.holds, raw.truncated === undefined || raw.truncated === 0);
   }
   if (raw.pass_view !== undefined) out.passView = parsePassView(raw.pass_view);
+  if (raw.dispatchable_work !== undefined) out.dispatchableWork = parseDispatchableWork(raw.dispatchable_work);
   return out;
 }
 

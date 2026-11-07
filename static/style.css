@@ -3,6 +3,28 @@
 .pass-view { padding: 16px; overflow-wrap: anywhere; }
 .pass-record { border-block-start: 1px solid var(--line); padding-block: 8px; }
 .pass-view h3 { margin-block-start: 24px; }
+.repository-board .pass-record { margin-block: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.repository-board .pass-record h3 { margin-block: 0 12px; }
+.repository-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--type-secondary); }
+.repository-table caption { text-align: start; color: var(--muted); padding-block-end: 8px; }
+.repository-table th, .repository-table td { text-align: start; vertical-align: top; padding: 10px 8px; border-block-end: 1px solid var(--line); }
+.repository-table th:first-child { width: 18%; }
+.repository-table th:nth-child(2) { width: 14%; }
+.repository-table thead { background: var(--surface-2); }
+.repository-table ul { list-style: none; margin: 0; padding: 0; }
+.repository-table li + li { margin-block-start: 10px; }
+.repository-count { font-variant-numeric: tabular-nums; font-weight: 600; }
+.repository-board a:focus-visible, .repository-board summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.repository-board a { text-underline-offset: 3px; }
+.repository-board details { margin-block-start: 16px; }
+.run-badge { color: var(--live); }
+@media (max-width: 600px) {
+  .repository-board .pass-record { padding: 10px; margin-inline: -8px; }
+  .repository-table th, .repository-table td { padding: 10px 4px; }
+  .repository-table th:first-child { width: 23%; }
+  .repository-table th:nth-child(2) { width: 18%; }
+  .repository-table a { display: inline-block; padding-block: 4px; }
+}
 .pass-list { padding-inline-start: 20px; }
 .pass-result, .pass-state { font-weight: 600; }
 .pass-success { color: var(--ok); }

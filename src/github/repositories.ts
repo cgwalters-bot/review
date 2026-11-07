@@ -3,6 +3,7 @@ import { h } from "../dom.ts";
 import { isBot } from "./authors.ts";
 import { USAGE_ISSUE, USAGE_REPO } from "./config.ts";
 import { isObject, type RawComment } from "./heartbeat.ts";
+import { boardNote, boardRepositories, repositoryTable, type BoardPublication } from "./repositoryboard.ts";
 
 export const REPORT_SCHEMA = "agent-board/maintainer-report/v1";
 const MARKER = "<!-- agent-board-maintainer-report -->";
@@ -73,8 +74,9 @@ export function findMaintainerReports(comments: readonly RawComment[]): ReportBl
   });
 }
 
-export function repositoriesView(blocks: readonly ReportBlock[], now = Date.now(), unavailable?: string): HTMLElement {
-  const el = h("section", { class: "pass-view", "aria-label": "Repositories" }, h("h2", {}, "Repositories"));
+export function repositoriesView(blocks: readonly ReportBlock[], now = Date.now(), unavailable?: string, board: BoardPublication = {}): HTMLElement {
+  const el = h("section", { class: "pass-view repository-board", "aria-label": "Repositories" }, h("h2", {}, "Repositories"),
+    h("p", { class: "repository-toolbar" }, "Published work by repository · ", h("a", { href: "https://github.com/cgwalters-forge/tracker/actions/workflows/poll.yml" }, "Run a pass now ↗"), " (opens tracker workflow; no dispatch from this page)"), boardNote(board, now));
   if (unavailable) el.append(h("p", { class: "warn" }, `Publication unavailable: ${unavailable}. Any facts below are last read, not current.`));
   if (!blocks.length) el.append(h("p", { class: "note" }, "Maintainer report not published (off or older producer)."));
   const latest = new Map<string, { report: MaintainerReport; commentUrl?: string }>();
@@ -92,7 +94,13 @@ export function repositoriesView(blocks: readonly ReportBlock[], now = Date.now(
       if (!prev || Date.parse(prev.report.generated_at) <= Date.parse(block.report.generated_at)) latest.set(repository.toLowerCase(), { report: block.report, ...(block.commentUrl ? { commentUrl: block.commentUrl } : {}) });
     }
   }
-  for (const [repository, { report, commentUrl }] of latest) {
+  const names = new Set([...latest.keys(), ...boardRepositories(board).map((r) => r.toLowerCase())]);
+  for (const repository of [...names].sort()) {
+    const row = h("article", { class: "pass-record" }, h("h3", {}, h("a", { href: `https://github.com/${repository}` }, repository)), repositoryTable(repository, board));
+    el.append(row);
+    const observation = latest.get(repository);
+    if (!observation) continue;
+    const { report, commentUrl } = observation;
     const age = now - Date.parse(report.generated_at);
     const unread = report.undecided_repositories.some((r) => r.toLowerCase() === repository);
     const states = Object.entries(report.pull_requests).flatMap(([state, pulls]) => {
@@ -100,7 +108,7 @@ export function repositoriesView(blocks: readonly ReportBlock[], now = Date.now(
       return n ? [`${state}: ${n}`] : [];
     });
     const needs = report.needs_human.filter((n) => n.repository.toLowerCase() === repository);
-    const row = h("article", { class: "pass-record" }, h("h3", {}, repository),
+    const details = h("details", {}, h("summary", {}, "Maintainer observations"),
       h("p", { class: age > STALE_MS || age < -60_000 ? "warn" : "note" }, `Last run ${report.generated_at} · ${report.mode}${age > STALE_MS ? " · stale (over two hours)" : age < -60_000 ? " · clock is in the future" : ""}`),
       h("p", {}, "Merge-queue depth: unknown (not published by v1)."),
       h("p", {}, `Open PRs by poll state: ${states.join(" · ") || (unread ? "unknown" : "0")}${unread ? " · inventory unread/undecided; listed counts may be incomplete" : ""}`),
@@ -108,7 +116,7 @@ export function repositoriesView(blocks: readonly ReportBlock[], now = Date.now(
       h("ul", {}, ...needs.map((n) => h("li", {}, h("a", { href: `https://github.com/${n.repository}/pull/${n.number}` }, `#${n.number}`), ` · ${n.kind}: ${n.reason}`))),
       report.errors ? h("p", { class: "warn" }, `Poll errors: ${report.errors}; observations may be incomplete.`) : "",
       commentUrl ? h("a", { href: commentUrl }, "Report comment") : h("span", { class: "note" }, "Report comment link unavailable"));
-    el.append(row);
+    row.append(details);
   }
   return el;
 }

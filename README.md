@@ -407,11 +407,41 @@ bounds, caller opt-in and offline screenshot reproduction. This is not yet
 end-to-end completion of #245.
 Header counts and the source-freshness line remain available on both pages.
 
-The read-only **Repositories** panel reads bot-authored
+The **Repositories** board folds each repository's published work and optional
+maintainer observations into one table on Status. It reads `dispatchable_work`
+and `pass_view` from the existing bot-authored holds snapshot, on the same
+conditional poll as the inbox; there is no new page, poll or browser option.
+Publication remains off unless the producer has `holds` and `follow` configured
+(and `holds.passView` for run observations). **Run a pass now** opens tracker's
+`poll.yml` workflow; it does not dispatch or bypass workflow permissions.
+
+The four rows show **Ready** (published decisions minus held decisions),
+**In flight** (running jobs and merge queue entries), **In review** (published
+review waits), and **Blocked** (held decisions). Counts describe the publication,
+not inferred live scheduling eligibility: ready includes work taken this pass,
+and accepted plans can also be held, so per-kind counts are not additive.
+Ready/blocked counts include omitted work detail; run counts say **listed**,
+since omitted runs cannot be assigned to repositories. Each repository labels PR/issue completeness
+and omissions; absent sources are unknown, not zero. Legacy pass-view coverage
+warnings, observation ages, stale/future clocks and unavailable reads stay
+visible. Running badges link to the run's actual repository and show elapsed
+time **at observation**, not an unverified live timer. Maintainer observations
+are folded under the same repository, not a separate board.
+
+The concrete threats are unbounded publisher inventories causing unbounded
+rendering and publisher-supplied addresses becoming navigation. The work parser
+bounds repositories to 1,000, total item detail to 200, kind counters to 32 per
+repository, counts to 1,000,000 and prose to 500 characters. Invalid extensions
+are labelled without discarding the holds or pass view. Links use validated
+repository/item/run components; prose is text, never dispatch authority.
+`test/fixtures/dispatchable-work.json` replays the producer's documented v1
+shape, including overlapping held/accepted plans and truncated detail.
+
+The optional maintainer observations read bot-authored
 `agent-board/maintainer-report/v1` fenced blocks from the same configured
 report-comment page as Poller passes. Publication is off when the producer's
 `maintainerReport` setting is absent; there is no new browser option or read.
-Each maintained repository has one row, using its newest published run: time,
+Each maintained repository has folded details, using its newest published run: time,
 preview/apply mode, open PR counts by poll action/state, needs-you PRs and
 reasons, and the source comment link. Runs older than two hours are **stale**;
 future clocks and unavailable/cached reads are labelled separately. Undecided
