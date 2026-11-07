@@ -62,16 +62,53 @@ describe("loadLiveRuns", () => {
     assert.ok(calls.slice(LIVE_SOURCES.length * 3).every((c) => c.headers["If-None-Match"]), "every reread is conditional");
   });
 
-  it("says which source it could not read, and that a long list is cut", async () => {
-    const many = Array.from({ length: 3 }, (_, i) => raw(TRACKER.repository, i + 1, `implement o/r#${i + 1}`));
+  it("does not call a short status-filtered page incomplete when total_count disagrees", async () => {
+    const { fetchImpl, calls } = scriptedFetch((_, url) => ({ body: {
+      total_count: url.includes("in_progress") ? 4 : 150,
+      workflow_runs: url.includes("in_progress") ? [raw(TRACKER.repository, 1, "implement o/r#1")] : [],
+    } }));
+    const data = await loadLiveRuns(new GitHub(token, fetchImpl), [TRACKER], now);
+    assert.deepEqual(data.errors, []);
+    assert.equal(data.runs.length, 1);
+    assert.equal(calls.length, 3, "no extra requests to reconcile counts");
+    assert.ok(calls.every((c) => /\?status=(in_progress|queued|pending)&per_page=100$/.test(c.url)));
+  });
+
+  it("says which source it could not read, and that a full page may be cut", async () => {
+    const many = Array.from({ length: 100 }, (_, i) => raw(TRACKER.repository, i + 1, `implement o/r#${i + 1}`));
     const { fetchImpl } = scriptedFetch((_, url) => url.includes(DEVSPACE.repository) ? { status: 404, body: { message: "Not Found" } }
       : url.includes("in_progress") ? { body: { total_count: 150, workflow_runs: many } } : { body: { total_count: 0, workflow_runs: [] } });
     const data = await loadLiveRuns(new GitHub(token, fetchImpl), LIVE_SOURCES, now);
-    assert.equal(data.runs.length, 3);
-    assert.ok(data.errors.some((e) => /dispatch\.yml: over 100 in_progress runs/.test(e)), data.errors.join("\n"));
+    assert.equal(data.runs.length, 100);
+    assert.ok(data.errors.some((e) => /dispatch\.yml: first 100 in_progress runs read; more may exist/.test(e)), data.errors.join("\n"));
     assert.ok(data.errors.some((e) => /agent\.yml \(in_progress\): workflow missing/.test(e)), data.errors.join("\n"));
     const el = liveAgentsView(data, undefined, now);
     assert.match(el.textContent!, /Incomplete: /);
+  });
+
+  it("omits runs older than six hours, including stuck GitHub records, but keeps the boundary and unknown ages", async () => {
+    const { fetchImpl } = world({
+      [`${TRACKER.repository} in_progress`]: [
+        raw(TRACKER.repository, 39698121265, "implement o/r#1623", "in_progress", "2026-10-22T17:00:00Z"),
+        raw(TRACKER.repository, 1, "implement o/r#1", "in_progress", "2026-11-07T10:59:59.999Z"),
+        raw(TRACKER.repository, 2, "implement o/r#2", "in_progress", "2026-11-07T11:00:00Z"),
+        { ...raw(TRACKER.repository, 3, "implement o/r#3"), created_at: "2026-10-22T17:00:00Z" },
+        raw(TRACKER.repository, 4, "implement o/r#4", "in_progress", "unknown"),
+      ],
+      [`${TRACKER.repository} queued`]: [
+        { ...raw(TRACKER.repository, 5, "implement o/r#5", "queued", "2026-10-22T17:00:00Z"), run_started_at: null },
+        { ...raw(TRACKER.repository, 6, "implement o/r#6", "queued"), run_started_at: null },
+      ],
+    });
+    const gh = new GitHub(token, fetchImpl);
+    const data = await loadLiveRuns(gh, [TRACKER], now);
+    assert.deepEqual(data.errors, []);
+    assert.deepEqual(data.runs.map((r) => r.run.id), [2, 3, 6, 4]);
+    const el = liveAgentsView(data, undefined, now, () => Object.assign(document.createElement("button"), { textContent: "Cancel" }));
+    assert.doesNotMatch(el.textContent!, /39698121265|running 2w/);
+    assert.equal(el.querySelectorAll("button").length, 4);
+    const later = await loadLiveRuns(gh, [TRACKER], now + 1);
+    assert.ok(!later.runs.some((r) => r.run.id === 2), "304 responses still age out");
   });
 });
 

@@ -112,6 +112,8 @@ test("Needs you and Status render without errors", async ({ page }) => {
     await expect(live).toHaveCount(3);
     await expect(live.first()).toContainText("bootc-dev/cgwalters-devspace-sandbox#36");
     await expect(live.getByRole("button", { name: "Cancel" })).toHaveCount(3);
+    await expect(page.locator(".live-agents")).not.toContainText("Incomplete:");
+    await expect(page.locator(".live-agents")).not.toContainText("39698121265");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.locator(".live-agents").screenshot({ path: `${SCREENSHOT_DIR}/agents-${test.info().project.name}.png` });
   }
