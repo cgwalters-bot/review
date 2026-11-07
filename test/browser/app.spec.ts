@@ -51,6 +51,7 @@ async function serve(page: Page): Promise<string[]> {
 async function screenshot(page: Page, view: string) {
   await page.waitForLoadState("networkidle");
   await page.waitForTimeout(SETTLE_MS);
+  await page.evaluate(() => window.scrollTo(0, 0));
   const prefix = LIVE_TOKEN ? "live-" : "";
   await page.screenshot({ path: `${SCREENSHOT_DIR}/${prefix}${view}-${test.info().project.name}.png`, fullPage: true });
 }
@@ -66,6 +67,16 @@ test("Needs you and Status render without errors", async ({ page }) => {
 
   await page.goto("#status");
   await expect(page.getByRole("heading", { name: "Poller passes" })).toBeVisible();
+  if (!LIVE_TOKEN) {
+    const board = page.getByRole("region", { name: "Repositories", exact: true });
+    await expect(board.getByRole("table")).toHaveCount(2);
+    await expect(board.getByRole("cell", { name: "3", exact: true })).toBeVisible();
+    await expect(board.getByText(/1 items omitted/)).toBeVisible();
+    const entry = board.getByRole("link", { name: "Run a pass now" });
+    await entry.focus();
+    await expect(entry).toBeFocused();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
   await screenshot(page, "status");
 
   expect(problems).toEqual([]);

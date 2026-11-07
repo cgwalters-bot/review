@@ -76,6 +76,7 @@ import { loadProjectStatus } from "./backend.ts";
 import { type Need, needStops } from "./needs.ts";
 import { type Ask, holdAsks, loadPassPublications, readHoldAsk } from "./holds.ts";
 import { repositoriesView, type ReportBlock } from "./repositories.ts";
+import type { BoardPublication } from "./repositoryboard.ts";
 import { activePassView, type PassView, retainPassView } from "./passview.ts";
 import { type PassesRead, readPasses, schedulerPassView } from "./passesview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
@@ -187,6 +188,7 @@ interface State {
   passView?: PassView | undefined;
   passes: PassesRead;
   repositories?: ReportBlock[];
+  repositoryWork?: Pick<BoardPublication, "work" | "at">;
   /** The page's sections, while it is shown. */
   home?: Home;
   /** The rows of "Needs you" as last drawn, and a signature of them. */
@@ -833,7 +835,11 @@ function paintActive(state: State): void {
   state.home.slots.active.replaceChildren(activePassView(pass, Date.now(), passUnavailable));
   state.home.slots.passes.replaceChildren(schedulerPassView(state.passes, pass, Date.now(), passUnavailable));
   if (state.active?.repositories) state.repositories = state.active.repositories;
-  state.home.slots.repositories.replaceChildren(repositoriesView(state.repositories ?? [], Date.now(), unavailable));
+  const work = state.active?.passPublicationError ? undefined : state.active?.holds;
+  if (!passUnavailable || work) state.repositoryWork = { work: work?.dispatchableWork, at: work?.at };
+  state.home.slots.repositories.replaceChildren(repositoriesView(state.repositories ?? [], Date.now(), unavailable, {
+    ...state.repositoryWork, pass, unavailable: passUnavailable,
+  }));
   fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError, Date.now(), state.active?.board);
   fillState(state.home, model);
 }

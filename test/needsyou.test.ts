@@ -26,6 +26,36 @@ interface Holds { status: number; comments: unknown[]; etag: string; gate?: Prom
 
 let runs = 0;
 
+it("repository work shares the inbox poll, preserves source clocks on 304 and labels retained data on failure", async (t) => {
+  const raw = fixture<Record<string, unknown>>("pass-view.json");
+  raw.at = iso(T0);
+  raw.dispatchable_work = fixture("dispatchable-work.json");
+  const comment = () => ({ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${JSON.stringify(raw)}\n\`\`\`` });
+  const holds: Holds = { status: 200, etag: '"work-1"', comments: [comment()] };
+  const app = await boot(t, holds);
+  try {
+    const panel = () => app.doc.querySelector("[aria-label='Repositories']")!;
+    assert.equal(panel().querySelectorAll("table").length, 2);
+    assert.match(panel().textContent!, /5 decisions · 1 items omitted/);
+    assert.equal(app.reads.holds.length, 1);
+    await app.wake(61 * MINUTE);
+    assert.match(panel().textContent!, /Work observed 2026-10-30T12:00:00.000Z · stale/);
+    holds.status = 503;
+    await app.reload();
+    assert.match(panel().textContent!, /last read, not current/);
+    assert.equal(panel().querySelectorAll("table").length, 2);
+    holds.status = 200;
+    holds.etag = '"work-2"';
+    raw.dispatchable_work = { invalid: true };
+    holds.comments = [comment()];
+    await app.reload();
+    assert.match(panel().textContent!, /Dispatchable work unavailable/);
+    assert.equal(panel().querySelectorAll("table").length, 1, "run-only repository survives invalid work");
+    assert.equal(app.reads.writes.length, 0);
+    assert.ok(!app.reads.all.some((r) => r.path.includes("/actions/")), "no additional run or workflow discovery");
+  } finally { await app.close(); }
+});
+
 it("Repositories shares the pass read, retains unavailable facts, and replaces invalid reports visibly", async (t) => {
   const raw = fixture<Record<string, unknown>>("maintainer-report.json");
   raw.generated_at = iso(T0);
