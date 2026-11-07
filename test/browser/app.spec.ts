@@ -76,6 +76,17 @@ test("Needs you and Status render without errors", async ({ page }) => {
     await expect(run).toBeEnabled();
   }
   await screenshot(page, "inbox");
+  if (!LIVE_TOKEN && DATA !== "259") {
+    const today = page.getByRole("region", { name: "Today", exact: true });
+    await expect(today).toBeVisible();
+    await expect(today.getByText("3", { exact: true })).toBeVisible();
+    await expect(today).toContainText("Incomplete pass history");
+    await expect(today).toContainText("By pool: claude 2 · unknown 1");
+    await expect(today.locator(".today-cost")).toContainText("$3.00 at list prices");
+    await today.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await today.screenshot({ path: `${SCREENSHOT_DIR}/today-${test.info().project.name}.png` });
+  }
 
   await page.goto("#status");
   await expect(page.getByRole("heading", { name: "Poller passes" })).toBeVisible();

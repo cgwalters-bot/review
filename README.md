@@ -408,6 +408,37 @@ do not poll. Classic tokens need `notifications` or `repo`; fine-grained
 tokens do not support notification endpoints. Inaccessible notifications
 leave review-request search results visible with a warning.
 
+## Today
+
+Below Needs you, **Today** renders the optional `agent-board/today/v1`
+publication from the same private holds snapshot and conditional poll. Board
+activity counts landed, closed and opened since 00:00 UTC in the board's
+repositories, not all repositories. **Observed starts** shows counts by kind
+and pool from applying passes, not all Actions runs or completions. Incomplete
+history and unknown pool history stay labelled; unavailable changes are not zero.
+The section names its UTC day and observation time, labels observations over a
+day old as stale, and distinguishes yesterday's activity and future clocks.
+Revalidating the comment does not advance that observation time. Missing or
+unreadable publications are explicit, not a claim of inactivity.
+
+When published, the cost line shows the previous UTC day's API list-price total
+against the configured weekly budget, not a daily allowance or remaining weekly
+budget. Partial cost shows only a priced subtotal plus unread/unpriced counts;
+in-progress runs are outside that coverage. Without `cost`, the entire line is
+hidden. No new browser option, read, public cost publication or action is added.
+The producer's `holds.today` remains off by default; caller activation is separate
+in tracker `.github/pass.json`, with a compatible producer pin and private holds
+destination unchanged. `prices` is needed for cost and `budget.weeklyUsd` for its
+comparison target.
+
+The concrete threat is unbounded publisher inventories growing the DOM. The
+consumer bounds kind/pool maps to 32/16 entries, names to 32/64 characters and
+counts to nonnegative safe integers, rendering names only as text. Invalid or
+unknown-version extensions do not discard the inbox. `test/fixtures/today.json`
+is the producer's synthetic serialization from agent-board `73b65e6`, not live
+private publication evidence. Offline browser tests capture the full inbox and
+focused Today sections at desktop and phone widths.
+
 ## Status and navigation
 
 **Status** (`#status`) shows the coordinator's newest published ProjectV2

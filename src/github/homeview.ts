@@ -25,7 +25,7 @@ export interface SectionEls {
 export interface Home {
   el: HTMLElement;
   sections: Record<SectionId, SectionEls>;
-  slots: { active: HTMLElement; people: HTMLElement; peopleCount: HTMLElement; freshness: HTMLElement; statusNote: HTMLElement; passes: HTMLElement; repositories: HTMLElement };
+  slots: { active: HTMLElement; today: HTMLElement; people: HTMLElement; peopleCount: HTMLElement; freshness: HTMLElement; statusNote: HTMLElement; passes: HTMLElement; repositories: HTMLElement };
 }
 
 export interface HomeHooks {
@@ -50,8 +50,9 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const repositories = h("div", { [VIEW_ATTR]: "status" });
   const freshness = h("p", { class: "source-freshness note", "aria-label": "Source freshness" });
   const active = h("div", { [VIEW_ATTR]: "inbox" });
-  const el = h("div", { class: HOME_CLASS }, active, details, peopleSection, passes, repositories, statusNote, freshness);
-  return { el, sections: { needs: { details, count, body } }, slots: { active, people, peopleCount, statusNote, passes, repositories, freshness } };
+  const today = h("div", { [VIEW_ATTR]: "inbox" });
+  const el = h("div", { class: HOME_CLASS }, active, details, today, peopleSection, passes, repositories, statusNote, freshness);
+  return { el, sections: { needs: { details, count, body } }, slots: { active, today, people, peopleCount, statusNote, passes, repositories, freshness } };
 }
 
 export function fillState(home: Home, state: { sources: Sources }): void {
