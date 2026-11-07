@@ -3,19 +3,35 @@
 // published holds snapshot (Home's Act now, Live agents and capacity,
 // Status's repository board) and review-queue's queue. Each prints one
 // JSON document whose order is the publication's, with links.
-// Read-only: the client refuses anything but GET.
+// The read commands' client refuses anything but GET.
+//
+// The act commands call the functions behind the app's buttons (Live
+// agents' Cancel, Retry and Redispatch, Status's Run a pass, the capture
+// bar's File), so they make the same checks and writes. A write is sent
+// only with --yes: a command run to see what it would do can't act. With
+// --dry-run the same code runs, its reads are sent and its writes are
+// recorded instead, each answered with an empty success.
 
-import { GitHub, GitHubError } from "../github/api.ts";
+import { type Fetch, GitHub, GitHubError } from "../github/api.ts";
 import { actNowRows, mergeRefusal } from "../github/actnow.ts";
+import { cancelRun, dispatchItem, redispatch, retryRun } from "../github/agentruns.ts";
+import { parseRunUrl } from "../github/asks.ts";
+import { captureRequest, fileCapture } from "../github/capture.ts";
+import { TRACKER_REPO } from "../github/config.ts";
 import { type Holds, loadPassPublications } from "../github/holds.ts";
 import { askUrl } from "../github/inbox.ts";
 import { redactAddresses, stale } from "../github/passes.ts";
-import type { PassView } from "../github/passview.ts";
+import type { AgentRun, PassView } from "../github/passview.ts";
+import { dispatchPass } from "../github/runpass.ts";
 import { type Io, readOnly, run as runQueue } from "./queue.ts";
 
 export const PROG = "control-plane";
 const SCHEMA = "control-plane/v1";
 const REPO_RE = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/;
+const ITEM_RE = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}#[1-9]\d{0,9}$/;
+const POLL_RUNS_URL = `https://github.com/${TRACKER_REPO}/actions/workflows/poll.yml`;
+/** At most this many of the duplicate search's other matches are shown. */
+const MAX_SIMILAR = 10;
 
 export const USAGE = `Usage: ${PROG} COMMAND [ARGS]
 
@@ -29,8 +45,22 @@ Read the control plane's state as the review app shows it, as JSON.
   changes --since TIME passes, starts and new asks since an ISO time
   -h, --help           this text
 
-The token comes from $GH_TOKEN, else $GITHUB_TOKEN, else
-\`gh auth token --hostname github.com\`. Only GET requests are sent.
+Act as the app's buttons do. Each needs --dry-run (send the reads, show the
+writes) or --yes (send them):
+
+  dispatch OWNER/REPO#N --kind KIND [--pool POOL] --brief TEXT
+                       comment a job plan on the item for the next pass to start
+  cancel RUN           cancel a run the pass view lists as running
+  retry RUN            rerun a listed run's failed jobs
+  redispatch RUN       repeat the newest plan of a listed run's failed item
+  run-pass             start an applying pass (poll.yml)
+  file --epic N --title TEXT [--body TEXT] [--repo OWNER/REPO] [--label NAME]...
+                       file a tracker issue under an epic, unless an open one
+                       has the same title
+
+RUN is a run's URL or ID. The token comes from $GH_TOKEN, else $GITHUB_TOKEN,
+else \`gh auth token --hostname github.com\`. The read commands send only GET
+requests.
 `;
 
 class UsageError extends Error {
@@ -155,6 +185,134 @@ function parse(command: string, args: readonly string[]): { repo?: string; since
 
 const COMMANDS = ["status", "act-now", "repo", "changes"] as const;
 
+/** Each act command's flags that take a value; --label may repeat. */
+const ACT_FLAGS = {
+  dispatch: ["--kind", "--pool", "--brief"],
+  cancel: [],
+  retry: [],
+  redispatch: [],
+  "run-pass": [],
+  file: ["--epic", "--title", "--body", "--repo", "--label"],
+} as const satisfies Record<string, readonly string[]>;
+
+type ActCommand = keyof typeof ACT_FLAGS;
+
+interface Act {
+  command: ActCommand;
+  dryRun: boolean;
+  target?: string;
+  flags: Map<string, string[]>;
+}
+
+const isAct = (c: string | undefined): c is ActCommand => c !== undefined && Object.hasOwn(ACT_FLAGS, c);
+
+function parseAct(command: ActCommand, args: readonly string[]): Act {
+  const known: readonly string[] = ACT_FLAGS[command];
+  const flags = new Map<string, string[]>();
+  const positional: string[] = [];
+  let dryRun = false;
+  let yes = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    const eq = a.startsWith("--") ? a.indexOf("=") : -1;
+    const flag = eq < 0 ? a : a.slice(0, eq);
+    if (flag === "--dry-run" || flag === "--yes") {
+      if (eq >= 0) throw new UsageError(`${flag} takes no value`);
+      if (flag === "--dry-run") dryRun = true;
+      else yes = true;
+    } else if (known.includes(flag)) {
+      const v = eq < 0 ? args[++i] : a.slice(eq + 1);
+      if (v === undefined) throw new UsageError(`${flag} needs a value`);
+      if (flags.has(flag) && flag !== "--label") throw new UsageError(`${flag} is given twice`);
+      flags.set(flag, [...(flags.get(flag) ?? []), v]);
+    } else if (a.startsWith("-")) {
+      throw new UsageError(`${command} takes no ${a}`);
+    } else positional.push(a);
+  }
+  if (dryRun === yes) throw new UsageError(`${command} needs one of --dry-run or --yes`);
+  const one = (f: string) => flags.get(f)?.[0];
+  const need = (f: string) => { if (one(f) === undefined) throw new UsageError(`${command} needs ${f}`); };
+  if (command === "dispatch") {
+    if (positional.length !== 1 || !ITEM_RE.test(positional[0]!)) throw new UsageError("dispatch needs one OWNER/REPO#N");
+    need("--kind");
+    need("--brief");
+  } else if (command === "file") {
+    if (positional.length) throw new UsageError("file takes no positional arguments");
+    need("--title");
+    if (!/^[1-9]\d{0,9}$/.test(one("--epic") ?? "")) throw new UsageError("file needs --epic N, a tracker issue number");
+  } else if (command === "run-pass") {
+    if (positional.length) throw new UsageError("run-pass takes no arguments");
+  } else if (positional.length !== 1 || !(parseRunUrl(positional[0]!) || /^[1-9]\d{0,15}$/.test(positional[0]!))) {
+    throw new UsageError(`${command} needs one RUN, a workflow run's URL or ID`);
+  }
+  return { command, dryRun, flags, ...(positional[0] === undefined ? {} : { target: positional[0] }) };
+}
+
+interface Write {
+  method: string;
+  url: string;
+  body?: unknown;
+}
+
+/** A fetch that sends reads (GETs and GraphQL queries) and records every write, sending it only when `send`. */
+function recording(f: Fetch, send: boolean, writes: Write[]): Fetch {
+  return (input, init) => {
+    const method = (init?.method ?? "GET").toUpperCase();
+    let body: unknown;
+    try { body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined; } catch { body = init?.body; }
+    const query = new URL(input).pathname === "/graphql" ? (body as { query?: unknown } | undefined)?.query : undefined;
+    if (method === "GET" || (typeof query === "string" && /^\s*query\b/.test(query))) return f(input, init);
+    writes.push({ method, url: input, ...(body === undefined ? {} : { body }) });
+    return send ? f(input, init) : Promise.resolve(new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+  };
+}
+
+/** The run the pass view lists (running, or started by a recent pass) by URL or ID; refused if none or more than one. */
+function listedRun(view: PassView, target: string): AgentRun {
+  const ref = parseRunUrl(target);
+  const id = ref?.id ?? target;
+  const repository = ref && `${ref.owner}/${ref.repo}`.toLowerCase();
+  const runs = [...view.in_flight.flatMap((f) => (f.state === "running" ? [f] : [])), ...view.passes.flatMap((p) => p.started)]
+    .filter((r) => String(r.run.id) === id && (!repository || r.run.repository.toLowerCase() === repository));
+  const distinct = [...new Map(runs.map((r) => [`${r.item.toLowerCase()} ${r.kind} ${r.run.repository.toLowerCase()}`, r])).values()];
+  if (!distinct.length) throw new Error(`the pass view lists no run ${target}`);
+  if (distinct.length > 1) throw new Error(`the pass view lists ${distinct.length} runs with ID ${id}; give its URL`);
+  return distinct[0]!;
+}
+
+/** Make an act command's checks and writes; what it acted on, for the document. */
+async function act(gh: GitHub, a: Act) {
+  const one = (f: string) => a.flags.get(f)?.[0];
+  if (a.command === "file") {
+    const repo = one("--repo");
+    const draft = { title: one("--title")!, body: one("--body") ?? "", url: "", epic: Number(one("--epic")), labels: a.flags.get("--label") ?? [], ...(repo === undefined ? {} : { repo }) };
+    const { title } = captureRequest(draft);
+    // The search index lags new issues by a minute or so; the exact-title refusal is a guard, not a lock.
+    const q = `repo:${TRACKER_REPO} is:issue is:open in:title "${title.replaceAll('"', " ")}"`;
+    const found = await gh.send<{ items?: { title: string; html_url: string }[] }>("GET", `/search/issues?q=${encodeURIComponent(q)}&per_page=${MAX_SIMILAR + 1}`);
+    const items = found.items ?? [];
+    const same = items.filter((i) => i.title.trim().toLowerCase() === title.toLowerCase());
+    if (same.length) throw new Error(`not filing: ${same.map((i) => i.html_url).join(", ")} is open with this title`);
+    const similar = items.slice(0, MAX_SIMILAR).map((i) => ({ title: i.title, url: i.html_url }));
+    const filed = await fileCapture(gh, draft);
+    return { similar, url: filed.url ?? null, ...(filed.parentError ? { parentError: filed.parentError } : {}), ...(filed.boardError ? { boardError: filed.boardError } : {}) };
+  }
+  const holds = await loadHolds(gh);
+  if (a.command === "run-pass") {
+    const { login } = await gh.send<{ login?: string }>("GET", "/user");
+    const id = await dispatchPass(gh, () => ({ data: holds.passView, login }));
+    return { url: id === undefined ? POLL_RUNS_URL : `https://github.com/${TRACKER_REPO}/actions/runs/${id}` };
+  }
+  const view = part(holds.passView, "pass view");
+  if (a.command === "dispatch") {
+    const pool = one("--pool");
+    return { url: await dispatchItem(gh, view, { item: a.target!, kind: one("--kind")!, brief: one("--brief")!, ...(pool === undefined ? {} : { pool }) }) };
+  }
+  const r = listedRun(view, a.target!);
+  const fn = { cancel: cancelRun, retry: retryRun, redispatch }[a.command];
+  return { item: r.item, kind: r.kind, run: runUrl(r.run), url: await fn(gh, view, r) };
+}
+
 /** Run the CLI; the exit status: 0, 1 on failure, 2 on a usage error. */
 export async function run(argv: readonly string[], io: Io): Promise<number> {
   const [command, ...args] = argv;
@@ -163,22 +321,32 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
     io.stdout(USAGE);
     return 0;
   }
-  let opts: ReturnType<typeof parse>;
+  let opts: ReturnType<typeof parse> | Act;
   try {
-    if (!COMMANDS.includes(command as (typeof COMMANDS)[number])) throw new UsageError(command ? `unknown command ${JSON.stringify(command)}` : "a command is needed");
-    opts = parse(command!, args);
+    if (isAct(command)) opts = parseAct(command, args);
+    else if (!COMMANDS.includes(command as (typeof COMMANDS)[number])) throw new UsageError(command ? `unknown command ${JSON.stringify(command)}` : "a command is needed");
+    else opts = parse(command!, args);
   } catch (e) {
     io.stderr(`${PROG}: ${message(e)}\n${USAGE}`);
     return 2;
   }
   try {
     const now = io.now().getTime();
+    const head = { schema: SCHEMA, command, generatedAt: new Date(now).toISOString() };
+    if ("dryRun" in opts) {
+      const writes: Write[] = [];
+      const done = await act(new GitHub(io.token, recording(io.fetch, !opts.dryRun, writes)), opts);
+      // A dry run's writes all get empty answers, so a link only a write returns (a filed issue's) is null.
+      const body = opts.dryRun ? { dryRun: true, ...done, wouldSend: writes } : { dryRun: false, ...done, sent: writes.map(({ method, url }) => ({ method, url })) };
+      io.stdout(`${JSON.stringify({ ...head, ...body }, null, 2)}\n`);
+      return 0;
+    }
     const holds = await loadHolds(new GitHub(io.token, readOnly(io.fetch)));
     const body = command === "status" ? status(holds, now)
       : command === "act-now" ? actNow(holds, now)
         : command === "repo" ? repo(holds, opts.repo!, now)
           : changes(holds, opts.since!, now);
-    io.stdout(`${JSON.stringify({ schema: SCHEMA, command, generatedAt: new Date(now).toISOString(), ...body }, null, 2)}\n`);
+    io.stdout(`${JSON.stringify({ ...head, ...body }, null, 2)}\n`);
     return 0;
   } catch (e) {
     const text = e instanceof GitHubError && e.status === 401 ? "GitHub refused the token (HTTP 401); check $GH_TOKEN/$GITHUB_TOKEN, or `gh auth status`" : message(e);

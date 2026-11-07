@@ -776,8 +776,19 @@ npx control-plane repo cgwalters-forge/review
 npx control-plane changes --since 2026-11-07T08:00:00Z
 ```
 
-Its read commands send only GET requests; the act commands of
-[#273](https://github.com/cgwalters-forge/review/issues/273) are still to come.
+Its read commands send only GET requests. Its act commands run the code
+behind the app's buttons, with the same checks, and write only with `--yes`;
+`--dry-run` makes the same reads and prints the writes it would send:
+
+```sh
+npx control-plane dispatch cgwalters-forge/review#278 --kind implement --brief "..." --dry-run
+npx control-plane cancel https://github.com/cgwalters-forge/tracker/actions/runs/123 --yes
+npx control-plane retry 123 --yes         # or redispatch: repeat the failed item's newest plan
+npx control-plane run-pass --dry-run
+npx control-plane file --epic 976 --title "..." --label infra --dry-run
+```
+
+`approve`, `merge`, `close`, `comment` and `fold` are still to come.
 
 ## Development and hosting
 
