@@ -97,13 +97,14 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
   const agents = /^\/repos\/([^/]+\/[^/]+)\/actions\/workflows\/(?:dispatch|agent)\.yml\/runs$/.exec(pathname);
   if (agents) {
     const run = (id: number, title: string, minutes: number) => {
-      const started = new Date(Date.now() - minutes * 60_000).toISOString();
+      const started = new Date(now - minutes * 60_000).toISOString();
       return { id, display_title: title, status: "in_progress", created_at: started, run_started_at: started, repository: { full_name: agents[1] } };
     };
     const runs = agents[1] === "cgwalters-forge/tracker"
-      ? [run(42, "implement cgwalters-forge/agent-board#733 (claude)", 7), run(43, "fix cgwalters-forge/agentic-job#3189 (openai)", 19)]
+      ? [run(42, "implement cgwalters-forge/agent-board#733 (claude)", 7), run(43, "fix cgwalters-forge/agentic-job#3189 (openai)", 19), run(39698121265, "implement cgwalters-forge/agentic-job#1623 (openai)", 14 * 24 * 60)]
       : [run(44, "research bootc-dev/cgwalters-devspace-sandbox#36 (claude, 64c)", 95)];
-    return { total_count: runs.length, workflow_runs: runs };
+    // Replay a short page whose count disagrees, plus GitHub's stuck record.
+    return { total_count: 4, workflow_runs: runs };
   }
   const pull = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(pathname);
   if (pull) return { html_url: `https://github.com/${pull[1]}/pull/${pull[2]}`, title: `Draft ${pull[2]}`, state: "open", draft: true, body: "", user: { login: "cgwalters-bot" }, head: { sha: (pull[2] === "2" ? "b" : "a").repeat(40) } };
