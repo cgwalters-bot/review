@@ -4,7 +4,8 @@
   "description": "Review queue for cgwalters-bot's Workstream board",
   "type": "module",
   "bin": {
-    "review-queue": "dist-cli/review-queue.js"
+    "review-queue": "dist-cli/review-queue.js",
+    "control-plane": "dist-cli/control-plane.js"
   },
   "engines": {
     "node": ">=22.18"

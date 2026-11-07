@@ -765,6 +765,20 @@ node src/cli/state.ts --json
 node src/cli/state.ts --json --fixture test/fixtures --now 2026-10-02T12:00:00Z
 ```
 
+`control-plane` gives the controller the app's own state, as JSON with links,
+read from the pass's published snapshot as Home and Status read it:
+
+```sh
+npx control-plane status                  # live agents, capacity, last passes and no-start reasons
+npx control-plane act-now                 # Home's Act now shortlist
+npx control-plane queue --filter infra    # review-queue's queue
+npx control-plane repo cgwalters-forge/review
+npx control-plane changes --since 2026-11-07T08:00:00Z
+```
+
+Its read commands send only GET requests; the act commands of
+[#273](https://github.com/cgwalters-forge/review/issues/273) are still to come.
+
 ## Development and hosting
 
 Node.js 22.18 or later is required for native TypeScript type stripping:
