@@ -36,6 +36,8 @@
 .active-pass-grid > div { min-width: 0; }
 .active-pass h2, .active-pass h3, .active-pass p { margin-block: 6px; }
 .active-pass ul { padding-inline-start: 20px; margin-block: 6px; }
+.agent-actions { margin-inline-start: 6px; }
+.agent-actions .note { margin-inline-start: 4px; }
 .capacity-pool meter { display: block; width: 100%; }
 .run-pass-control { margin-block-start: 12px; padding-block-start: 8px; border-block-start: 1px solid var(--line); }
 .run-pass-control button { min-height: 44px; margin: 4px 8px 4px 0; }

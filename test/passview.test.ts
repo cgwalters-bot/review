@@ -15,7 +15,8 @@ describe("pass publication replay", () => {
     const data = parsePassView(raw);
     assert.equal(typeof data, "object");
     const el = activePassView(data, now);
-    assert.match(el.textContent!, /running 20m at observation/);
+    assert.match(el.textContent!, /running 20m · /);
+    assert.equal(el.querySelector(".age[data-since='2026-11-05T11:40:00Z']")?.textContent, "20m");
     assert.ok(el.querySelector("a[href$='/actions/runs/41']"));
     assert.match(passView(data, now).textContent!, /ready unknown/);
     raw.in_flight = [];
@@ -28,7 +29,7 @@ describe("pass publication replay", () => {
   it("summarizes running agents, pool bars and the latest pass from the populated fixture", () => {
     const data = parseHolds(publication(snapshot()))?.passView;
     const el = activePassView(data, now);
-    for (const s of ["Active agents", "implement · claude", "running 5m at observation", "10% used / 60% allowed", "14:00:00Z", "under pace", "Last pass", "just now", "Started 0"]) assert.ok(el.textContent?.includes(s), s);
+    for (const s of ["Live agents", "implement · claude", "running 5m · ", "10% used / 60% allowed", "14:00:00Z", "under pace", "Last pass", "just now", "Started 0"]) assert.ok(el.textContent?.includes(s), s);
     assert.equal(el.querySelectorAll("meter").length, 2);
     assert.equal(el.querySelector("meter")?.getAttribute("value"), "10");
     assert.equal(el.querySelector("meter")?.getAttribute("low"), "60");
@@ -49,7 +50,7 @@ describe("pass publication replay", () => {
     data.passes.shift();
     data.passes[0]!.reasons = reasons;
     const started = activePassView(data, now);
-    assert.match(started.textContent!, /5m ago · success · Started 1/);
+    assert.match(started.textContent!, /5m ago · success · Started 2/);
     assert.ok(started.querySelector(".active-pass-grid > div:last-child a[href$='/actions/runs/42']"));
     assert.match(started.textContent!, /Needs operator · 3/);
   });
@@ -62,6 +63,8 @@ describe("pass publication replay", () => {
     assert.match(stale.textContent!, /not current/);
     assert.match(stale.textContent!, /stale \(over an hour\)/);
     assert.match(stale.textContent!, /running 5m at observation/);
+    assert.equal(stale.querySelector(".age[data-since]"), null);
+    assert.match(activePassView(data, now + 3_660_000).textContent!, /running 5m at observation/);
     assert.match(activePassView(data, now - 120_000).textContent!, /clock is in the future/);
     const flight = data.in_flight[0]!;
     assert.equal(flight.state, "running");
