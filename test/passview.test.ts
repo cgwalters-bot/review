@@ -35,21 +35,23 @@ describe("pass publication replay", () => {
     assert.equal(el.querySelector("a[href$='/issues/11']")?.textContent, "example/work#11");
     assert.ok(el.querySelector("a[href='https://github.com/example/runner/actions/runs/42']"));
     assert.doesNotMatch(el.textContent!, /merge-queue|waiting-review|HTTP 503/);
-    assert.equal(el.querySelectorAll(".active-pass-grid > div:last-child li").length, 3);
+    assert.equal(el.querySelectorAll(".active-pass-grid > div:last-child li").length, 4);
   });
 
-  it("counts matching hold reasons and shows only the top three when nothing started", () => {
+  it("groups all no-start reasons, including when the pass also started work", () => {
     const data = snapshot().pass_view;
     const reasons = data.passes[0]!.reasons;
     reasons.push({ ...reasons[3]!, item: "example/work#16" }, { ...reasons[3]!, item: "example/work#17" });
     const el = activePassView(data, now);
     const rows = el.querySelectorAll(".active-pass-grid > div:last-child li");
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 4);
     assert.equal(rows[0]!.textContent, "held: Needs operator · 3");
     data.passes.shift();
+    data.passes[0]!.reasons = reasons;
     const started = activePassView(data, now);
     assert.match(started.textContent!, /5m ago · success · Started 1/);
     assert.ok(started.querySelector(".active-pass-grid > div:last-child a[href$='/actions/runs/42']"));
+    assert.match(started.textContent!, /Needs operator · 3/);
   });
 
   it("labels missing, stale, unavailable, partial and unknown home publications explicitly", () => {

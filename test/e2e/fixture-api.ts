@@ -64,8 +64,13 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
   if (/\/issues\/\d+\/comments$/.test(pathname)) {
     const at = new Date(now - 60_000).toISOString();
     const pass_view = fixture("pass-view.json").pass_view;
+    // Synthetic capacity replay in the current observation/reset window.
     pass_view.observed_at = at;
-    pass_view.in_flight[0].started_at = new Date(now - 6 * 60_000).toISOString();
+    pass_view.complete = true;
+    pass_view.omitted = 0;
+    for (const [i, pass] of pass_view.passes.entries()) pass.at = new Date(now - (i * 5 + 1) * 60_000).toISOString();
+    for (const flight of pass_view.in_flight) if (flight.state === "running") flight.started_at = new Date(now - 6 * 60_000).toISOString();
+    for (const pool of pass_view.pools) if (pool.resets_at) pool.resets_at = new Date(now + 3_600_000).toISOString();
     if (data === "259") {
       const snapshot = fixture("needs-you-259.json");
       snapshot.at = snapshot.needs_you.validated_at = snapshot.needs_you.changed_at = at;
@@ -77,6 +82,7 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
     const holds = JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: publishedTestHolds(list), needs_you: list, pass_view, dispatchable_work });
     return [{ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${holds}\n\`\`\`\n` }];
   }
+  if (pathname === "/repos/cgwalters-forge/tracker/actions/workflows/poll.yml/runs") return { total_count: 0, workflow_runs: [] };
   const pull = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(pathname);
   if (pull) return { html_url: `https://github.com/${pull[1]}/pull/${pull[2]}`, title: `Draft ${pull[2]}`, state: "open", draft: true, body: "", user: { login: "cgwalters-bot" }, head: { sha: (pull[2] === "2" ? "b" : "a").repeat(40) } };
   if (pathname.endsWith("/check-runs")) return { total_count: 1, check_runs: [{ name: "ci", status: "completed", conclusion: "success" }] };

@@ -63,6 +63,18 @@ test("Needs you and Status render without errors", async ({ page }) => {
   await page.locator(".signin button[type=submit]").click();
   await expect(page.locator(".published")).toBeVisible();
   await expect(page.locator(".published")).not.toHaveText(/^Reading/);
+  if (!LIVE_TOKEN) {
+    const run = page.getByRole("button", { name: "Run a pass now", exact: true });
+    await expect(run).toBeDisabled();
+    await page.getByRole("button", { name: "Check pass availability", exact: true }).click();
+    await expect(run).toBeEnabled();
+    await expect(page.locator(".run-pass-control [role=status]")).toContainText("No active pass found");
+    // Keyboard cancellation must leave the write untouched (serve refuses writes).
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await run.focus();
+    await page.keyboard.press("Enter");
+    await expect(run).toBeEnabled();
+  }
   await screenshot(page, "inbox");
 
   await page.goto("#status");
