@@ -1,0 +1,140 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { GitHub } from "../src/github/api.ts";
+import { cancelLiveRun, LIVE_SOURCES, type LiveRun, liveAgentsView, loadLiveRuns, parseRunName } from "../src/github/liveruns.ts";
+import type { PassView } from "../src/github/passview.ts";
+import { fixture, installDom, scriptedFetch } from "./helpers.ts";
+
+installDom();
+
+const API = "https://api.github.com";
+const token = async () => "t";
+const now = Date.parse("2026-11-07T17:00:00Z");
+const [TRACKER, DEVSPACE] = LIVE_SOURCES as [typeof LIVE_SOURCES[0], typeof LIVE_SOURCES[0]];
+const raw = (repository: string, id: number, title: string, status = "in_progress", started = "2026-11-07T16:48:00Z") =>
+  ({ id, display_title: title, status, created_at: started, run_started_at: started, path: `.github/workflows/${repository === TRACKER.repository ? TRACKER.workflow : DEVSPACE.workflow}`, repository: { full_name: repository } });
+
+describe("parseRunName", () => {
+  const cases: [string, ReturnType<typeof parseRunName>][] = [
+    ["implement cgwalters-forge/agent-board#733 (claude)", { kind: "implement", item: "cgwalters-forge/agent-board#733", pool: "claude" }],
+    ["implement bootc-dev/cgwalters-devspace-sandbox#42 (openai, 4c)", { kind: "implement", item: "bootc-dev/cgwalters-devspace-sandbox#42", pool: "openai" }],
+    ["review cgwalters-forge/review#280 0123456789abcdef0123456789abcdef01234567 (claude)", { kind: "review", item: "cgwalters-forge/review#280", pool: "claude" }],
+    ["fix o/r#3 (openai) [acp-experiment]", { kind: "fix", item: "o/r#3", pool: "openai" }],
+    ["triage o/r#9", { kind: "triage", item: "o/r#9", pool: null }],
+    ["supervisor", undefined],
+    ["implement o/..#1 (claude)", undefined],
+    ["implement o/r#0 (claude)", undefined],
+    ["implement o/r#1 (Claude)", undefined],
+  ];
+  for (const [title, want] of cases) it(title, () => assert.deepEqual(parseRunName(title), want));
+});
+
+function world(lists: Record<string, unknown[] | number>) {
+  return scriptedFetch((method, url, headers) => {
+    const m = /^.*\/repos\/(.+)\/actions\/workflows\/[^/]+\/runs\?status=(\w+)&per_page=100$/.exec(url);
+    if (method !== "GET" || !m) return undefined;
+    const list = lists[`${m[1]} ${m[2]}`] ?? [];
+    if (typeof list === "number") return { status: list, body: { message: "nope" } };
+    const etag = `"${m[1]}-${m[2]}-${list.length}"`;
+    return headers["If-None-Match"] === etag ? { status: 304, headers: { etag } } : { body: { total_count: list.length, workflow_runs: list }, headers: { etag } };
+  });
+}
+
+describe("loadLiveRuns", () => {
+  it("lists every source's unfinished runs, conditionally, oldest first, a run caught twice once", async () => {
+    const moving = raw(TRACKER.repository, 3, "fix o/r#3 (openai)", "queued", "2026-11-07T16:50:00Z");
+    const { fetchImpl, calls } = world({
+      [`${TRACKER.repository} in_progress`]: [raw(TRACKER.repository, 2, "implement o/r#2 (claude)"), { ...moving, status: "in_progress" }],
+      [`${TRACKER.repository} queued`]: [moving],
+      [`${DEVSPACE.repository} in_progress`]: [raw(DEVSPACE.repository, 9, "research a/b#9 (claude, 64c)", "in_progress", "2026-11-07T15:00:00Z")],
+      [`${DEVSPACE.repository} pending`]: [raw("someone/else", 10, "implement x/y#1 (claude)")],
+    });
+    const gh = new GitHub(token, fetchImpl);
+    const data = await loadLiveRuns(gh, LIVE_SOURCES, now);
+    assert.deepEqual(data.errors, []);
+    assert.deepEqual(data.runs.map((r) => [r.run.id, r.item, r.kind, r.pool, r.status]), [
+      [9, "a/b#9", "research", "claude", "in_progress"],
+      [2, "o/r#2", "implement", "claude", "in_progress"],
+      [3, "o/r#3", "fix", "openai", "in_progress"],
+    ], "another repository's run is not one of the source's");
+    assert.equal(calls.length, LIVE_SOURCES.length * 3);
+    await loadLiveRuns(gh, LIVE_SOURCES, now);
+    assert.ok(calls.slice(LIVE_SOURCES.length * 3).every((c) => c.headers["If-None-Match"]), "every reread is conditional");
+  });
+
+  it("says which source it could not read, and that a long list is cut", async () => {
+    const many = Array.from({ length: 3 }, (_, i) => raw(TRACKER.repository, i + 1, `implement o/r#${i + 1}`));
+    const { fetchImpl } = scriptedFetch((_, url) => url.includes(DEVSPACE.repository) ? { status: 404, body: { message: "Not Found" } }
+      : url.includes("in_progress") ? { body: { total_count: 150, workflow_runs: many } } : { body: { total_count: 0, workflow_runs: [] } });
+    const data = await loadLiveRuns(new GitHub(token, fetchImpl), LIVE_SOURCES, now);
+    assert.equal(data.runs.length, 3);
+    assert.ok(data.errors.some((e) => /dispatch\.yml: over 100 in_progress runs/.test(e)), data.errors.join("\n"));
+    assert.ok(data.errors.some((e) => /agent\.yml \(in_progress\): workflow missing/.test(e)), data.errors.join("\n"));
+    const el = liveAgentsView(data, undefined, now);
+    assert.match(el.textContent!, /Incomplete: /);
+  });
+});
+
+describe("liveAgentsView", () => {
+  const run = (id: number, over: Partial<LiveRun> = {}): LiveRun => ({ item: `o/r#${id}`, kind: "implement", pool: null, title: `implement o/r#${id}`, status: "in_progress", startedAt: "2026-11-07T16:48:00Z", run: { repository: TRACKER.repository, id }, source: TRACKER, listed: false, ...over });
+
+  it("lists runs without a pass view: item link, kind, pool, elapsed, run link and Cancel", () => {
+    const el = liveAgentsView({ at: now, runs: [run(1, { pool: "claude" }), run(2, { status: "queued" }), run(3, { item: null, kind: null, title: "odd title" })], errors: [] }, undefined, now, () => Object.assign(document.createElement("button"), { textContent: "Cancel" }));
+    assert.match(el.querySelector("h3")!.textContent!, /Live agents 3/);
+    assert.match(el.textContent!, /2 running, 1 queued or waiting/);
+    const first = el.querySelector(".live-run")!;
+    assert.equal(first.querySelector("a.live-item")!.getAttribute("href"), "https://github.com/o/r/issues/1");
+    assert.match(first.textContent!, /implement.*claude.*running 12m.*run 1.*Cancel/);
+    assert.equal(first.querySelector("a[href$='/actions/runs/1']")!.getAttribute("href"), `https://github.com/${TRACKER.repository}/actions/runs/1`);
+    assert.match(el.textContent!, /queued 12m/);
+    assert.match(el.textContent!, /pool \?/);
+    assert.match(el.textContent!, /odd title/);
+  });
+
+  it("fills a missing pool from the pass view, and says when nothing runs", () => {
+    const view = fixture<{ pass_view: PassView }>("pass-view.json").pass_view;
+    const flight = view.in_flight.find((f) => f.state === "running")!;
+    assert.ok(flight.state === "running");
+    const el = liveAgentsView({ at: now, runs: [run(flight.run.id, { run: flight.run })], errors: [] }, view, now);
+    assert.match(el.querySelector(".live-run")!.textContent!, new RegExp(flight.pool));
+    assert.match(liveAgentsView({ at: now, runs: [], errors: [] }, undefined, now).textContent!, /No agent runs in flight/);
+    assert.match(liveAgentsView(undefined, undefined, now).textContent!, /Reading/);
+  });
+});
+
+describe("cancelLiveRun", () => {
+  const target: LiveRun = { item: "o/r#2", kind: "implement", pool: "claude", title: "", status: "in_progress", startedAt: "", run: { repository: TRACKER.repository, id: 2 }, source: TRACKER, listed: false };
+  const gitHub = (login: string, got: Record<string, unknown>) => scriptedFetch((method, url) =>
+    url === `${API}/user` ? { body: { login }, headers: { "x-oauth-scopes": "repo" } }
+      : method === "GET" ? { body: got }
+        : method === "POST" && url.endsWith("/cancel") ? { status: 202, body: {} } : undefined);
+
+  it("reads the viewer and the run fresh, then cancels it", async () => {
+    const { fetchImpl, calls } = gitHub("cgwalters", raw(TRACKER.repository, 2, "implement o/r#2 (claude)"));
+    assert.equal(await cancelLiveRun(new GitHub(token, fetchImpl), target), `https://github.com/${TRACKER.repository}/actions/runs/2`);
+    assert.deepEqual(calls.map((c) => `${c.method} ${c.url.replace(API, "")}`), ["GET /user", `GET /repos/${TRACKER.repository}/actions/runs/2`, `POST /repos/${TRACKER.repository}/actions/runs/2/cancel`]);
+  });
+
+  for (const [name, answer] of [["a 5xx", { status: 502, body: { message: "Bad Gateway" } }], ["a lost answer", "throw"]] as const) it(`calls a cancel answered by ${name} uncertain`, async () => {
+    const { fetchImpl } = scriptedFetch((method, url) => {
+      if (url === `${API}/user`) return { body: { login: "cgwalters" }, headers: { "x-oauth-scopes": "repo" } };
+      if (method === "GET") return { body: raw(TRACKER.repository, 2, "") };
+      if (answer === "throw") throw new TypeError("network error");
+      return answer;
+    });
+    await assert.rejects(cancelLiveRun(new GitHub(token, fetchImpl), target), (e: Error) => e.name === "MaybeSentError" && /may or may not have gone out/.test(e.message));
+  });
+
+  const refusals: [string, string, Record<string, unknown>, LiveRun, RegExp][] = [
+    ["another viewer", "visitor", raw(TRACKER.repository, 2, ""), target, /only cgwalters acts/],
+    ["a finished run", "cgwalters", raw(TRACKER.repository, 2, "", "completed"), target, /already finished/],
+    ["another workflow's run", "cgwalters", { ...raw(TRACKER.repository, 2, ""), path: ".github/workflows/poll.yml" }, target, /poll\.yml, not dispatch\.yml/],
+    ["another run", "cgwalters", raw(TRACKER.repository, 3, ""), target, /different run/],
+    ["a source not configured", "cgwalters", raw("o/r", 2, ""), { ...target, source: { repository: "o/r", workflow: "x.yml" }, run: { repository: "o/r", id: 2 } }, /not a run of an agent workflow/],
+  ];
+  for (const [name, login, got, r, why] of refusals) it(`refuses ${name}`, async () => {
+    const { fetchImpl, calls } = gitHub(login, got);
+    await assert.rejects(cancelLiveRun(new GitHub(token, fetchImpl), r), why);
+    assert.ok(!calls.some((c) => c.method === "POST"));
+  });
+});

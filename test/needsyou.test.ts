@@ -42,6 +42,9 @@ it("Today shares the inbox read, ages on 304, labels failures and recovers witho
     await app.wake(1441 * MINUTE);
     assert.match(panel().textContent!, /observed 2026-10-30T12:00:00.000Z · stale \(over a day old\)/);
     assert.equal(app.reads.all.length, 3, "one conditional publication read on poll");
+    const live = app.reads.live.length;
+    assert.ok(live >= 12 && live % 6 === 0, `Live agents read each source's in_progress, queued and pending runs (${live})`);
+    assert.ok(app.reads.live.slice(6).every((r) => r.etag === '"live"'), "and reread them conditionally");
     holds.status = 503;
     await app.reload();
     assert.match(panel().textContent!, /publication unavailable/);
@@ -138,15 +141,21 @@ async function boot(t: TestContext, holds: Holds) {
   const { window } = dom;
   window.scrollTo = () => {};
   window.confirm = () => true;
-  const reads = { all: [] as { method: string; path: string; at: number }[], holds: [] as (string | null)[], writes: [] as string[], reviews: [] as number[] };
+  // Live agents' run lists (liveruns.ts) are their own source, kept apart from the inbox's reads.
+  const reads = { all: [] as { method: string; path: string; at: number }[], holds: [] as (string | null)[], writes: [] as string[], reviews: [] as number[], live: [] as { path: string; etag: string | null }[] };
   Object.assign(globalThis, {
     window, document: window.document, Node: window.Node, HTMLElement: window.HTMLElement,
     ResizeObserver: class { observe() {} disconnect() {} },
     fetch: async (input: string, init?: RequestInit) => {
       const url = new URL(input);
       const method = init?.method ?? "GET";
-      reads.all.push({ method, path: url.pathname, at: performance.now() });
       const json = (body: unknown, status = 200, headers: Record<string, string> = {}) => new Response(status === 304 ? null : JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
+      if (method === "GET" && /\/actions\/workflows\/[^/]+\/runs$/.test(url.pathname)) {
+        const sent = new Headers(init?.headers).get("If-None-Match");
+        reads.live.push({ path: url.pathname + url.search, etag: sent });
+        return sent === '"live"' ? json(null, 304, { ETag: '"live"' }) : json({ total_count: 0, workflow_runs: [] }, 200, { ETag: '"live"' });
+      }
+      reads.all.push({ method, path: url.pathname, at: performance.now() });
       if (method !== "GET" && url.pathname !== "/graphql") reads.writes.push(`${method} ${url.pathname}`);
       if (url.pathname === HOLDS) {
         const sent = new Headers(init?.headers).get("If-None-Match");

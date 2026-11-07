@@ -107,6 +107,13 @@ test("Needs you and Status render without errors", async ({ page }) => {
     await run.focus();
     await page.keyboard.press("Enter");
     await expect(run).toBeEnabled();
+    // Live agents from the Actions API: one row per run, each with Cancel, within the page's width.
+    const live = page.locator(".live-run");
+    await expect(live).toHaveCount(3);
+    await expect(live.first()).toContainText("bootc-dev/cgwalters-devspace-sandbox#36");
+    await expect(live.getByRole("button", { name: "Cancel" })).toHaveCount(3);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.locator(".live-agents").screenshot({ path: `${SCREENSHOT_DIR}/agents-${test.info().project.name}.png` });
   }
   await screenshot(page, "inbox");
   if (!LIVE_TOKEN && DATA !== "259") {

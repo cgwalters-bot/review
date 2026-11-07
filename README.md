@@ -43,18 +43,27 @@ ownership prose is interpreted as evidence, and this adds no discovery reads.
 `test/fixtures/needs-you-259.json` is a derived replay of the reported
 agent-board#727/#728 states, not a capture of the private publication.
 
-Above the cards, **Agents and capacity** summarizes the same optional
-`pass_view` publication as Status: **Live agents** (running jobs with
-repo#item, kind, pool, item/run links and a runtime that ticks while the
-observation is under an hour old, else frozen at the observation), pool usage
+Above the cards, **Agents and capacity** opens with **Live agents**, read
+straight from the GitHub Actions API rather than the publication, so it shows
+what is running even when the pass view is missing or stale: every
+`in_progress`, `queued` or `pending` run of each agent workflow in
+`LIVE_SOURCES` (`src/github/liveruns.ts`: tracker's `dispatch.yml` and the
+devspace's `agent.yml`), one conditional request per workflow and status
+each minute while Needs you shows. Each row has the repo#item (a link), kind
+and pool parsed from the run-name (`KIND OWNER/REPO#N[ HEAD] (POOL[, …])`; a
+name that doesn't parse shows as is), the elapsed time, a link to the run and,
+for the operator, **Cancel**, which reads the run fresh and refuses one that
+finished or isn't of that workflow. Where the pass view lists a run, it fills
+in a pool the name lacks. Then the panel summarizes the optional `pass_view`
+publication, as Status does: pool usage
 bars against published allowed percentages and reset clocks, and the latest
 pass's starts. When it started nothing, the panel groups identical reason
 kind/text pairs, showing the three largest counts (ties retain publication
 order). Missing, stale, future-clock, partial and unavailable publications are
-labelled, not treated as idle health. The panel wraps into one column on phones
-and adds no polls or browser setting.
+labelled, not treated as idle health. The panel wraps into one column on phones;
+besides Live agents' run lists it adds no polls or browser setting.
 
-Signed in as the operator, each live agent has **Cancel**, and each of the
+Signed in as the operator, each of the
 five newest published starts no longer listed running has **Retry** (rerun the
 run's failed jobs) and **Redispatch** (reply on its item repeating the newest
 [job plan](https://github.com/cgwalters-forge/agent-board/blob/main/docs/job-plans.md)
