@@ -15,6 +15,17 @@ const snapshot = (holds: unknown[] = [wip, human], over: Record<string, unknown>
 const comment = (json: unknown, login = "cgwalters-bot"): RawComment => ({ user: { login }, body: body(json) });
 
 describe("parseHolds", () => {
+  for (const truncated of [0, 1]) it(`reconciles hold identities and details, respecting truncated=${truncated}`, () => {
+    const raw = fixture<Record<string, unknown>>("needs-you-259.json");
+    raw.truncated = truncated;
+    const list = parseHolds(body(raw))!.needsYou;
+    assert.ok(list && typeof list === "object");
+    const expected = truncated ? ["cgwalters-forge/agent-board#728"] : [];
+    assert.deepEqual(list.items.map((a) => a.key), expected);
+    assert.deepEqual(list.identities!.map((i) => i.key), expected);
+    assert.equal(list.excludedHolds, truncated ? 1 : 2);
+  });
+
   it("reads a snapshot as the pass publishes it", () => assert.deepEqual(parseHolds(body(snapshot())), { at: AT, holds: [wip, human] }));
   // name, the snapshot: each is no holds at all, not the entries that parse.
   const refused: [string, unknown][] = [

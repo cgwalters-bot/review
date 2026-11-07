@@ -10,8 +10,9 @@
 
 import { readFileSync } from "node:fs";
 import { needsYou174 } from "../fixtures/needs-you-174.ts";
+import { publishedTestHolds } from "../helpers.ts";
 
-export const FIXTURE_DATA = ["real", "661", "group", "approval", "174", "174-capped", "174-grouped"] as const;
+export const FIXTURE_DATA = ["real", "661", "group", "approval", "174", "174-capped", "174-grouped", "259"] as const;
 
 export type FixtureData = (typeof FIXTURE_DATA)[number];
 
@@ -63,7 +64,14 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
   if (/\/issues\/\d+\/comments$/.test(pathname)) {
     const at = new Date(now - 60_000).toISOString();
     const pass_view = fixture("pass-view.json").pass_view;
-    const holds = JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: [], needs_you: needsYou(data, at), pass_view });
+    if (data === "259") {
+      const snapshot = fixture("needs-you-259.json");
+      snapshot.at = snapshot.needs_you.validated_at = snapshot.needs_you.changed_at = at;
+      snapshot.pass_view = pass_view;
+      return [{ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\`\`\`json\n${JSON.stringify(snapshot)}\n\`\`\`` }];
+    }
+    const list = needsYou(data, at);
+    const holds = JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: publishedTestHolds(list), needs_you: list, pass_view });
     return [{ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${holds}\n\`\`\`\n` }];
   }
   const pull = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(pathname);
