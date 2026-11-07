@@ -26,6 +26,46 @@ interface Holds { status: number; comments: unknown[]; etag: string; gate?: Prom
 
 let runs = 0;
 
+it("Today shares the inbox read, ages on 304, labels failures and recovers without cost", async (t) => {
+  const today = { ...fixture<Record<string, unknown>>("today.json"), day: "2026-10-30", observed_at: iso(T0), cost: undefined,
+    changes: { landed: 3, closed: 1, opened: 2, extra: { toString: null }, ...Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`extra-${i}`, "not a metric"])) } };
+  const raw = { schema: "agent-board/holds/v1", at: iso(T0), holds: [], today: today as unknown };
+  const comment = () => ({ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${JSON.stringify(raw)}\n\`\`\`` });
+  const holds: Holds = { status: 200, etag: '"today-1"', comments: [comment()] };
+  const app = await boot(t, holds);
+  try {
+    const panel = () => app.doc.querySelector("[aria-label='Today']")!;
+    assert.equal(panel().querySelectorAll("dd").length, 3);
+    assert.equal(panel().querySelector(".today-cost"), null);
+    assert.equal(app.reads.holds.length, 1);
+    assert.equal(app.reads.all.length, 2, "only viewer and publication on cold load");
+    await app.wake(1441 * MINUTE);
+    assert.match(panel().textContent!, /observed 2026-10-30T12:00:00.000Z · stale \(over a day old\)/);
+    assert.equal(app.reads.all.length, 3, "one conditional publication read on poll");
+    holds.status = 503;
+    await app.reload();
+    assert.match(panel().textContent!, /publication unavailable/);
+    holds.status = 200;
+    holds.etag = '"today-2"';
+    raw.today = { invalid: true };
+    holds.comments = [comment()];
+    await app.reload();
+    assert.match(panel().textContent!, /Today unavailable: malformed/);
+    raw.today = undefined;
+    holds.etag = '"today-3"';
+    holds.comments = [comment()];
+    await app.reload();
+    assert.match(panel().textContent!, /Today not published/);
+    raw.today = { ...today, day: "2026-10-31", observed_at: "2026-10-31T12:00:00Z" };
+    holds.etag = '"today-4"';
+    holds.comments = [comment()];
+    await app.reload();
+    assert.equal(panel().querySelectorAll("dd").length, 3);
+    assert.doesNotMatch(panel().textContent!, /stale|unavailable|not published/);
+    assert.equal(app.reads.writes.length, 0);
+  } finally { await app.close(); }
+});
+
 it("repository work shares the inbox poll, preserves source clocks on 304 and labels retained data on failure", async (t) => {
   const raw = fixture<Record<string, unknown>>("pass-view.json");
   raw.at = iso(T0);

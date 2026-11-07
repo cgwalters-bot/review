@@ -21,11 +21,11 @@ describe("header people count", () => {
 });
 
 describe("From people UI", () => {
-  it("sits after Needs you, closed by default, and previews five rows with View all and safe text", () => {
+  it("sits after Today, closed by default, and previews five rows with View all and safe text", () => {
     const home = homeSkeleton({ toggled: () => {} });
     const people: People = { rows: Array.from({ length: 7 }, (_, i) => row(i + 1)), warnings: [] };
     fillPeople(home, people, Date.now(), { done: async () => {}, changed: () => {} });
-    assert.equal(home.sections.needs.details.nextElementSibling?.id, "sec-people");
+    assert.equal(home.slots.today.nextElementSibling?.id, "sec-people");
     assert.equal(home.el.querySelector<HTMLDetailsElement>("#sec-people")?.open, false);
     assert.equal(home.slots.peopleCount.textContent, "7");
     assert.equal(home.slots.people.querySelectorAll(".people-row:not([hidden])").length, 5);

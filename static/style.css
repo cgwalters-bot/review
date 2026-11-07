@@ -42,6 +42,14 @@
 .run-pass-control { margin-block-start: 12px; padding-block-start: 8px; border-block-start: 1px solid var(--line); }
 .run-pass-control button { min-height: 44px; margin: 4px 8px 4px 0; }
 .run-pass-control button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.today { padding: 16px; border-block-end: 1px solid var(--line); overflow-wrap: anywhere; }
+.today h2, .today h3, .today p { margin-block: 6px; }
+.today-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; margin-block: 16px; }
+.today-grid > div { min-width: 0; }
+.today-counts { display: flex; flex-wrap: wrap; gap: 24px; margin-block: 12px; }
+.today-counts dt { color: var(--muted); text-transform: capitalize; font-size: var(--type-secondary); }
+.today-counts dd { margin: 0; font-size: var(--type-metric); font-weight: 600; font-variant-numeric: tabular-nums; }
+.today-cost { border-block-start: 1px solid var(--line); padding-block-start: 12px; }
 :root {
   color-scheme: light;
   --ground: #f3f5f8; --surface: #fff; --surface-2: #eef1f5; --ink: #172130; --muted: #5a6677; --line: #d8dee6;
