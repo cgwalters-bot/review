@@ -437,6 +437,33 @@ repository/item/run components; prose is text, never dispatch authority.
 `test/fixtures/dispatchable-work.json` replays the producer's documented v1
 shape, including overlapping held/accepted plans and truncated detail.
 
+Home's **Capacity** summary uses the existing `pass_view` pools and last
+pass, including grouped no-start reasons even when some work started.
+**Run a pass now** is manual and disabled until the operator requests a live
+availability check. It requires fresh, complete, confirmed publication and
+an under-pace pool whose reset has not passed. To prevent duplicate applying
+passes, it reads the count of `poll.yml` runs in each active status, one
+after another in lifecycle order (`requested`, `pending`, `waiting`,
+`queued`, `in_progress`, then `waiting` and `queued` again); any count
+prevents dispatch.
+The order means a run changing status between two reads is still counted,
+so a queued run starting mid-check is not missed, and the cost does not
+grow with completed history. Status filters come from a search index that
+can lag, and a rerun keeps its old place in the run list, so the unfiltered
+list is read last, newest first, back through GitHub's 30-day rerun window;
+any run in it not completed also prevents dispatch, and more than 6,000 runs
+in that window refuses rather than reading further. The reads happen only on
+demand, not on the snapshot poll.
+The check expires after a minute. Confirmation
+rechecks activity, viewer identity and repository write access, then sends
+one `workflow_dispatch` on tracker's default branch with `apply: true`, using
+the viewer's Actions read/write permission. A returned run ID links directly
+to the run; a 204 links to workflow history without attributing someone else's
+run. Receipts survive snapshot refreshes; errors never retry the write.
+The workflow's concurrency guard remains necessary for a run arriving between
+the last check and dispatch. A run waiting in the workflow's `next` job also
+prevents dispatch; the browser does not attempt to bypass that chain.
+
 The optional maintainer observations read bot-authored
 `agent-board/maintainer-report/v1` fenced blocks from the same configured
 report-comment page as Poller passes. Publication is off when the producer's

@@ -95,9 +95,12 @@ function publicationNote(el: HTMLElement, data: PassView | string | undefined, n
 }
 
 /** Compact home summary of the same bounded publication used by Status. */
-export function activePassView(data: PassView | string | undefined, now = Date.now(), unavailable?: string): HTMLElement {
+export function activePassView(data: PassView | string | undefined, now = Date.now(), unavailable?: string, control?: HTMLElement): HTMLElement {
   const el = h("section", { class: "active-pass", "aria-label": "Agents and capacity" }, h("h2", {}, "Agents and capacity"));
-  if (!publicationNote(el, data, now, unavailable)) return el;
+  if (!publicationNote(el, data, now, unavailable)) {
+    if (control) el.append(control);
+    return el;
+  }
   const agents = h("div", {}, h("h3", {}, "Active agents"));
   const running = data.in_flight.filter((f) => f.state === "running");
   const rows = running.map((f) => {
@@ -112,19 +115,21 @@ export function activePassView(data: PassView | string | undefined, now = Date.n
     capacity.append(h("div", { class: "capacity-pool" }, h("p", { class: p.under_pace === true ? "warn" : "" }, `${label} · reset ${p.resets_at ?? "unknown"}${p.under_pace === true ? " · under pace (publisher assessment)" : ""}`),
       p.used_percent === null ? h("p", { class: "note" }, "Usage unknown") : h("meter", { min: "0", max: "100", value: String(p.used_percent), low: String(p.allowed_percent ?? 100), high: String(p.allowed_percent ?? 100), optimum: "0", "aria-label": label }, label)));
   }
+  if (control) capacity.append(control);
   const last = h("div", {}, h("h3", {}, "Last pass"));
   const p = data.passes[0];
   if (!p) last.append(h("p", {}, "Last pass not published."));
   else {
     last.append(h("p", {}, h("time", { datetime: p.at, title: p.at }, ago(p.at, now)), ` · ${p.result} · Started ${p.started.length}${p.omitted ? " shown" : ""}`));
     if (p.started.length) last.append(h("ul", {}, ...p.started.map(startLine)));
-    else {
+    {
       const counts = new Map<string, number>();
       for (const r of p.reasons) {
         const key = `${r.kind}: ${redactAddresses(r.reason)}`;
         counts.set(key, (counts.get(key) ?? 0) + 1);
       }
-      last.append(counts.size ? h("ul", {}, ...[...counts].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([reason, n]) => h("li", {}, `${reason} · ${n}`))) : h("p", { class: "warn" }, "Started nothing; reason not published."));
+      if (counts.size) last.append(h("p", { class: "note" }, "No-start reasons"), h("ul", {}, ...[...counts].sort((a, b) => b[1] - a[1]).map(([reason, n]) => h("li", {}, `${reason} · ${n}`))));
+      else if (!p.started.length) last.append(h("p", { class: "warn" }, "Started nothing; reason not published."));
     }
     if (p.omitted) last.append(h("p", { class: "warn" }, `${p.omitted} pass records omitted; starts and reasons may be incomplete.`));
   }

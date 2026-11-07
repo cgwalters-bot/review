@@ -78,6 +78,7 @@ import { type Ask, holdAsks, loadPassPublications, readHoldAsk } from "./holds.t
 import { repositoriesView, type ReportBlock } from "./repositories.ts";
 import type { BoardPublication } from "./repositoryboard.ts";
 import { activePassView, type PassView, retainPassView } from "./passview.ts";
+import { runPassControl, type PassControl } from "./runpass.ts";
 import { type PassesRead, readPasses, schedulerPassView } from "./passesview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
@@ -186,6 +187,7 @@ interface State {
   activeRunning: boolean;
   /** The last pass view read, kept while a refresh of the publication fails. */
   passView?: PassView | undefined;
+  passControl?: PassControl;
   passes: PassesRead;
   repositories?: ReportBlock[];
   repositoryWork?: Pick<BoardPublication, "work" | "at">;
@@ -832,7 +834,8 @@ function paintActive(state: State): void {
   const passUnavailable = state.active?.passPublicationError ?? unavailable;
   const pass = retainPassView(state.passView, state.active?.passPublicationError ? undefined : state.active?.holds?.passView, !!passUnavailable);
   state.passView = typeof pass === "object" ? pass : undefined;
-  state.home.slots.active.replaceChildren(activePassView(pass, Date.now(), passUnavailable));
+  const facts = () => ({ data: state.passView, unavailable: state.closed ? "Signed out" : state.active?.passPublicationError ?? (state.active?.sources?.holds?.state !== "ok" ? "Publication unconfirmed" : undefined), login: state.login });
+  state.home.slots.active.replaceChildren(activePassView(pass, Date.now(), passUnavailable, runPassControl(state.gh, facts, state.passControl ??= {})));
   state.home.slots.passes.replaceChildren(schedulerPassView(state.passes, pass, Date.now(), passUnavailable));
   if (state.active?.repositories) state.repositories = state.active.repositories;
   const work = state.active?.passPublicationError ? undefined : state.active?.holds;
