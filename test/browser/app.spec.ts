@@ -12,10 +12,15 @@
 // is a dry run against live data read with that token instead: reads go
 // to api.github.com, and any write, which an approval or answer would be,
 // is aborted and fails the test. Its screenshots (live-*.png) show what
-// the token reads, so they stay off public PRs.
+// the token reads, so they stay off public PRs. Either way it also writes
+// [live-]report-<project>.md, the page's status phrases and problem counts
+// (test/e2e/live-report.ts), which .github/workflows/live.yml posts for agents.
 
 import { expect, type Page, test } from "@playwright/test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { relative } from "node:path";
 import { FIXTURE_DATA, type FixtureData, FIXTURE_TOKEN, fixtureResponse, isWrite } from "../e2e/fixture-api.ts";
+import { countProblems, DIAGNOSTICS, diagnosticTexts, liveReport, type ViewReport } from "../e2e/live-report.ts";
 
 const API = "https://api.github.com";
 const SCREENSHOT_DIR = "dist/screenshots";
@@ -48,16 +53,44 @@ async function serve(page: Page): Promise<string[]> {
   return problems;
 }
 
+// The live report's views and problems, written after the test however it ends.
+const views: ViewReport[] = [];
+let problems: string[] = [];
+
+test.beforeEach(() => {
+  views.length = 0;
+  problems = [];
+});
+
+test.afterEach(async ({ page }) => {
+  const info = test.info();
+  // The spec's line from the stack, not the message, which quotes the page.
+  const spec = relative(process.cwd(), info.file);
+  const line = info.errors.map((e) => e.stack?.split(`${info.file}:`)[1]?.match(/^\d+/)?.[0]).find(Boolean);
+  // Where it stopped, when a failure cut the views short; the page may be gone.
+  if (info.errors.length) views.push(await pageText(page, "at failure").catch(() => ({ view: "at failure (page unreadable)", texts: [] })));
+  const failedAt = info.errors.length ? (line ? `${spec}:${line}` : spec) : null;
+  mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  const prefix = LIVE_TOKEN ? "live-" : "";
+  writeFileSync(`${SCREENSHOT_DIR}/${prefix}report-${info.project.name}.md`, liveReport(info.project.name, views, countProblems(problems, failedAt)));
+});
+
+/** The page's diagnostics, for the report. */
+async function pageText(page: Page, view: string): Promise<ViewReport> {
+  return { view, texts: await page.evaluate(diagnosticTexts, DIAGNOSTICS) };
+}
+
 async function screenshot(page: Page, view: string) {
   await page.waitForLoadState("networkidle");
   await page.waitForTimeout(SETTLE_MS);
   await page.evaluate(() => window.scrollTo(0, 0));
   const prefix = LIVE_TOKEN ? "live-" : "";
   await page.screenshot({ path: `${SCREENSHOT_DIR}/${prefix}${view}-${test.info().project.name}.png`, fullPage: true });
+  views.push(await pageText(page, view));
 }
 
 test("Needs you and Status render without errors", async ({ page }) => {
-  const problems = await serve(page);
+  problems = await serve(page);
   await page.goto("#inbox");
   await page.locator(".signin input[type=password]").fill(LIVE_TOKEN ?? FIXTURE_TOKEN);
   await page.locator(".signin button[type=submit]").click();
