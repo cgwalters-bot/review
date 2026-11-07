@@ -25,7 +25,7 @@ export interface SectionEls {
 export interface Home {
   el: HTMLElement;
   sections: Record<SectionId, SectionEls>;
-  slots: { active: HTMLElement; today: HTMLElement; people: HTMLElement; peopleCount: HTMLElement; freshness: HTMLElement; statusNote: HTMLElement; passes: HTMLElement; repositories: HTMLElement };
+  slots: { active: HTMLElement; actNow: HTMLElement; today: HTMLElement; people: HTMLElement; peopleCount: HTMLElement; freshness: HTMLElement; statusNote: HTMLElement; passes: HTMLElement; repositories: HTMLElement };
 }
 
 export interface HomeHooks {
@@ -51,8 +51,10 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const freshness = h("p", { class: "source-freshness note", "aria-label": "Source freshness" });
   const active = h("div", { [VIEW_ATTR]: "inbox" });
   const today = h("div", { [VIEW_ATTR]: "inbox" });
-  const el = h("div", { class: HOME_CLASS }, active, details, today, peopleSection, passes, repositories, statusNote, freshness);
-  return { el, sections: { needs: { details, count, body } }, slots: { active, today, people, peopleCount, statusNote, passes, repositories, freshness } };
+  // Routing owns the wrapper's visibility; publication owns the content's.
+  const actNow = h("section", { class: "act-now", "aria-label": "Act now", hidden: "" });
+  const el = h("div", { class: HOME_CLASS }, active, h("div", { [VIEW_ATTR]: "inbox" }, actNow), details, today, peopleSection, passes, repositories, statusNote, freshness);
+  return { el, sections: { needs: { details, count, body } }, slots: { active, actNow, today, people, peopleCount, statusNote, passes, repositories, freshness } };
 }
 
 export function fillState(home: Home, state: { sources: Sources }): void {

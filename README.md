@@ -145,6 +145,49 @@ grouped replay preserves the approval-first row. Images are local-only, not
 included in the patch. These checks do not establish current signed-in publication
 or deployed caller enablement. No live writes ran.
 
+### Act now publication dependency (#256)
+
+The concrete failure to avoid is presenting a CI/agent/upstream wait as an
+operator action, or guessing that similar prose authorizes releasing a group.
+The optional **Act now** shortlist therefore uses producer-certified readiness
+and unblock counts, not hold-reason parsing or browser dependency discovery.
+It sits above Needs you, independently of the epic filter, and is off when
+the optional publication is absent. It introduces no poll or browser setting.
+
+The shipped contract is agent-board#768's `docs/act-now.schema.json`:
+`needs_you.act_now` contains at most ten records with `key`, `unblocks` (1 to
+10,000), `priority`, `waiting_since` and the exact typed `action`. Each key joins
+one full ask and, when present, its inventory's `detail_key`. Action (including
+head), priority and wait must match that ask; a mismatch disables the shortlist
+without dropping Needs you. Counts rank rows, never authorize writes. Ranking
+is descending unblock count, Priority, oldest wait, then key. Groups stay one
+row and never authorize a representative-only write.
+
+Unavailable, cached, stale/future publications, carried asks, incomplete sources,
+missing detail, unreadable/foreign descriptors, non-decision quality and locally
+completed asks cannot enter it. Every rendered row has a checked action or an
+explicit refusal reason plus Inspect. A single approval shares the existing
+confirmed, live-head-checked action and receipts with Needs you. Merge / enqueue
+requires a published full head and supported `merge-or-enqueue` descriptors;
+older publications without either explicitly refuse it. Other actions requiring
+an editor, diff or proposal inspection explain why no shortcut is offered.
+
+`src/github/merge.ts` rechecks the current publication and GitHub policy as the
+viewer before sending one mutation. GitHub's merge queue flag covers branch
+protection and rulesets. Queue admission uses `expectedHeadOid`; direct merge
+requires CLEAN and sends `sha` with a permitted method (squash, merge, then
+rebase). Nothing requests bypass, enables auto-merge, retries an uncertain write
+or falls back from enqueue to merge. Receipts distinguish enqueued from merged;
+uncertain writes require inspection on GitHub before retrying.
+
+`test/fixtures/act-now-needs-you.json` is the whole producer fixture at
+`e6fedc8ac1c7dc83cb01fc997e073362bde96548`, imported without changing its data.
+Replay covers the 63-child epic, blocker, question and head-bound approval,
+excluding carried, non-concrete, CI, agent and upstream waits. This is offline
+replay, not proof of deployed publication or live writes. Caller enablement is
+still the producer's opt-in `holds.actNow`, requiring `holds.needsYou` and
+`holds.approvalEvidence`; no caller settings change here.
+
 ### Approval publication dependency (#251)
 
 The app cannot recover approvals absent from the publication. The synthetic

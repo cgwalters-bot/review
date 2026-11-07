@@ -5,6 +5,7 @@
 // marked as changed, until he sends or clears it, or reloads with r.
 
 import { h, link } from "../dom.ts";
+import { mergeRefusal, type ActNowRow } from "./actnow.ts";
 import type { Renderer } from "../markdown.ts";
 import { chatButton, type ChatItem } from "./chatitem.ts";
 import type { DocumentEntry } from "./decisiondocument.ts";
@@ -12,9 +13,10 @@ import type { MemberPr } from "./backend.ts";
 import type { IssueRef } from "./board.ts";
 import { refKey } from "./forge.ts";
 import type { Ask, InboxContext } from "./holds.ts";
-import { askHref, type Card, CARD_LABEL, githubTarget, members, NEEDS_YOU_MAX_AGE_MS, refusal } from "./inbox.ts";
+import { askCard, askHref, askUrl, type Card, CARD_LABEL, githubTarget, members, NEEDS_YOU_MAX_AGE_MS, refusal } from "./inbox.ts";
 import { approvalKey, type ApproveItem, type ApproveResult } from "./maintain.ts";
 import { approveGroup, KEEP_ATTR, KEEP_BUSY } from "./maintainview.ts";
+import type { MergeResult } from "./merge.ts";
 import { age, pill, ROW_CLASS, ROW_HREF_ATTR, ROW_KEY_ATTR, ROW_SECTION_ATTR, SINCE_ATTR } from "./view.ts";
 
 export const CARD_CLASS = "card";
@@ -49,6 +51,8 @@ export interface InboxHooks {
   offerBody?(a: Ask): Promise<HTMLElement>;
   /** Approve at `head`, retaining the write's structured outcome. */
   approve?(a: Ask, head: string): Promise<ApproveResult>;
+  /** Merge or enqueue only the confirmed full head, with a fresh policy check. */
+  merge?(a: Ask, head: string): Promise<MergeResult>;
   /** Read one of a card's PRs now (readMember). */
   member?(ref: IssueRef): Promise<MemberPr>;
   promote?(a: Ask, ref: IssueRef, head: string, ci: MemberPr["ci"]): Promise<string | undefined>;
@@ -117,13 +121,82 @@ export const APPROVED_WAIT = "Waiting on the agent: this releases only the appro
  * Approve in place at the pass's head. The write checks the live head and
  * viewer's approvals, not every card on every poll.
  */
+function askApprovalKey(a: Ask): string {
+  const [owner = "", repo = ""] = a.action.repository.split("/");
+  return approvalKey({ owner, repo, number: a.action.number }, a.action.head!);
+}
+
+const approvalBindings = new WeakMap<HTMLElement, string>();
+
 function approveBody(a: Ask, hooks: InboxHooks): HTMLElement {
+  const key = askApprovalKey(a);
+  const signature = cardSignature(askCard(a));
+  const previous = hooks.writes?.get(key);
+  // Share identical handlers, but refresh an idle paginated ask when the
+  // publication replaces its identity or policy at the same target/head.
+  if (previous && approvalBindings.get(previous) === signature) return previous;
   const head = a.action.head!;
   const where = `${a.action.repository}#${a.action.number}`;
-  const [owner = "", repo = ""] = a.action.repository.split("/");
-  return writeButton(hooks, approvalKey({ owner, repo, number: a.action.number }, head), `Approve ${head.slice(0, 7)}`,
+  const body = writeButton(hooks, key, `Approve ${head.slice(0, 7)}`,
     `Approve ${where} at ${head.slice(0, 12)} as you, without its diff open here? If the head moved, nothing is sent.`, () => hooks.approve!(a, head),
     (url) => (url ? ["Approved: ", link(url, url), `. ${APPROVED_WAIT}`] : ["Skipped: already approved at HEAD."]));
+  // A pending/sent receipt still belongs to its original handler.
+  if (body !== previous) approvalBindings.set(body, signature);
+  return body;
+}
+
+/** Compact published shortlist, with a checked action or a visible refusal on every row. */
+export function fillActNow(slot: HTMLElement, rows: readonly ActNowRow[], hooks: InboxHooks): void {
+  // Merge has no canonical writer on the Answer card. Its session outcomes
+  // remain visible even after completion removes the ask from the shortlist.
+  const receipts = [...(hooks.writes ?? [])].flatMap(([key, body]) => key.startsWith('["merge",') && body.querySelector(`[data-sent], [${KEEP_ATTR}]`) ?
+    [h("div", { class: "merge-receipt" }, body.dataset.mergeTarget ?? "Merge / enqueue", body.querySelector(".status")!.cloneNode(true))] : []);
+  slot.hidden = rows.length === 0 && receipts.length === 0;
+  slot.replaceChildren(h("h2", {}, "Act now"), h("ol", {}, ...rows.map(({ ask: a, unblocks }) => {
+    const card = askCard(a);
+    const row = h("li", {}, link(askUrl(a.action), a.item),
+      h("p", {}, a.ask, a.group ? ` · ${a.group.numbers.length} PRs: ${a.group.reason}` : "", ` · unblocks ${unblocks}`));
+    if (card.kind === "approve" && !a.group && a.action.head && hooks.mayAct && hooks.approve && hooks.writes && !refusal(a, "review-at-head")) {
+      // Forward to the canonical action, even if its card is past the first
+      // page. Never create a second writer or move a live receipt off its card.
+      const body = approveBody(a, hooks);
+      const source = body.querySelector<HTMLButtonElement>("button");
+      const button = h("button", { type: "button", class: "small" }, source?.textContent ?? "Approval recorded");
+      button.disabled = !source || source.disabled;
+      button.addEventListener("click", () => {
+        // Show more can draw its canonical card without redrawing this list.
+        const current = hooks.writes!.get(askApprovalKey(a))!;
+        const control = current.querySelector<HTMLButtonElement>("button");
+        control?.click();
+        button.disabled = !control || control.disabled;
+        if (current.querySelector(`[${KEEP_ATTR}="${KEEP_BUSY}"]`)) button.textContent = "Sending…";
+      });
+      row.append(button, h("small", { class: "status", role: "status" }, body.querySelector(".status")?.textContent ?? ""));
+    } else if (a.action.type === "pull_request" && !a.group && a.action.head && hooks.mayAct && hooks.merge && hooks.writes && !mergeRefusal(a)) {
+      const head = a.action.head;
+      const key = JSON.stringify(["merge", a.action.repository.toLowerCase(), a.action.number, head]);
+      let state: MergeResult["state"] = "enqueued";
+      const previous = hooks.writes.get(key);
+      const body = previous?.querySelector(`[${KEEP_ATTR}]`) ? previous : writeButton(hooks, key, `Merge / enqueue ${head.slice(0, 7)}`,
+        `Merge or enqueue ${a.item} at ${head} as you? GitHub's current rules apply; a changed head sends nothing.`, async () => {
+          const result = await hooks.merge!(a, head);
+          state = result.state;
+          return result.url;
+        }, (url) => [state === "merged" ? "Merged: " : "Enqueued, not merged; waiting on GitHub's queue: ", ...(url ? [link(url, url)] : [])], true);
+      body.dataset.mergeTarget = `${a.item} at ${head.slice(0, 12)}`;
+      row.append(body);
+    } else {
+      const step = card.kind === "approve" ? "review-at-head" : a.action.type === "pull_request" ? "merge-or-enqueue" : undefined;
+      const why = !hooks.mayAct ? "Sign in as the operator to act here." : a.group ? "Grouped PRs require individual inspection; no representative-only write." :
+        (step === "merge-or-enqueue" ? mergeRefusal(a) : refusal(a, step)) ?? (step && !a.action.head ? "No published head SHA; inspect the PR before acting." :
+          a.action.type === "issue" || a.action.type === "reply_pull_request" ? "A reply requires inspecting the current question and entering an answer." :
+          a.action.type === "operator_action" ? "Inspect and confirm the proposal's exact mutations first." :
+          a.action.type === "close_pull_request" ? "No checked close action is available here." :
+          a.action.type === "review_pull_request" ? "Inspect the diff before submitting a review." : "No matching checked action is configured here.");
+      row.append(h("p", { class: "note" }, `Not offered here: ${why}`), h("a", { href: askHref(a.action) }, "Inspect"));
+    }
+    return row;
+  })), ...(receipts.length ? [h("div", { class: "merge-receipts", "aria-label": "Merge / enqueue receipts" }, ...receipts)] : []));
 }
 
 /** Digest rows belong to their report; other receipts stay live, including pending writes. */

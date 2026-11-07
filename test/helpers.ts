@@ -99,6 +99,11 @@ export function rawAsk(n: number, over: Record<string, unknown> = {}): Record<st
   };
 }
 
+/** One producer-shaped Act now record bound to its detailed ask. */
+export function rawActNow(ask: Record<string, unknown>, unblocks = 1): Record<string, unknown> {
+  return { key: ask.key, unblocks, priority: ask.priority, waiting_since: ask.waiting_since, action: ask.action };
+}
+
 /** A needs-you list of `items`, complete and confirmed at `at`. */
 export function rawNeedsYou(items: unknown[], at: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {

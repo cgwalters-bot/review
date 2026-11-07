@@ -47,10 +47,12 @@ import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, sendDocumentEdit } from "./decisiondocument.ts";
 import { epicChips, epicChoice, epicSelection, saveEpicChoice, type EpicFilter } from "./epicfilter.ts";
 import { type Card, askHref, cardOutstanding, decisionKey, githubTarget, inboxCards, inboxCounts, mayAct, members, type Published, publishedNote, refusal } from "./inbox.ts";
+import { mergeOrEnqueue } from "./merge.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { CHAT_CONFIG } from "./chatconfig.ts";
 import { type ChatAnswer, chatItem, type ChatItem, startChatButton } from "./chatitem.ts";
-import { CARD_CLASS, CARD_DONE_CLASS, cardEl, fillInbox, type InboxHooks, publishedContext } from "./inboxview.ts";
+import { CARD_CLASS, CARD_DONE_CLASS, cardEl, fillActNow, fillInbox, type InboxHooks, publishedContext } from "./inboxview.ts";
+import { actNowRows, mergeRefusal } from "./actnow.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
@@ -628,6 +630,17 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
       return result;
     }),
     member: (ref) => readMember(state.gh, ref),
+    merge: async (a, head) => {
+      const result = await mergeOrEnqueue(state.gh, askPr(a), head, () => {
+        singleAsk(state, a);
+        const current = actNowRows(state.published, Date.now(), state.completedAsks).find((r) => r.ask.key === a.key)?.ask;
+        if (!current || current.action.type !== "pull_request" || current.action.head !== head) throw new Error("Ask no longer actionable at this head; reload.");
+        const no = mergeRefusal(current);
+        if (no) throw new Error(no);
+      });
+      (state.completedAsks ??= new Map()).set(a.key, decisionKey(a));
+      return result;
+    },
     promote: (a, ref, head, ci) => promoteMember(state.gh, ref, head, () => {
       const current = state.published.asks.find((x) => x.key === a.key);
       if (state.published.unavailable || !current || current.kind !== "review-promote" || current.action.repository.toLowerCase() !== `${ref.owner}/${ref.repo}`.toLowerCase() || !members(current).includes(ref.number)) throw new Error("Member left this request; reload and inspect it.");
@@ -701,6 +714,11 @@ function paintInbox(state: State, force = false): void {
   const home = state.home;
   // A redraw while a proposal executes could replace the card showing its progress.
   if (!inbox || !home || state.closed || inbox.busy) return;
+  // Explicit refresh permits a new confirmed attempt after a definite refusal;
+  // pending, successful and uncertain writes remain session receipts.
+  if (force) for (const [key, body] of state.cardWrites ?? []) {
+    if (key.startsWith('["merge",') && body.querySelector('[data-keep=""]') && !body.querySelector('[data-sent]')) state.cardWrites!.delete(key);
+  }
   const cards = inboxCards({ published: state.published });
   const saved = state.inboxChoice?.login === state.login ? state.inboxChoice?.value : undefined;
   const deepLink = /^#epic-[1-9]\d{0,9}$/.test(window.location.hash);
@@ -713,6 +731,7 @@ function paintInbox(state: State, force = false): void {
   const selection = epicSelection(cards, epics, epics ? choice : "all", waits);
   const filtered = !!selection?.hidden;
   fillInbox(inbox.list, selection.ordered, inboxHooks(state), force, epics && choice !== "all" ? new Set(selection.selected.map((c) => c.key)) : undefined);
+  fillActNow(home.slots.actNow, actNowRows(state.published, Date.now(), state.completedAsks), inboxHooks(state));
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
   const { text, settled } = publishedNote(state.published, Date.now());
   const list = state.published.list;
