@@ -25,7 +25,7 @@
         "at": "2026-11-05T11:55:00Z",
         "result": "success",
         "sections": [{"name": "schedule", "result": "success", "error": null}],
-        "started": [{"item": "example/work#11", "kind": "implement", "pool": "claude", "run": {"repository": "example/runner", "id": 42}}],
+        "started": [{"item": "example/work#11", "kind": "implement", "pool": "claude", "run": {"repository": "example/runner", "id": 42}}, {"item": "example/work#10", "kind": "triage", "pool": "openai", "run": {"repository": "example/runner", "id": 40}}],
         "reasons": [],
         "omitted": 0
       },

@@ -545,7 +545,7 @@ export interface RunStatus {
   problem?: string;
 }
 
-async function readRun(gh: GitHub, run: RunRef): Promise<{ raw: RawRun; jobs: RawJob[] }> {
+export async function readRun(gh: GitHub, run: RunRef): Promise<{ raw: RawRun; jobs: RawJob[] }> {
   const path = `/repos/${run.owner}/${run.repo}/actions/runs/${run.id}`;
   const raw = await gh.send<RawRun>("GET", path);
   const jobs = await gh.send<{ jobs?: RawJob[] }>("GET", `${path}/jobs?filter=latest&per_page=${PAGE_SIZE}`);
@@ -651,7 +651,7 @@ export async function rerunPrRun(gh: GitHub, pr: IssueRef, runUrl: string, allow
 }
 
 /** Ask GitHub to rerun a run's failed jobs; a clear refusal (4xx) means nothing happened, anything else may have. */
-async function postRerun(gh: GitHub, run: RunRef): Promise<void> {
+export async function postRerun(gh: GitHub, run: RunRef): Promise<void> {
   try {
     await gh.send("POST", `/repos/${run.owner}/${run.repo}/actions/runs/${run.id}/rerun-failed-jobs`);
   } catch (e) {

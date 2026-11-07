@@ -175,7 +175,7 @@ describe("manual applying pass", () => {
       for (const data of [undefined, "Pass view malformed"]) {
         const state: PassControl = { sent: true, runId: 73, message };
         const control = runPassControl(gh, () => ({ ...facts(), data }), state);
-        const home = activePassView(data, Date.now(), undefined, control);
+        const home = activePassView(data, Date.now(), undefined, undefined, control);
         assert.ok(home.textContent!.includes(message));
         assert.equal(home.querySelectorAll("button")[1]!.disabled, true);
         assert.ok(home.querySelector("a[href$='/actions/runs/73']"));

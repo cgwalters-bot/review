@@ -77,8 +77,9 @@ import { type Need, needStops } from "./needs.ts";
 import { type Ask, holdAsks, loadPassPublications, readHoldAsk } from "./holds.ts";
 import { repositoriesView, type ReportBlock } from "./repositories.ts";
 import type { BoardPublication } from "./repositoryboard.ts";
-import { activePassView, type PassView, retainPassView } from "./passview.ts";
+import { activePassView, type AgentActions, type PassView, retainPassView } from "./passview.ts";
 import { runPassControl, type PassControl } from "./runpass.ts";
+import { cancelRun, redispatch, retryRun } from "./agentruns.ts";
 import { type PassesRead, readPasses, schedulerPassView } from "./passesview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
@@ -835,7 +836,15 @@ function paintActive(state: State): void {
   const pass = retainPassView(state.passView, state.active?.passPublicationError ? undefined : state.active?.holds?.passView, !!passUnavailable);
   state.passView = typeof pass === "object" ? pass : undefined;
   const facts = () => ({ data: state.passView, unavailable: state.closed ? "Signed out" : state.active?.passPublicationError ?? (state.active?.sources?.holds?.state !== "ok" ? "Publication unconfirmed" : undefined), login: state.login });
-  state.home.slots.active.replaceChildren(activePassView(pass, Date.now(), passUnavailable, runPassControl(state.gh, facts, state.passControl ??= {})));
+  // Bound to the view drawn: each write checks its run is one this view lists.
+  const view = state.passView;
+  const actions: AgentActions | undefined = view && state.login === OPERATOR ? {
+    cancel: (r) => cancelRun(state.gh, view, r),
+    retry: (r) => retryRun(state.gh, view, r),
+    redispatch: (r) => redispatch(state.gh, view, r),
+    confirm: (m) => window.confirm(m),
+  } : undefined;
+  state.home.slots.active.replaceChildren(activePassView(pass, Date.now(), passUnavailable, actions, runPassControl(state.gh, facts, state.passControl ??= {})));
   state.home.slots.passes.replaceChildren(schedulerPassView(state.passes, pass, Date.now(), passUnavailable));
   if (state.active?.repositories) state.repositories = state.active.repositories;
   const work = state.active?.passPublicationError ? undefined : state.active?.holds;

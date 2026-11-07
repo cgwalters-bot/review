@@ -44,13 +44,36 @@ ownership prose is interpreted as evidence, and this adds no discovery reads.
 agent-board#727/#728 states, not a capture of the private publication.
 
 Above the cards, **Agents and capacity** summarizes the same optional
-`pass_view` publication as Status: running jobs with item/run links and runtime
-at the observation, pool usage bars against published allowed percentages and
-reset clocks, and the latest pass's starts. When it started nothing, the panel
-groups identical reason kind/text pairs, showing the three largest counts
-(ties retain publication order). Missing, stale, future-clock, partial and
-unavailable publications are labelled, not treated as idle health. The panel
-wraps into one column on phones and adds no reads or browser setting.
+`pass_view` publication as Status: **Live agents** (running jobs with
+repo#item, kind, pool, item/run links and a runtime that ticks while the
+observation is under an hour old, else frozen at the observation), pool usage
+bars against published allowed percentages and reset clocks, and the latest
+pass's starts. When it started nothing, the panel groups identical reason
+kind/text pairs, showing the three largest counts (ties retain publication
+order). Missing, stale, future-clock, partial and unavailable publications are
+labelled, not treated as idle health. The panel wraps into one column on phones
+and adds no polls or browser setting.
+
+Signed in as the operator, each live agent has **Cancel**, and each of the
+five newest published starts no longer listed running has **Retry** (rerun the
+run's failed jobs) and **Redispatch** (reply on its item repeating the newest
+[job plan](https://github.com/cgwalters-forge/agent-board/blob/main/docs/job-plans.md)
+by the operator or cgwalters-bot, which the pass then dispatches as a new plan).
+Each asks first, then writes with the viewer's token. The threat is a click
+acting on the wrong run: a stale row, a run that already finished, or a
+redispatch starting a job other than the one that failed. So each action is
+refused unless the pass view drawn lists that run; `GET /user` must be the
+operator; a classic token needs `repo` to cancel or retry, or `public_repo` to
+redispatch (fine-grained tokens without Actions or Issues write are refused by
+GitHub); and the run, read fresh, must be live to cancel, or completed and
+failed to retry or redispatch. Both recovery actions also refuse an item listed
+running, a newer plan or dispatch record, over 1,000 comments, a malformed plan,
+two plans in one comment, or a plan whose `kind` or target differs from the run's.
+Plan text and last-editor metadata are read together: foreign or unidentified
+edits to a writer's comment stop recovery, even if the edit removed its fence.
+As in agent-board, trusted edits to fence-less comments are not plan candidates.
+A row's buttons share one outcome: a refusal offers them again, while a sent
+action, or one that may have gone out, keeps them off until reload.
 
 Each identity and card carries agent-board#661's `epic` (nearest live epic)
 and `topEpic`, `none` or `unknown`, and `epics` maps each live epic to
@@ -497,7 +520,9 @@ synthetic JSON shape is [test/fixtures/pass-view.json](test/fixtures/pass-view.j
 add optional `pass_view` beside `needs_you` in the existing
 `agent-board/holds/v1` bot comment. Its schema is `agent-board/pass-view/v1`.
 Absent means off/older producer, never a healthy idle pass. There is no new
-browser option, endpoint, target read, write permission or independent poll.
+browser option or independent poll. The publication grants no authority: the
+Live agents actions above only choose which listed run to act on, and read it
+fresh from GitHub before writing.
 Publication is independent of `holds.needsYou`; the legacy producer's opt-in
 is `holds.passView`, not `holds.needsYou`.
 
@@ -532,8 +557,9 @@ Unimplemented legacy requirements were:
    In-flight records distinguish running (same fields as a start), merge-queue
    and waiting-review (typed repository and PR number).
    Running records may additionally publish `started_at`, an ISO timestamp or
-   null. The home summary measures runtime from it to `observed_at`, not the
-   browser clock, so stale samples cannot imply a job is still running. Missing
+   null. The home summary ticks runtime from it on the browser clock only while
+   `observed_at` is under an hour old; past that it measures to `observed_at`,
+   so stale samples cannot imply a job is still running. Missing
    or future start clocks show runtime unknown. The fixture includes this
    optional field; older publications remain readable. The producer must supply
    it to show elapsed runtime rather than unknown.

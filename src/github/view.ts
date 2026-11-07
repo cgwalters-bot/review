@@ -143,6 +143,11 @@ function row(e: Entry, labelOf: (e: Entry) => RowLabel | undefined, now: number,
 /** On an age label the page's ticker moves on (tickAges): the time it counts from. */
 export const SINCE_ATTR = "data-since";
 
+/** An observation-backed runtime stops claiming progress after this epoch ms. */
+export const AGE_EXPIRES_ATTR = "data-age-expires";
+
+export const AGE_FROZEN_ATTR = "data-age-frozen";
+
 /** On an age label: it reads as a phrase (agoLabel), not a compact age. */
 const AGO_ATTR = "data-ago";
 
@@ -154,6 +159,12 @@ const AGO_ATTR = "data-ago";
  */
 export function tickAges(root: ParentNode, now: number): void {
   for (const el of root.querySelectorAll<HTMLElement>(`.age[${SINCE_ATTR}]`)) {
+    const expires = el.getAttribute(AGE_EXPIRES_ATTR);
+    if (expires !== null && now > Number(expires)) {
+      el.textContent = el.getAttribute(AGE_FROZEN_ATTR);
+      el.removeAttribute(SINCE_ATTR);
+      continue;
+    }
     const since = el.getAttribute(SINCE_ATTR) ?? undefined;
     const text = el.hasAttribute(AGO_ATTR) ? ago(since, now) : age(since, now);
     if (text) el.textContent = text;

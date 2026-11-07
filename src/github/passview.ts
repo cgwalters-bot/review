@@ -1,11 +1,15 @@
-// Optional publication only: no log scraping, target discovery or write authority.
+// Optional publication only: no log scraping or target discovery. The only
+// writes are Live agents' actions on runs it lists (agentruns.ts).
 import { h } from "../dom.ts";
 import { ago } from "../time.ts";
+import { AGE_EXPIRES_ATTR, AGE_FROZEN_ATTR, ageLabel } from "./view.ts";
 import { isObject, time } from "./heartbeat.ts";
 import { redactAddresses } from "./passes.ts";
 
 interface Run { repository: string; id: number }
 interface Start { item: string; kind: string; pool: string; run: Run }
+/** A run the pass view lists, as the Live agents actions name it. */
+export type AgentRun = Start;
 interface Reason { item: string | null; kind: "no-ready-work" | "replan-delay" | "capped" | "held"; reason: string; until: string | null }
 interface Pass { at: string; result: "success" | "partial" | "failure"; sections: { name: string; result: "success" | "skipped" | "failure"; error: string | null }[]; started: Start[]; reasons: Reason[]; omitted: number }
 interface Pool { name: string; used_percent: number | null; allowed_percent: number | null; resets_at: string | null; ready: number | null; under_pace: boolean | null }
@@ -94,20 +98,104 @@ function publicationNote(el: HTMLElement, data: PassView | string | undefined, n
   return true;
 }
 
+/** Live agents' writes (agentruns.ts), given only to OPERATOR; each resolves to what it made or acted on. */
+export interface AgentActions {
+  cancel(r: AgentRun): Promise<string>;
+  retry(r: AgentRun): Promise<string>;
+  redispatch(r: AgentRun): Promise<string>;
+  confirm(message: string): boolean;
+}
+
+/** At most this many finished starts get Retry and Redispatch: the newest, not the whole history. */
+const MAX_FINISHED = 5;
+/** Past this the observation can't vouch for a run still going, so its runtime stops ticking. */
+const FRESH_MS = 3_600_000;
+const ACTION_ATTR = "data-agent-action";
+
+/** What an action on a run came to; `busy` while it is sending, or once it went out or may have. */
+type Outcome = { by: string; text: string; url?: string; busy: boolean };
+/**
+ * Actions sent from this tab, by run, not by button: once Redispatch went
+ * out, Retry on the same failed run would start a second job. The panel is
+ * redrawn on every poll, and a sent one stays sent.
+ */
+const outcomes = new Map<string, Outcome>();
+
+function paintAction(button: HTMLButtonElement, status: HTMLElement, key: string): void {
+  const o = outcomes.get(key);
+  // A refusal changed nothing: offer the buttons again.
+  button.disabled = o?.busy ?? false;
+  if (o?.by === button.textContent) status.replaceChildren(o.text, o.url ? h("a", { href: o.url }, o.url) : "");
+  else status.replaceChildren();
+}
+
+function actionButton(label: string, verb: string, r: AgentRun, act: (r: AgentRun) => Promise<string>, confirm: (m: string) => boolean): HTMLElement {
+  const key = `${r.run.repository}/${r.run.id}`;
+  const button = h("button", { type: "button", class: "agent-action", [ACTION_ATTR]: key }, label);
+  const status = h("span", { class: "note", role: "status" });
+  paintAction(button, status, key);
+  button.addEventListener("click", () => {
+    if (outcomes.get(key)?.busy || !confirm(`${verb} ${r.item}'s ${r.kind} run ${r.run.id} (${r.run.repository}) with your token?`)) return;
+    const repaint = () => {
+      // The click's own button may have been redrawn away meanwhile: paint whichever show this run now.
+      paintAction(button, status, key);
+      for (const b of document.querySelectorAll<HTMLButtonElement>(`button[${ACTION_ATTR}]`)) {
+        const s = b.nextElementSibling as HTMLElement | null;
+        if (b !== button && b.getAttribute(ACTION_ATTR) === key && s) paintAction(b, s, key);
+      }
+    };
+    outcomes.set(key, { by: label, text: "Sending…", busy: true });
+    repaint();
+    act(r).then((url) => outcomes.set(key, { by: label, text: "Sent: ", url, busy: true }), (e: unknown) => {
+      const message = e instanceof Error ? e.message : String(e);
+      // An uncertain write stays disabled: check GitHub, don't send it twice.
+      const uncertain = e instanceof Error && e.name === "MaybeSentError";
+      outcomes.set(key, { by: label, text: `${uncertain ? "Uncertain" : "Not sent"}: ${message}`, busy: uncertain });
+    }).finally(repaint);
+  });
+  return h("span", { class: "agent-actions" }, button, status);
+}
+
+/** Forget what this tab sent; for tests. */
+export function resetAgentActions(): void {
+  outcomes.clear();
+}
+
 /** Compact home summary of the same bounded publication used by Status. */
-export function activePassView(data: PassView | string | undefined, now = Date.now(), unavailable?: string, control?: HTMLElement): HTMLElement {
+export function activePassView(data: PassView | string | undefined, now = Date.now(), unavailable?: string, actions?: AgentActions, control?: HTMLElement): HTMLElement {
   const el = h("section", { class: "active-pass", "aria-label": "Agents and capacity" }, h("h2", {}, "Agents and capacity"));
   if (!publicationNote(el, data, now, unavailable)) {
     if (control) el.append(control);
     return el;
   }
-  const agents = h("div", {}, h("h3", {}, "Active agents"));
-  const running = data.in_flight.filter((f) => f.state === "running");
+  const agents = h("div", {}, h("h3", {}, "Live agents"));
+  const running = data.in_flight.flatMap((f) => (f.state === "running" ? [f] : []));
+  const observed = Date.parse(data.observed_at);
+  const fresh = !unavailable && now - observed <= FRESH_MS && now >= observed - 60_000;
   const rows = running.map((f) => {
-    const elapsed = f.started_at ? Date.parse(data.observed_at) - Date.parse(f.started_at) : NaN;
-    return h("li", {}, itemLink(f.item), ` · ${f.kind} · ${f.pool} · ${elapsed >= 0 ? `running ${Math.floor(elapsed / 60_000)}m at observation` : "runtime unknown"} · `, runLink(f.run));
+    const elapsed = f.started_at ? observed - Date.parse(f.started_at) : NaN;
+    // Ticks (tickAges) only while the observation is fresh; a stale one says what it saw.
+    const frozen = `${Math.floor(elapsed / 60_000)}m at observation`;
+    const label = ageLabel(f.started_at ?? undefined, now);
+    label.setAttribute(AGE_EXPIRES_ATTR, String(observed + FRESH_MS));
+    label.setAttribute(AGE_FROZEN_ATTR, frozen);
+    const runtime = !(elapsed >= 0) ? ["runtime unknown"] : fresh ? ["running ", label] : [`running ${frozen}`];
+    return h("li", {}, itemLink(f.item), ` · ${f.kind} · ${f.pool} · `, ...runtime, " · ", runLink(f.run),
+      actions ? actionButton("Cancel", "Cancel", f, actions.cancel, actions.confirm) : null);
   });
   agents.append(rows.length ? h("ul", {}, ...rows) : h("p", {}, "No running jobs listed; unread work is unknown."));
+  // Started by a listed pass and no longer running: finished, or not yet listed. Its result is read only when acted on.
+  const seen = new Set(running.map((f) => `${f.run.repository.toLowerCase()}/${f.run.id}`));
+  const finished = data.passes.flatMap((p) => p.started.map((s) => ({ s, at: p.at }))).filter(({ s }) => {
+    const key = `${s.run.repository.toLowerCase()}/${s.run.id}`;
+    return !seen.has(key) && !!seen.add(key);
+  }).slice(0, MAX_FINISHED);
+  if (finished.length) {
+    agents.append(h("h4", {}, "Recently started, not listed running"), h("ul", {}, ...finished.map(({ s, at }) => h("li", {}, itemLink(s.item), ` · ${s.kind} · ${s.pool} · started `, h("time", { datetime: at, title: at }, ago(at, now)), " · ", runLink(s.run),
+      actions ? actionButton("Retry", "Rerun the failed jobs of", s, actions.retry, actions.confirm) : null,
+      actions ? actionButton("Redispatch", "Reply with the newest plan, redispatching", s, actions.redispatch, actions.confirm) : null))));
+    if (actions) agents.append(h("p", { class: "note" }, "Retry and Redispatch read the run first and act only if it failed."));
+  }
   const capacity = h("div", {}, h("h3", {}, "Capacity"));
   if (!data.pools.length) capacity.append(h("p", {}, "Capacity not published."));
   for (const p of data.pools) {
