@@ -19,8 +19,10 @@ function holdsComment(over: Record<string, unknown> = {}) {
   return [{ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\`\`\`json\n${JSON.stringify(snapshot)}\n\`\`\`` }];
 }
 
-async function cli(argv: string[], comments: unknown = holdsComment()) {
-  const { fetchImpl, calls } = scriptedFetch((method, url) => method === "GET" && url === `${API}${usagePath}` ? { body: comments } : undefined);
+type Route = Parameters<typeof scriptedFetch>[0];
+
+async function cli(argv: string[], comments: unknown = holdsComment(), route: Route = () => undefined) {
+  const { fetchImpl, calls } = scriptedFetch((method, url, headers) => method === "GET" && url === `${API}${usagePath}` ? { body: comments } : route(method, url, headers));
   let stdout = "";
   let stderr = "";
   const io: Io = { fetch: fetchImpl, token: async () => "t", stdout: (s) => (stdout += s), stderr: (s) => (stderr += s), isTty: false, now: () => NOW };
@@ -84,8 +86,13 @@ describe("control-plane", () => {
     assert.equal((await cli(["changes", "--since=2026-01-01T00:00:00Z"])).json().passesCovered, false);
   });
 
-  for (const [argv, why] of [[[], /a command is needed/], [["dispatch"], /unknown command/], [["repo"], /OWNER\/REPO/], [["repo", "a/b", "c"], /OWNER\/REPO/],
-    [["changes"], /--since/], [["changes", "--since", "yesterday"], /--since/], [["status", "x"], /no arguments/]] as const) {
+  for (const [argv, why] of [[[], /a command is needed/], [["fold"], /unknown command/], [["repo"], /OWNER\/REPO/], [["repo", "a/b", "c"], /OWNER\/REPO/],
+    [["changes"], /--since/], [["changes", "--since", "yesterday"], /--since/], [["status", "x"], /no arguments/],
+    [["cancel", "42"], /--dry-run or --yes/], [["cancel", "42", "--dry-run", "--yes"], /--dry-run or --yes/], [["cancel", "--dry-run"], /needs one RUN/],
+    [["retry", "x", "--yes"], /needs one RUN/], [["run-pass", "--yes", "now"], /no arguments/], [["run-pass", "--yes", "--kind", "fix"], /takes no --kind/],
+    [["dispatch", "o/r", "--kind", "fix", "--brief", "b", "--yes"], /OWNER\/REPO#N/], [["dispatch", "o/r#1", "--brief", "b", "--yes"], /needs --kind/],
+    [["dispatch", "o/r#1", "--kind", "fix", "--kind", "fix", "--brief", "b", "--yes"], /given twice/],
+    [["file", "--title", "t", "--yes"], /--epic N/], [["file", "--epic", "3", "--yes"], /needs --title/]] as const) {
     it(`refuses ${JSON.stringify(argv)} as usage`, async () => {
       const r = await cli([...argv]);
       assert.equal(r.status, 2);
@@ -101,6 +108,92 @@ describe("control-plane", () => {
     const bad = await cli(["status"], holdsComment({ pass_view: { schema: "nope" } }));
     assert.equal(bad.status, 1);
     assert.match(bad.stderr, /pass view can't be used/);
+  });
+
+  describe("act commands", () => {
+    const RUN = `${API}/repos/example/runner/actions/runs/42`;
+    const operator: Route = (method, url) => method === "GET" && url === `${API}/user` ? { body: { login: "cgwalters" } } : undefined;
+    const liveRun: Route = (method, url) => operator(method, url, {}) ?? (method === "GET" && url === RUN
+      ? { body: { id: 42, html_url: "https://github.com/example/runner/actions/runs/42", repository: { full_name: "example/runner" }, status: "in_progress" } }
+      : method === "POST" && url === `${RUN}/cancel` ? { status: 202 } : undefined);
+    const posts = (calls: { method: string }[]) => calls.filter((c) => c.method !== "GET");
+
+    it("cancel --dry-run reads the run fresh and sends nothing", async () => {
+      const r = await cli(["cancel", "https://github.com/example/runner/actions/runs/42", "--dry-run"], holdsComment(), liveRun);
+      assert.equal(r.status, 0, r.stderr);
+      const doc = r.json();
+      assert.equal(doc.dryRun, true);
+      assert.equal(doc.item, "example/work#11");
+      assert.deepEqual(doc.wouldSend, [{ method: "POST", url: `${RUN}/cancel` }]);
+      assert.deepEqual(posts(r.calls), []);
+    });
+
+    it("cancel --yes sends the cancel", async () => {
+      const r = await cli(["cancel", "42", "--yes"], holdsComment(), liveRun);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(r.json().sent, [{ method: "POST", url: `${RUN}/cancel` }]);
+      assert.deepEqual(posts(r.calls).map((c) => c.method), ["POST"]);
+    });
+
+    it("refuses a run the pass view doesn't list, before any request but the snapshot's", async () => {
+      const r = await cli(["retry", "43", "--yes"], holdsComment(), liveRun);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /lists no run 43/);
+      assert.equal(r.calls.length, 1);
+    });
+
+    it("dispatch comments a job plan on an open item", async () => {
+      const route: Route = (method, url) => operator(method, url, {})
+        ?? (method === "GET" && url === `${API}/repos/example/work/issues/8` ? { body: { state: "open", html_url: "https://github.com/example/work/issues/8" } } : undefined);
+      const r = await cli(["dispatch", "example/work#8", "--kind", "implement", "--pool=claude", "--brief", "Fix it.", "--dry-run"], holdsComment(), route);
+      assert.equal(r.status, 0, r.stderr);
+      const [write] = r.json().wouldSend;
+      assert.equal(write.url, `${API}/repos/example/work/issues/8/comments`);
+      const plan = JSON.parse(/```agent-board-plan\n([\s\S]*)\n```/.exec(write.body.body)![1]!);
+      assert.deepEqual(plan, { schema: "agent-board/job-plan/v1", repo: "example/work", item: 8, kind: "implement", runner: "hosted", pool: "claude", brief: "Fix it." });
+      assert.deepEqual(posts(r.calls), []);
+      for (const [argv, why] of [[["example/work#11", "--kind", "fix"], /lists example\/work#11 running/], [["example/work#8", "--kind", "deploy"], /not a valid/]] as const) {
+        const refused = await cli(["dispatch", ...argv, "--brief", "b", "--yes"], holdsComment(), route);
+        assert.equal(refused.status, 1);
+        assert.match(refused.stderr, why);
+        assert.deepEqual(posts(refused.calls), []);
+      }
+    });
+
+    it("run-pass --dry-run checks for an active pass and shows the dispatch", async () => {
+      const resets = new Date(Date.now() + 3_600_000).toISOString();
+      const pass_view = { ...fixture<{ pass_view: Record<string, unknown> }>("pass-view.json").pass_view, observed_at: new Date().toISOString(),
+        pools: [{ name: "openai", used_percent: 10, allowed_percent: 60, resets_at: resets, ready: 0, under_pace: true }] };
+      const tracker = `${API}/repos/cgwalters-forge/tracker`;
+      const route: Route = (method, url) => operator(method, url, {}) ?? (method !== "GET" ? undefined
+        : url === tracker ? { body: { default_branch: "main", permissions: { push: true } } }
+          : url.startsWith(`${tracker}/actions/workflows/poll.yml/runs?`) ? { body: { total_count: 0, workflow_runs: [] } } : undefined);
+      const r = await cli(["run-pass", "--dry-run"], holdsComment({ pass_view }), route);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(r.json().wouldSend, [{ method: "POST", url: `${tracker}/actions/workflows/poll.yml/dispatches`, body: { ref: "main", inputs: { apply: "true" }, return_run_details: true } }]);
+      const refused = await cli(["run-pass", "--yes"], holdsComment(), route);
+      assert.equal(refused.status, 1);
+      assert.match(refused.stderr, /stale/);
+    });
+
+    it("file searches for duplicates, then files under the epic", async () => {
+      const tracker = `${API}/repos/cgwalters-forge/tracker`;
+      const route = (found: string): Route => (method, url) => method !== "GET" ? undefined
+        : url.startsWith(`${API}/search/issues?`) ? { body: { items: [{ title: found, html_url: "https://github.com/cgwalters-forge/tracker/issues/5" }] } }
+          : url === `${tracker}/issues/3` ? { body: { state: "open", labels: [{ name: "epic" }] } } : undefined;
+      const argv = ["file", "--epic", "3", "--title", "Add fold", "--label", "infra", "--dry-run"];
+      const r = await cli(argv, holdsComment(), route("Add fold to the CLI"));
+      assert.equal(r.status, 0, r.stderr);
+      const doc = r.json();
+      assert.deepEqual(doc.similar, [{ title: "Add fold to the CLI", url: "https://github.com/cgwalters-forge/tracker/issues/5" }]);
+      assert.equal(doc.url, null);
+      assert.deepEqual(doc.wouldSend[0], { method: "POST", url: `${tracker}/issues`, body: { title: "Add fold", body: "", labels: ["needs-triage", "infra"] } });
+      assert.equal(doc.wouldSend[1].url, `${tracker}/issues/3/sub_issues`);
+      assert.match(decodeURIComponent(r.calls.find((c) => c.url.includes("/search/"))!.url), /repo:cgwalters-forge\/tracker is:issue is:open in:title "Add fold"/);
+      const dup = await cli(argv, holdsComment(), route("add fold"));
+      assert.equal(dup.status, 1);
+      assert.match(dup.stderr, /issues\/5 is open with this title/);
+    });
   });
 
   it("hands queue to review-queue", async () => {
