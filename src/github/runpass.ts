@@ -86,12 +86,21 @@ export async function checkPass(gh: GitHub): Promise<void> {
 export async function dispatchPass(gh: GitHub, facts: () => PassFacts, attempting: () => void = () => {}): Promise<number | undefined> {
   const refuse = () => { const reason = passRefusal(facts()); if (reason) throw new Error(reason); };
   refuse();
+  return startPass(gh, () => { refuse(); attempting(); });
+}
+
+/**
+ * dispatchPass without the pass view's checks, for the control-plane CLI,
+ * whose caller judges capacity itself: still only the operator, with write
+ * access, and never while a pass is active. `attempting` runs just before
+ * the dispatch, and may refuse by throwing.
+ */
+export async function startPass(gh: GitHub, attempting: () => void = () => {}): Promise<number | undefined> {
   const viewer = await gh.send<{ login: string }>("GET", "/user");
   if (viewer.login !== OPERATOR) throw new Error(`Only ${OPERATOR} can run an applying pass here.`);
   const repo = await gh.send<{ default_branch: string; permissions?: { push?: boolean } }>("GET", ROOT);
   if (repo.permissions?.push !== true || typeof repo.default_branch !== "string" || !repo.default_branch) throw new Error("Running a pass requires repository write access and Actions read/write permission.");
   await checkPass(gh);
-  refuse();
   attempting();
   const result = await gh.send<{ workflow_run_id?: unknown } | undefined>("POST", `${WORKFLOW_PATH}/dispatches`, { ref: repo.default_branch, inputs: { apply: "true" }, return_run_details: true });
   const id = result?.workflow_run_id;

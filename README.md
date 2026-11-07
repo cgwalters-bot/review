@@ -778,7 +778,12 @@ npx control-plane changes --since 2026-11-07T08:00:00Z
 
 Its read commands send only GET requests. Its act commands run the code
 behind the app's buttons, with the same checks, and write only with `--yes`;
-`--dry-run` makes the same reads and prints the writes it would send:
+`--dry-run` makes the same reads and prints the writes it would send. Only
+`cancel`, `retry` and `redispatch` need the published pass view, for its
+list of runs: `dispatch` checks the item isn't running only where the view
+is published (its document says `runningChecked`), and `run-pass` leaves
+the button's capacity checks to the caller, still refusing while a pass is
+active:
 
 ```sh
 npx control-plane dispatch cgwalters-forge/review#278 --kind implement --brief "..." --dry-run

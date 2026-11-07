@@ -2,6 +2,7 @@
 // fetch that records requests.
 
 import { readFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { JSDOM } from "jsdom";
 import type { RawField, RawItem } from "../src/github/board.ts";
 
@@ -117,6 +118,26 @@ export function rawNeedsYou(items: unknown[], at: string, over: Record<string, u
 export function holdsComment(at: string, needsYou?: unknown, holds: unknown[] = publishedTestHolds(needsYou)): { user: { login: string }; body: string } {
   const snapshot = { schema: "agent-board/holds/v1", at, truncated: 0, holds, ...(needsYou === undefined ? {} : { needs_you: needsYou }) };
   return { user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\nHolds as of ${at}.\n\n\`\`\`json\n${JSON.stringify(snapshot)}\n\`\`\`\n` };
+}
+
+/** agent-board's PART_CHARS: the base64 each comment of a compressed snapshot carries. */
+export const PART_CHARS = 59_000;
+
+/**
+ * The plain hold comment `body`, a snapshot at `at`, published compressed as
+ * agent-board's `holds::parts` does past one comment (agent-board#774), in
+ * pieces of `partChars`, the bot's comments in the order the pass leaves them.
+ */
+export function compressedHolds(body: string, at: string, partChars = PART_CHARS): { user: { login: string }; body: string }[] {
+  const encoded = gzipSync(body).toString("base64");
+  const pieces = Array.from({ length: Math.ceil(encoded.length / partChars) }, (_, i) => encoded.slice(i * partChars, (i + 1) * partChars));
+  const count = pieces.length;
+  return pieces.map((piece, i) => {
+    const [marker, header, said] = i === 0
+      ? ["<!-- agent-board-holds v1 -->", { schema: "agent-board/holds-parts/v1", at, encoding: "gzip+base64", parts: count }, `Holds as of ${at}, compressed across ${count} comments.`]
+      : ["<!-- agent-board-holds part v1 -->", { schema: "agent-board/holds-parts/v1", at, part: i + 1 }, `Part ${i + 1} of ${count} of the holds as of ${at}.`];
+    return { user: { login: "cgwalters-bot" }, body: `${marker}\n${said}\n\n\`\`\`json\n${JSON.stringify(header)}\n\`\`\`\n\n\`\`\`text\n${piece}\n\`\`\`\n` };
+  });
 }
 
 /** Normal synthetic publications include the operator holds behind their asks. */

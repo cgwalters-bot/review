@@ -244,14 +244,14 @@ export interface DispatchRequest { item: string; kind: string; pool?: string; br
 /**
  * Dispatch an open issue or PR: comment on it with a new job plan, which
  * agent-board's next pass dispatches as it does redispatch's reply. Refused
- * when the pass view lists the item running, or the plan isn't one
- * agent-board would accept. Resolves to the comment's URL.
+ * when the pass view, if there is one, lists the item running, or the plan
+ * isn't one agent-board would accept. Resolves to the comment's URL.
  */
-export async function dispatchItem(gh: GitHub, view: PassView, d: DispatchRequest): Promise<string> {
+export async function dispatchItem(gh: GitHub, view: PassView | undefined, d: DispatchRequest): Promise<string> {
   const [repo, number] = d.item.split("#") as [string, string | undefined];
   const plan = { schema: PLAN_SCHEMA, repo, item: Number(number), kind: d.kind, runner: "hosted", ...(d.pool === undefined ? {} : { pool: d.pool }), brief: d.brief };
   if (!/^[1-9]\d*$/.test(number ?? "") || !validPlan(plan)) throw new Error(`not dispatching ${d.item}: not a valid ${PLAN_SCHEMA} (kind implement, triage, research or fix; pool a lowercase name, not tier-*; a non-empty brief of at most 16000 characters)`);
-  if (view.in_flight.some((f) => f.state === "running" && f.item.toLowerCase() === d.item.toLowerCase())) throw new Error(`not dispatching: the pass view lists ${d.item} running`);
+  if (view?.in_flight.some((f) => f.state === "running" && f.item.toLowerCase() === d.item.toLowerCase())) throw new Error(`not dispatching: the pass view lists ${d.item} running`);
   await checkViewer(gh, "dispatching", COMMENT_SCOPE);
   const issue = await gh.send<{ state?: string; html_url?: string }>("GET", `/repos/${repo}/issues/${number}`);
   if (issue.state !== "open") throw new Error(`not dispatching ${d.item}: it is ${issue.state ?? "in an unknown state"}, not open`);

@@ -1,7 +1,8 @@
 // What the scheduler's pass holds, as it publishes them (agent-board#307),
 // each with whether only the operator releases it: the inbox renders these
 // rather than deriving its own from labels. They are the bot's comment on
-// the usage issue, read like the usage with the viewer's token, and parsed
+// the usage issue (or, past one comment's size, its comments, compressed:
+// agent-board#774), read like the usage with the viewer's token, and parsed
 // strictly: anything amiss in it, or a token that can't read it, is no holds.
 // The pass's WIP limit and what it did come with them, and are shown from
 // here rather than worked out again. So does its ranked needs-you list
@@ -22,6 +23,21 @@ import { parseToday, type Today } from "./today.ts";
 /** The comment's first line. */
 export const HOLDS_MARKER = "<!-- agent-board-holds v1 -->";
 const SCHEMA = "agent-board/holds/v1";
+/**
+ * A snapshot longer than one comment is published compressed (agent-board#774):
+ * the first comment, with HOLDS_MARKER, has a header of this schema that
+ * counts the comments, and each other the part marker, its number and the
+ * snapshot's time; the pieces in their `text` blocks, joined, are the plain
+ * comment gzipped, in base64.
+ */
+export const PARTS_SCHEMA = "agent-board/holds-parts/v1";
+export const PART_MARKER = "<!-- agent-board-holds part v1 -->";
+const PARTS_ENCODING = "gzip+base64";
+/** agent-board's MAX_PARTS: a header that counts more is refused. */
+const MAX_PARTS = 4;
+/** The most a compressed snapshot inflates to, as agent-board bounds it. */
+const MAX_SNAPSHOT_BYTES = 8_000_000;
+const TEXT_BLOCK_RE = /\n```text\n([A-Za-z0-9+/=]*)\n```/;
 /** A hold's kind: needs-human, wip, ..., or a newer one, shown as it is. */
 const KIND_RE = /^[a-z][a-z-]{0,31}$/;
 const PRIORITY_RE = /^P[0-9]$/;
@@ -498,10 +514,64 @@ function reconcileOperatorHolds(list: NeedsYou, holds: readonly Hold[], whole: b
   list.excludedHolds = before - (list.identities?.length ?? list.items.length);
 }
 
-/** The bot's newest hold comment among an issue's comments, oldest first as GitHub lists them; nothing if it doesn't parse. */
-export function findHolds(comments: readonly RawComment[]): Holds | undefined {
-  const c = comments.findLast((c) => isBot(c.user?.login) && c.body?.startsWith(HOLDS_MARKER));
-  return parseHolds(c?.body);
+/** The bot's newest hold comment among an issue's comments, oldest first as GitHub lists them, put back together where it is compressed; nothing if it doesn't parse. */
+export async function findHolds(comments: readonly RawComment[]): Promise<Holds | undefined> {
+  return parseHolds(await assembleHolds(comments));
+}
+
+/**
+ * The plain hold comment the bot's comments publish: its newest with
+ * HOLDS_MARKER where that is plain, else the snapshot its parts encode
+ * (PARTS_SCHEMA). Nothing where a part is missing or of another snapshot,
+ * as while a pass writes them, or anything else is amiss: never a mix of two.
+ */
+export async function assembleHolds(comments: readonly RawComment[]): Promise<string | undefined> {
+  const mine = comments.filter((c) => isBot(c.user?.login));
+  const first = mine.findLast((c) => c.body?.startsWith(HOLDS_MARKER))?.body;
+  const header = fencedJson(first, HOLDS_MARKER);
+  if (!first || header?.schema !== PARTS_SCHEMA) return first ?? undefined;
+  const count = header.parts;
+  if (typeof header.at !== "string" || header.encoding !== PARTS_ENCODING || !Number.isInteger(count) || (count as number) < 1 || (count as number) > MAX_PARTS) return undefined;
+  const pieces = [TEXT_BLOCK_RE.exec(first)?.[1]];
+  for (let part = 2; part <= (count as number); part++) {
+    const body = mine.findLast((c) => {
+      const h = fencedJson(c.body, PART_MARKER);
+      return h?.schema === PARTS_SCHEMA && h.at === header.at && h.part === part;
+    })?.body;
+    pieces.push(body ? TEXT_BLOCK_RE.exec(body)?.[1] : undefined);
+  }
+  if (pieces.some((p) => !p)) return undefined;
+  const body = await gunzip(pieces.join(""), MAX_SNAPSHOT_BYTES);
+  return body !== undefined && fencedJson(body, HOLDS_MARKER)?.at === header.at ? body : undefined;
+}
+
+/** `base64`, gzipped UTF-8, as text: nothing if it isn't, or inflates past `limit` bytes. */
+async function gunzip(base64: string, limit: number): Promise<string | undefined> {
+  try {
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip")).getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > limit) {
+        await reader.cancel();
+        return undefined;
+      }
+      chunks.push(value);
+    }
+    const whole = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of chunks) {
+      whole.set(chunk, at);
+      at += chunk.length;
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(whole);
+  } catch {
+    return undefined;
+  }
 }
 
 const DECISION_COMMENTS = `query($owner:String!,$repo:String!,$number:Int!) {
@@ -530,7 +600,7 @@ export async function loadPassPublications(gh: GitHub) {
   const comments = Array.isArray(data) ? data : [];
   // A replacement publication may be on page two; never accept an older match.
   const uncertain = comments.length >= 100 ? "only the first 100 comments were read; a newer publication may be unread" : undefined;
-  return { holds: findHolds(comments), repositories: findMaintainerReports(comments), passes: uncertain ?? findPasses(comments), uncertain };
+  return { holds: await findHolds(comments), repositories: findMaintainerReports(comments), passes: uncertain ?? findPasses(comments), uncertain };
 }
 
 /**
