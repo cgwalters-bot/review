@@ -778,7 +778,7 @@ node src/cli/state.ts --json --fixture test/fixtures --now 2026-10-02T12:00:00Z
 read from the pass's published snapshot as Home and Status read it:
 
 ```sh
-npx control-plane status                  # live agents, capacity, last passes and no-start reasons
+npx control-plane status                  # agents in flight (Actions API), capacity, last passes and no-start reasons
 npx control-plane act-now                 # Home's Act now shortlist
 npx control-plane queue --filter infra    # review-queue's queue
 npx control-plane repo cgwalters-forge/review

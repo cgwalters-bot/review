@@ -23,6 +23,7 @@ import { captureRequest, fileCapture } from "../github/capture.ts";
 import { TRACKER_REPO } from "../github/config.ts";
 import { type Holds, loadPassPublications } from "../github/holds.ts";
 import { askUrl } from "../github/inbox.ts";
+import { enrich, LIVE_SOURCES, type LiveRun, type LiveRuns, loadLiveRuns } from "../github/liveruns.ts";
 import { redactAddresses, stale } from "../github/passes.ts";
 import type { AgentRun, PassView } from "../github/passview.ts";
 import { startPass } from "../github/runpass.ts";
@@ -40,8 +41,9 @@ export const USAGE = `Usage: ${PROG} COMMAND [ARGS]
 
 Read the control plane's state as the review app shows it, as JSON.
 
-  status               live agents, capacity (pools, WIP) and the last passes
-                       with their starts and no-start reasons
+  status               the agent runs in flight (from the Actions API, so even
+                       without a publication), then capacity (pools, WIP) and
+                       the last passes with their starts and no-start reasons
   act-now              the pass's Act now shortlist, as Home shows it
   queue [ARGS]         the review queue; ARGS as for review-queue (--help)
   repo OWNER/REPO      the pass's dispatchable work, live runs and asks on a repository
@@ -115,9 +117,28 @@ function observed(view: PassView, now: number) {
   return { observedAt: view.observed_at, stale: stale(view.observed_at, now), complete: view.complete, omitted: view.omitted };
 }
 
-function status(h: Holds, now: number) {
-  const view = part(h.passView, "pass view");
+/** An agent run in flight, as the Actions API lists it (Home's Live agents). */
+function agentJson(r: LiveRun) {
+  return { item: r.item, kind: r.kind, pool: r.pool, status: r.status, startedAt: r.startedAt || null, title: r.title, listedByPass: r.listed, url: r.item ? itemUrl(r.item) : null, run: runUrl(r.run) };
+}
+
+/**
+ * The agents in flight from the Actions API, whatever the publication
+ * says; then the snapshot's time and, where it has one, its pass view.
+ * Without a usable pass view, its parts are null and passViewError says why.
+ */
+function status(h: Holds | string, live: LiveRuns, now: number) {
+  const view = typeof h === "object" && typeof h.passView === "object" ? h.passView : undefined;
+  const agents = { agents: enrich(live.runs, view).map(agentJson), agentsErrors: live.errors };
+  if (typeof h === "string") return { ...agents, snapshotAt: null, passViewError: h, wip: null, live: null, pools: null, passes: null };
+  const snapshot = { snapshotAt: h.at, snapshotStale: stale(h.at, now) };
+  if (!view) {
+    const passViewError = h.passView === undefined ? "the pass's snapshot has no pass view" : `the pass's pass view can't be used: ${h.passView}`;
+    return { ...agents, ...snapshot, passViewError, wip: h.wip ?? null, live: null, pools: null, passes: null };
+  }
   return {
+    ...agents,
+    ...snapshot,
     ...observed(view, now),
     wip: h.wip ?? null,
     live: view.in_flight.map(flightJson),
@@ -348,9 +369,15 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
       io.stdout(`${JSON.stringify({ ...head, ...body }, null, 2)}\n`);
       return 0;
     }
-    const holds = await loadHolds(new GitHub(io.token, readOnly(io.fetch)));
-    const body = command === "status" ? status(holds, now)
-      : command === "act-now" ? actNow(holds, now)
+    const gh = new GitHub(io.token, readOnly(io.fetch));
+    if (command === "status") {
+      // Live agents come from the Actions API: status answers even without a publication.
+      const [holds, live] = await Promise.all([loadHolds(gh).catch((e: unknown) => message(e)), loadLiveRuns(gh, LIVE_SOURCES, now)]);
+      io.stdout(`${JSON.stringify({ ...head, ...status(holds, live, now) }, null, 2)}\n`);
+      return 0;
+    }
+    const holds = await loadHolds(gh);
+    const body = command === "act-now" ? actNow(holds, now)
         : command === "repo" ? repo(holds, opts.repo!, now)
           : changes(holds, opts.since!, now);
     io.stdout(`${JSON.stringify({ ...head, ...body }, null, 2)}\n`);
