@@ -68,7 +68,7 @@ export interface EntryJson {
   bug: boolean;
   /** The issue or PR on github.com, or null (a draft item). */
   url: string | null;
-  /** The entry in the review app. */
+  /** The entry in the control app. */
   appUrl: string;
   /** A forge PR's review state, as the app labels it. */
   verdict?: { state: string; label: string; url?: string };

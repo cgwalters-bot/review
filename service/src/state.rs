@@ -1,4 +1,4 @@
-//! The control plane's state, built from GitHub queries on each refresh:
+//! The control app's state, built from GitHub queries on each refresh:
 //! live Actions runs, the bot's open PRs with their merge state, and the
 //! issues and PRs waiting on the operator. A section whose reads fail
 //! keeps its last good items and says why it is stale.

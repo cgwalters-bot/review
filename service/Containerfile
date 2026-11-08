@@ -1,9 +1,9 @@
-# The control-plane service with the built app, from the repository root:
+# The control app service with the built app, from the repository root:
 #
-#   podman build -f service/Containerfile -t review-service .
+#   podman build -f service/Containerfile -t control-app .
 #   podman run --read-only --tmpfs /tmp -p 8080:8080 \
 #     -v ./token:/run/secrets/github-token:ro,Z \
-#     review-service --github-token-file /run/secrets/github-token
+#     control-app --github-token-file /run/secrets/github-token
 #
 # See service/README.md for running it under Kubernetes with Octo STS.
 

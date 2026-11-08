@@ -23,7 +23,7 @@ const GITHUB_HOST = "github.com";
 
 export const USAGE = `Usage: ${PROG} [--json | --text] [--filter FILTER]
 
-Print what is waiting on cgwalters (the review app's queue), ranked as the
+Print what is waiting on cgwalters (the control app's queue), ranked as the
 app ranks it: P0 first, then the oldest; answered asks, then PRs waiting
 on the bot, last.
 

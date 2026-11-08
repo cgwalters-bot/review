@@ -1,4 +1,4 @@
-// control-plane: the app's state on the command line, for the controller.
+// control-app: the app's state on the command line, for the controller.
 // The read commands use the app's loaders and derivations: the pass's
 // published holds snapshot (Home's Act now, Live agents and capacity,
 // Status's repository board) and review-queue's queue. Each prints one
@@ -29,7 +29,8 @@ import type { AgentRun, PassView } from "../github/passview.ts";
 import { startPass } from "../github/runpass.ts";
 import { type Io, readOnly, run as runQueue } from "./queue.ts";
 
-export const PROG = "control-plane";
+export const PROG = "control-app";
+// Keep the wire schema stable for existing callers of either command name.
 const SCHEMA = "control-plane/v1";
 const REPO_RE = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/;
 const ITEM_RE = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}#[1-9]\d{0,9}$/;
@@ -39,7 +40,8 @@ const MAX_SIMILAR = 10;
 
 export const USAGE = `Usage: ${PROG} COMMAND [ARGS]
 
-Read the control plane's state as the review app shows it, as JSON.
+Read the control app's state as it shows it in the browser, as JSON.
+The old command name control-plane remains an alias for one release.
 
   status               the agent runs in flight (from the Actions API, so even
                        without a publication), then capacity (pools, WIP) and

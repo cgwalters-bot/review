@@ -1,4 +1,4 @@
-// The control-plane entry point; everything testable is in controlplane.ts.
+// The control-app entry point; everything testable is in controlplane.ts.
 
 import { run } from "./controlplane.ts";
 import { tokenFrom } from "./queue.ts";

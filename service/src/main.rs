@@ -1,4 +1,4 @@
-//! review-service: builds the control plane's state from GitHub queries on
+//! review-service: builds the control app's state from GitHub queries on
 //! a timer and serves it, read-only, with the app. See service/README.md.
 
 mod github;
@@ -22,7 +22,7 @@ use crate::token::{OctoSts, TokenSource};
 
 const USAGE: &str = "Usage: review-service [OPTION...]
 
-Build the control plane's state from GitHub queries every --interval
+Build the control app's state from GitHub queries every --interval
 seconds and serve it read-only: /api/state, /api/repos/OWNER/REPO,
 /api/events (server-sent events) and /healthz, with the built app at /.
 

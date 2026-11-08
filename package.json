@@ -1,10 +1,11 @@
 {
   "name": "review",
   "private": true,
-  "description": "Review queue for cgwalters-bot's Workstream board",
+  "description": "Control app for cgwalters-bot's Workstream board",
   "type": "module",
   "bin": {
     "review-queue": "dist-cli/review-queue.js",
+    "control-app": "dist-cli/control-app.js",
     "control-plane": "dist-cli/control-plane.js"
   },
   "engines": {
