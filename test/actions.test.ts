@@ -6,7 +6,7 @@ import shared from "./fixtures/operator-actions.json" with { type: "json" };
 import vendor from "../docs/operator-actions.vendor.json" with { type: "json" };
 import schema from "../docs/operator-actions.schema.json" with { type: "json" };
 import { GitHub } from "../src/github/api.ts";
-import { ACTION_CONFIG, actionConfig, checkRulesetSource, comments, execute, loadOffer, marker, normalizeRuleset, plan, proposals, rulesetDigest, RULESET_SOURCE_LIMIT, validateProposal, type Action, type Comment, type Offered, type Proposal } from "../src/github/actions.ts";
+import { ACTION_CONFIG, actionBlocks, actionConfig, checkRulesetSource, comments, execute, loadOffer, marker, normalizeRuleset, plan, proposals, rulesetDigest, RULESET_SOURCE_LIMIT, validateProposal, type Action, type Comment, type Offered, type Proposal } from "../src/github/actions.ts";
 import { KEYWORDS, matchesActionSchema } from "../src/github/actionschema.ts";
 import { proposalCard } from "../src/github/actionsview.ts";
 import { installDom } from "./helpers.ts";
@@ -339,6 +339,18 @@ it("accepts only named writers with trusted last editors and exactly one unquote
   assert.deepEqual(proposals([o.comment, receipt], 9, c), []);
   assert.equal(proposals([o.comment, { ...receipt, author: { login: "visitor" } }], 9, c).length, 1);
   assert.equal(proposals([o.comment, { ...receipt, lastEditedAt: stamp, editor: null }], 9, c).length, 1);
+});
+
+it("finds fences as the comment regular expression does, in linear time", () => {
+  const regex = (text: string) => [...text.matchAll(/^```agent-board-action\r?\n([\s\S]*?)^```[ \t]*\r?$/gm)].map((m) => m[1]!);
+  const open = "```agent-board-action\n";
+  for (const text of ["", `${open}{}\n\`\`\``, `x\n${open}a\n\`\`\` \r\nb\n${open}\n\`\`\`\n${open}c`, `${open}\`\`\`\n\`\`\``, `a${open}b\n\`\`\``, `${open}a\r\`\`\`\r\n${open}b \`\`\``, `${open}${open}a\n\`\`\`x\n\`\`\``]) {
+    assert.deepEqual(actionBlocks(text), regex(text), JSON.stringify(text));
+  }
+  // Unclosed openers in untrusted agent text: the regular expression takes seconds here.
+  const start = performance.now();
+  assert.deepEqual(actionBlocks(open.repeat(50_000)), []);
+  assert.ok(performance.now() - start < 1_000);
 });
 
 it("reads the proposal a published ask names again, and refuses truncated or closed proposal issues", async () => {

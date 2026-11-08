@@ -19,7 +19,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
-import { FIXTURE_DATA, type FixtureData, FIXTURE_TOKEN, fixtureResponse, isWrite } from "../e2e/fixture-api.ts";
+import { FIXTURE_DATA, type FixtureData, FIXTURE_TOKEN, fixtureResponse, isWrite, SESSION_ENDPOINT } from "../e2e/fixture-api.ts";
 import { countProblems, DIAGNOSTICS, diagnosticTexts, liveReport, type ViewReport } from "../e2e/live-report.ts";
 
 const API = "https://api.github.com";
@@ -145,5 +145,57 @@ test("Needs you and Status render without errors", async ({ page }) => {
   }
   await screenshot(page, "status");
 
+  expect(problems).toEqual([]);
+});
+
+/** The agent's reply in the chat test: one proposal the app can show, one of a kind the schema lacks. */
+const PROPOSALS = [
+  "I can't write, but here is what I'd do:",
+  "```agent-board-action",
+  JSON.stringify({ schema: "agent-board/operator-action/v1", title: "Close the finished chat issue", why: "Its pull request merged and nothing is left to do.", actions: [
+    { type: "close_issue", repo: "cgwalters-forge/review", number: 275, reason: "Done in the merged pull request; closing." },
+    { type: "add_label", repo: "cgwalters-forge/review", number: 275, label: "shipped" },
+  ] }, null, 2),
+  "```",
+  "And a follow-up comment:",
+  "```agent-board-action",
+  JSON.stringify({ schema: "agent-board/operator-action/v1", title: "Thank the reviewer", why: "Courtesy.", actions: [{ type: "comment_issue", repo: "cgwalters-forge/review", number: 275, body: "Thanks!" }] }),
+  "```",
+].join("\n");
+
+test("Chat shows an agent's proposals as preview cards", async ({ page }) => {
+  test.skip(!!LIVE_TOKEN, "the session socket is answered here, from fixtures only");
+  problems = await serve(page);
+  // The session bridge: ACP over the socket, answering a prompt with the proposals.
+  await page.routeWebSocket(SESSION_ENDPOINT, (ws) => ws.onMessage((text) => {
+    const m = JSON.parse(String(text));
+    const reply = (result: unknown) => ws.send(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }));
+    if (m.method === "initialize") reply({ protocolVersion: 1 });
+    else if (m.method === "session/new") reply({ sessionId: "session" });
+    else if (m.method === "session/prompt") {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: PROPOSALS } } } }));
+      reply({ stopReason: "end_turn" });
+    }
+  }));
+  await page.goto("#inbox");
+  await page.locator(".signin input[type=password]").fill(FIXTURE_TOKEN);
+  await page.locator(".signin button[type=submit]").click();
+  await page.getByRole("button", { name: "Start a chat", exact: true }).first().click();
+  const chat = page.getByRole("region", { name: "Session chat" });
+  await chat.getByRole("button", { name: "Attach", exact: true }).click();
+  await expect(chat.locator(".chat-state")).toHaveText("connected");
+  await chat.getByRole("textbox", { name: "Prompt" }).fill("Anything to close?");
+  await chat.getByRole("button", { name: "Send", exact: true }).click();
+  const cards = chat.locator(".chat-proposal");
+  await expect(cards).toHaveCount(2);
+  await expect(cards.first()).toContainText("Close the finished chat issue");
+  await expect(cards.nth(1)).toContainText("is not in the operator action schema");
+  await expect(chat.locator(".chat-proposal button")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await chat.getByRole("button", { name: "Full screen" }).click();
+  // The log scrolls on its own: show the cards, not the message above them.
+  await cards.first().evaluate((el) => el.scrollIntoView({ block: "start" }));
+  await page.waitForTimeout(SETTLE_MS);
+  await page.screenshot({ path: `${SCREENSHOT_DIR}/chat-${test.info().project.name}.png` });
   expect(problems).toEqual([]);
 });

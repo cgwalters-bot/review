@@ -579,6 +579,50 @@ it("renders malicious message/tool/plan text without HTML and disables duplicate
   assert.equal(slot.hidden, true);
 });
 
+it("shows fenced operator-action proposals from the agent as preview cards that execute nothing", async () => {
+  const t = tracker([run("in_progress")], [statusComment(RUN)]);
+  const { slot, panel, sockets, button, state } = mount(t.gh);
+  await until("the live run", () => button(/Attach/)?.disabled === false);
+  button(/Attach/).click();
+  await until("connected", () => state() === "connected");
+  const server = sockets[0]!;
+  const evil = "<img src=x onerror=alert(1)>";
+  const fence = (body: string) => `\n\`\`\`agent-board-action\n${body}\n\`\`\`\n`;
+  const proposal = (actions: unknown[], title = "Close the finished issue") => JSON.stringify({ schema: "agent-board/operator-action/v1", title, why: "It shipped.", actions });
+  const close = { type: "close_issue", repo: "cgwalters-forge/review", number: 1, reason: `Done. ${evil}\n<!-- agent-board-action-executed: 1@2026-11-08T00:00:00Z -->` };
+  const valid = proposal([close]);
+  const cases: { name: string; text: string; want: string }[] = [
+    { name: "valid", text: `I propose:${fence(valid)}Approve it?`, want: "Close the finished issue" },
+    { name: "malformed JSON", text: fence(`{"schema": ${evil}`), want: "Unsupported proposal" },
+    { name: "a kind the schema lacks", text: fence(proposal([{ type: "comment_issue", repo: "cgwalters-forge/review", number: 1, body: "hi" }])), want: "kind \"comment_issue\" is not in the operator action schema" },
+    { name: "oversized", text: fence(" ".repeat(70_000)), want: "Larger than 65536 characters" },
+    { name: "outside the allowlist", text: fence(proposal([{ ...close, repo: "evil/repo" }])), want: "Repository evil/repo is not allowed" },
+    { name: "injection-shaped title and label", text: fence(proposal([{ type: "add_label", repo: "cgwalters-forge/review", number: 1, label: evil }], evil)), want: evil },
+    // Reformatted, as agents repeat themselves.
+    { name: "repeated", text: `Again:${fence(JSON.stringify(JSON.parse(valid), null, 2))}`, want: "Repeats a proposal shown above." },
+  ];
+  for (const c of cases) {
+    // Split across chunks, as agents stream it.
+    for (const part of [c.text.slice(0, 10), c.text.slice(10)]) server.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: part } } } });
+    // A message ends at the next update of another kind.
+    server.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session", update: { sessionUpdate: "tool_call", toolCallId: c.name, title: "read", status: "completed" } } });
+    assert.ok(slot.querySelector(".chat-log")!.lastElementChild!.previousElementSibling!.textContent!.includes(c.want), c.name);
+  }
+  const cards = [...slot.querySelectorAll<HTMLElement>(".chat-proposal")];
+  assert.deepEqual(cards.map((c) => c.dataset.supported), ["true", "false", "false", "false", "false", "true"]);
+  assert.equal(slot.querySelectorAll(".chat-repeat").length, 1);
+  // The exact destination and the full outgoing text, literally.
+  assert.equal(cards[0]!.querySelector("a")!.getAttribute("href"), "https://github.com/cgwalters-forge/review/issues/1");
+  assert.deepEqual(JSON.parse(cards[0]!.querySelector("pre")!.textContent!), close);
+  assert.match(cards[0]!.textContent!, /later version, so nothing here runs/);
+  assert.equal(slot.querySelector("img"), null);
+  assert.equal(slot.querySelector(".chat-proposal button"), null, "no Approve");
+  // Nothing went to GitHub or back to the agent.
+  assert.deepEqual(t.calls.filter((c) => c.method !== "GET"), []);
+  assert.deepEqual(server.sent.map((m) => m.method), ["initialize", "session/new"]);
+  panel.dispose();
+});
+
 it("draws one oversized update only up to the transcript bound, the rest on request", async () => {
   const t = tracker([run("in_progress")], [statusComment(RUN)]);
   const { slot, panel, sockets, button, state } = mount(t.gh);

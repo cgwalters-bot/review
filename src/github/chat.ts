@@ -5,6 +5,9 @@
 // that client leaves, the run ends. So the pane only connects after the
 // operator asks it to here (Start or Attach), never on page load, and it
 // never dispatches a run while one is already live: it attaches to it.
+//
+// Operator-action proposals the agent writes show as preview cards only
+// (docs/operator-actions.md); nothing the agent sends reaches a write.
 
 import { h } from "../dom.ts";
 import { GitHubError, type GitHub } from "./api.ts";
@@ -12,6 +15,8 @@ import { CHAT_CONFIG, DEFAULT_REF, chatEndpoint, type ChatConfig, type ChatSourc
 import { ITEM_CHAT_EVENT, chatItem, itemLinks, publicItemRef, sessionInputs, type ChatAnswer, type ChatItem } from "./chatitem.ts";
 import { MaybeSentError } from "./backend.ts";
 import { OPERATOR } from "./config.ts";
+import { ACTION_CONFIG, PROPOSAL_LIMIT, actionBlocks } from "./actions.ts";
+import { chatProposalCard } from "./actionsview.ts";
 
 export interface ChatPanel {
   mount(slot: HTMLElement): void;
@@ -385,6 +390,10 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     const tools = new Map<string, HTMLElement>();
     let current: HTMLElement | undefined;
     let currentKind = "";
+    /** The message being drawn, for its proposals: the chunks drawn, each whole, even the one that crossed the display budget. */
+    let currentText = "";
+    /** Proposals already carded in this transcript. */
+    const proposed = new Set<string>();
     /** The item's ask as read for this drawer; sending it once, sent or uncertain, ends answering here. */
     let answering: ChatAnswer | undefined;
     let answerBusy = false;
@@ -447,9 +456,11 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
         if (u.content?.type === "text") {
           const chunk = text(u.content.text);
           if (!chunk) return;
-          if (!current || currentKind !== u.sessionUpdate) {
+          if (current && currentKind !== u.sessionUpdate) endMessage();
+          if (!current) {
             current = h("p", { class: u.sessionUpdate === "user_message_chunk" ? "chat-user" : "chat-agent" }); currentKind = u.sessionUpdate; log.append(current);
           }
+          currentText += chunk;
           const [head, ...more] = bounded(chunk);
           const leaf = current.firstChild;
           if (leaf) leaf.nodeValue = (leaf.nodeValue ?? "") + head.data;
@@ -464,9 +475,30 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       } else if (u.sessionUpdate === "plan" && Array.isArray(u.entries)) {
         node = h("ul", {}, ...u.entries.slice(0, 100).map((e: any) => h("li", {}, ...bounded(`${text(e.status)}: ${text(e.content)}`))));
       }
-      if (u.sessionUpdate !== "agent_message_chunk" && u.sessionUpdate !== "user_message_chunk") current = undefined;
+      if (u.sessionUpdate !== "agent_message_chunk" && u.sessionUpdate !== "user_message_chunk") endMessage();
       if (node && !node.parentNode) log.append(node);
     };
+
+    /**
+     * Ends the message being drawn. After an agent's, a card for each
+     * operator-action proposal it fences; a proposal already carded is only
+     * noted. Cards are previews: nothing from the agent reaches a write.
+     */
+    function endMessage() {
+      const text = current && currentKind === "agent_message_chunk" ? currentText : "";
+      current = undefined; currentText = "";
+      for (const block of actionBlocks(text)) {
+        if (chars >= TRANSCRIPT_CHARS || log.childElementCount >= TRANSCRIPT_NODES) { say("Transcript display limit reached"); return; }
+        chars += Math.min(block.length, PROPOSAL_LIMIT);
+        // Agents reformat a proposal they repeat; its JSON value is what counts.
+        let key = block.trim();
+        try { key = JSON.stringify(JSON.parse(block)); } catch { /* Not JSON: compared as text. */ }
+        log.append(proposed.has(key) ? h("p", { class: "note chat-repeat" }, "Repeats a proposal shown above.") : chatProposalCard(block, ACTION_CONFIG));
+        proposed.add(key);
+      }
+    }
+
+    const clearLog = () => { log.replaceChildren(); chars = 0; tools.clear(); current = undefined; currentText = ""; proposed.clear(); };
 
     /**
      * The live run to show or attach to: the one already followed or
@@ -591,7 +623,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     const connect = (gen: number) => {
       const endpoint = run?.endpoint;
       if (!endpoint || client || disposed) return;
-      log.replaceChildren(); chars = 0; tools.clear(); current = undefined; refused = false;
+      clearLog(); refused = false;
       let opened = false;
       let attached = false;
       let why = "connection failed";
@@ -601,7 +633,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       const opening = setTimeout(() => { why = "timed out"; socket.close(); }, t.openTimeoutMs);
       const self = new AcpClient(socket, render, () => {
         clearTimeout(opening);
-        if (client === self) client = undefined;
+        if (client === self) { client = undefined; endMessage(); }
         busy = false;
         if (disposed) return;
         if (attached) endRun("Disconnected. The session run ends when its client leaves; Start again for a new one.");
@@ -635,7 +667,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       if (armed || client || disposed) return;
       const gen = ++generation;
       armed = true; working = true;
-      log.replaceChildren(); chars = 0; tools.clear(); current = undefined;
+      clearLog();
       go(state, "Looking for a live session run…");
       try {
         const found = await detect();
@@ -719,7 +751,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       event.preventDefault();
       const c = client;
       if (disposed || state !== "connected" || !c?.sessionId || busy || !input.value.trim()) return;
-      current = undefined;
+      endMessage();
       busy = true; controls();
       const prompt = input.value;
       say("Turn running…");
@@ -731,6 +763,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       } catch (e) {
         if (client === c) { refused = true; say(`Prompt refused: ${message(e)}. A turn may still be running; Cancel turn stops it.`); }
       }
+      if (client === c) endMessage();
       busy = false; controls();
     };
 

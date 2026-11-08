@@ -104,6 +104,22 @@ still matches what was shown, then checks each one again just before its write. 
 that changed in a way these facts do not cover (its title, body or comments)
 does not make an action stale.
 
+## Proposals in chat
+
+When an agent's message in the session chat drawer holds an
+`agent-board-action` fence, the drawer shows a card after the message once
+it ends. The card goes through the same validator as a proposal comment and
+previews each action as the Inbox card does: its destination and the action
+as literal JSON, including any text it would post. A fence that is not JSON,
+names a kind the vendored schema lacks, fails validation or exceeds a
+comment's 65,536 characters shows as unsupported, with the reason. A
+proposal already carded in the transcript is noted rather than shown again.
+
+Chat cards read nothing and execute nothing: they have no Approve button,
+and nothing from the agent reaches `execute()`, which takes only a proposal
+read from a trusted comment. Approving from chat is a later step
+(review#275).
+
 ## Reads, execution and failure
 
 The Inbox finds proposals in the scheduler pass's published needs-you list
