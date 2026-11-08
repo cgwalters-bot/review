@@ -24,6 +24,9 @@ jobs:
       # ubuntu-latest), which `just lint` runs locally. A step here rather
       # than a job of its own, so that it gates merges like the rest.
       - uses: cgwalters-forge/actions/lint@main
+      # The control-plane service (service/README.md), with the runner's Rust.
+      - working-directory: service
+        run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
       # Until the app lands, main has no package.json and nothing to check.
       - if: hashFiles('package-lock.json') != ''
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

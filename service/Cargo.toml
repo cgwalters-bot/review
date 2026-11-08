@@ -1,0 +1,19 @@
+[package]
+name = "review-service"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Builds the control plane's state from GitHub queries and serves it, read-only, to the review app"
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+futures-util = "0.3"
+humantime = "2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "process", "signal", "fs"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.6", features = ["fs"] }

@@ -1,0 +1,38 @@
+# The control-plane service with the built app, from the repository root:
+#
+#   podman build -f service/Containerfile -t review-service .
+#   podman run --read-only --tmpfs /tmp -p 8080:8080 \
+#     -v ./token:/run/secrets/github-token:ro,Z \
+#     review-service --github-token-file /run/secrets/github-token
+#
+# See service/README.md for running it under Kubernetes with Octo STS.
+
+FROM docker.io/library/node:24-alpine AS app
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY build.ts tsconfig.json ./
+COPY src src
+COPY static static
+COPY docs docs
+RUN npm run build
+
+# A static musl binary (rustls, no OpenSSL), so the runtime image needs no
+# Rust or C libraries of its own.
+FROM docker.io/library/rust:1-alpine AS service
+RUN apk add --no-cache musl-dev
+WORKDIR /src
+COPY service/Cargo.toml service/Cargo.lock ./
+COPY service/src src
+RUN cargo build --release --locked
+
+FROM registry.access.redhat.com/ubi10/ubi-minimal
+COPY --from=service /src/target/release/review-service /usr/local/bin/review-service
+COPY --from=app /src/dist /app/dist
+WORKDIR /app
+# No state and no writes: run it with a read-only root filesystem and, for
+# anything a library may want, a tmpfs on /tmp.
+ENV TMPDIR=/tmp
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/review-service"]
