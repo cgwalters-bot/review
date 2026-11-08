@@ -5,6 +5,7 @@ mod github;
 mod server;
 mod state;
 mod token;
+mod version;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

@@ -21,6 +21,7 @@ use tokio_stream::wrappers::WatchStream;
 use tower_http::services::ServeDir;
 
 use crate::state::State;
+use crate::version::Version;
 
 pub type Shared = watch::Receiver<Arc<State>>;
 
@@ -34,7 +35,7 @@ const KEEPALIVE: Duration = Duration::from_secs(20);
 /// addresses, that requests may name in their Host header.
 pub fn router(state: Shared, static_dir: Option<PathBuf>, allowed_hosts: Vec<String>) -> Router {
     let api = Router::new()
-        .route("/healthz", get(|| async { "ok\n" }))
+        .route("/healthz", get(health))
         .route("/api/state", get(whole))
         .route("/api/repos/{owner}/{repo}", get(repo))
         .route("/api/events", get(events))
@@ -84,6 +85,11 @@ fn is_allowed(host: &str, allowed: &[String]) -> bool {
     name.eq_ignore_ascii_case("localhost")
         || name.parse::<IpAddr>().is_ok()
         || allowed.iter().any(|a| a.eq_ignore_ascii_case(name))
+}
+
+/// Liveness and build identity, independent of GitHub and refresh progress.
+async fn health() -> impl IntoResponse {
+    Json(serde_json::json!({"status": "ok", "version": Version::default()}))
 }
 
 async fn whole(Extract(state): Extract<Shared>) -> Response {
@@ -173,6 +179,33 @@ mod tests {
         let base = serve(rx, Some(dir.clone())).await;
         let http = reqwest::Client::new();
 
+        let version = serde_json::json!({
+            "tag": option_env!("REVIEW_SERVICE_TAG").filter(|s| !s.is_empty()),
+            "commit": option_env!("REVIEW_SERVICE_COMMIT").filter(|s| !s.is_empty()),
+        });
+        // Both endpoints work before GitHub has been read even once.
+        let health: Value = http
+            .get(format!("{base}/healthz"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            health,
+            serde_json::json!({"status": "ok", "version": version})
+        );
+        let initial: Value = http
+            .get(format!("{base}/api/state"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(initial["version"], version);
+
         let mut events = http.get(format!("{base}/api/events")).send().await.unwrap();
         assert_eq!(events.headers()["content-type"], "text/event-stream");
         assert_eq!(events.headers()["cache-control"], "no-cache");
@@ -180,6 +213,7 @@ mod tests {
         let (id, first) = next_state(&mut events, &mut buf).await;
         assert_eq!(id, "0");
         assert_eq!(first["schema"], "review-service/v1");
+        assert_eq!(first["version"], version);
         assert_eq!(first["refreshedAt"], Value::Null);
 
         let state = refresh(
@@ -212,6 +246,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(whole, second);
+        assert_eq!(whole["version"], version);
         let board: Value = http
             .get(format!("{base}/api/repos/bootc-dev/BOOTC"))
             .send()
@@ -253,7 +288,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(proxied.status(), 200);
-        assert_eq!(proxied.text().await.unwrap(), "ok\n");
+        assert_eq!(proxied.json::<Value>().await.unwrap(), health);
 
         // When the refresher stops, as on SIGTERM, the streams end, so a
         // graceful shutdown doesn't wait on them.

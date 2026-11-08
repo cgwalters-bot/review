@@ -24,7 +24,9 @@ RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY service/Cargo.toml service/Cargo.lock ./
 COPY service/src src
-RUN cargo build --release --locked
+ARG REVIEW_SERVICE_TAG
+ARG REVIEW_SERVICE_COMMIT
+RUN REVIEW_SERVICE_TAG="$REVIEW_SERVICE_TAG" REVIEW_SERVICE_COMMIT="$REVIEW_SERVICE_COMMIT" cargo build --release --locked
 
 FROM registry.access.redhat.com/ubi10/ubi-minimal
 COPY --from=service /src/target/release/review-service /usr/local/bin/review-service

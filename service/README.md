@@ -28,7 +28,7 @@ the others.
 
 It serves:
 
-- `GET /api/state`: the whole state (`review-service/v1`);
+- `GET /api/state`: the whole state (`review-service/v1`), including `version`;
 - `GET /api/repos/OWNER/REPO`: one repository's runs, PRs and waiting
   items, each section with the whole section's `complete`, `readAt` and
   `error`, since a list cut short may be missing this repository's items;
@@ -37,11 +37,18 @@ It serves:
   each event is the whole state, a client reconnecting with `Last-Event-ID`
   gets the current state first, a full resync. A comment every 20 seconds
   keeps idle proxies from closing the stream;
-- `GET /healthz`: `ok`, without touching GitHub;
+- `GET /healthz`: JSON with `status: "ok"` and `version`, without touching GitHub;
 - everything else from the built app (`--static`, default `dist`).
 
 It has no route that writes, and its GitHub client sends only GETs. It logs
 to stdout and exits cleanly on SIGTERM.
+
+Both endpoints report `version: {"tag": "v…", "commit": "…"}` with the
+release tag and full commit embedded at build time. Each field is `null`
+when unavailable (including ordinary local builds), not the Cargo package
+version. To identify a local build, set `REVIEW_SERVICE_TAG` and
+`REVIEW_SERVICE_COMMIT` in the environment when running Cargo; setting them
+only when starting the service does not change its reported identity.
 
 ## Running it locally
 
@@ -83,9 +90,10 @@ as well as api.github.com.
 `--octo-sts-scope` names the organization (or `OWNER/REPO`) and
 `--octo-sts-identity` the trust policy, `IDENTITY.sts.yaml` under
 `.github/chainguard/` in that organization's `.github` repository (or in
-the repository). The policy belongs in a private repository, since it
-names the cluster's issuer, whose URL is private; this repository holds
-none. It needs:
+the repository). The service's trust policy lives in the public
+[cgwalters-forge/.github repository](https://github.com/cgwalters-forge/.github),
+not in this repository. Keep issuer URLs and deployment details out of
+this README. A policy needs:
 
 - `issuer`: the cluster's OIDC issuer URL exactly, not a pattern;
 - `subject`: the service account exactly,
@@ -113,6 +121,10 @@ It runs as UID 65532, listens on 0.0.0.0:8080 by default, writes nothing
 and keeps no state, so it runs with a read-only root filesystem and needs
 only a `/tmp` for scratch. Pushing a `v*` tag publishes
 `ghcr.io/cgwalters-forge/review-service:TAG` (`.github/workflows/image.yml`).
+That workflow supplies `REVIEW_SERVICE_TAG` and `REVIEW_SERVICE_COMMIT` as
+container build arguments, embedding the pushed tag and commit in the binary.
+Manual image builds can supply the same `--build-arg` values; omitted values
+are reported as `null`.
 
 ## Tests
 
