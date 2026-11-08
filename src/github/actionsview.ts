@@ -1,6 +1,6 @@
 import { h, link } from "../dom.ts";
 import type { GitHub } from "./api.ts";
-import { execute, plan, type Action, type ActionConfig, type Fact, type Mutation, type Offered, type Plan, type Variable } from "./actions.ts";
+import { execute, plan, readProposal, type Action, type ActionConfig, type Fact, type Mutation, type Offered, type Plan, type Variable } from "./actions.ts";
 import { lineDiffView } from "./diffview.ts";
 
 /** Where an action lands: its issue or PR, or the organisation and a ruleset's source file at its commit. */
@@ -25,6 +25,25 @@ function orgChange(a: Action, now: Fact, m: Mutation): Node[] {
   return out;
 }
 
+/** Where an action lands and, as literal JSON, its exact typed mutation, including any text it posts. */
+function actionPreview(a: Action): Node[] { return [target(a), h("pre", {}, JSON.stringify(a, null, 2))]; }
+
+/**
+ * A fenced proposal from an agent's chat message, validated as a proposal
+ * comment is and previewed as its card is, or why it is unsupported. It is
+ * only shown: it reads nothing and offers no way to execute.
+ */
+export function chatProposalCard(block: string, config: ActionConfig | undefined): HTMLElement {
+  const read = readProposal(block, config);
+  if ("error" in read) {
+    return h("section", { class: "operator-proposal chat-proposal", "data-supported": "false" }, h("h3", {}, "Unsupported proposal"), h("p", {}, read.error));
+  }
+  const p = read.proposal;
+  return h("section", { class: "operator-proposal chat-proposal", "data-supported": "true" }, h("h3", {}, p.title), h("p", {}, p.why),
+    h("ol", {}, ...p.actions.map((a) => h("li", {}, ...actionPreview(a)))),
+    h("p", { class: "note" }, "Proposed in chat; preview only. Approving from here comes in a later version, so nothing here runs."));
+}
+
 /** A proposal with its live facts and Execute; the inbox's Do card shows it too. */
 export async function proposalCard(gh: GitHub, config: ActionConfig, o: Offered, isBusy: () => boolean, setBusy: (v: boolean) => void, planned?: Plan): Promise<HTMLElement> {
   const rows = h("ol");
@@ -38,9 +57,8 @@ export async function proposalCard(gh: GitHub, config: ActionConfig, o: Offered,
   }
   for (const [i, action] of o.proposal.actions.entries()) {
     const result = h("p", { role: "status" }); results.push(result);
-    // Literal JSON is the exact typed mutation.
     const m = shown?.mutations[i];
-    rows.append(h("li", {}, target(action), h("pre", {}, JSON.stringify(action, null, 2)), h("p", { class: "note" }, shown?.states[i] ?? ""), ...(m ? orgChange(action, shown!.expected[i]!, m) : []), result));
+    rows.append(h("li", {}, ...actionPreview(action), h("p", { class: "note" }, shown?.states[i] ?? ""), ...(m ? orgChange(action, shown!.expected[i]!, m) : []), result));
   }
   const button = h("button", { type: "button", class: "primary" }, "Run as yourself");
   button.disabled = !shown;

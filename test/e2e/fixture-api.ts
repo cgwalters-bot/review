@@ -22,6 +22,12 @@ export type FixtureData = (typeof FIXTURE_DATA)[number];
 /** A stand-in token the app accepts at sign-in; nothing checks it. */
 export const FIXTURE_TOKEN = ["ghp", "x".repeat(24)].join("_");
 
+/** The chat session run the fixtures show live, and the endpoint its agent job's name implies. */
+export const SESSION_RUN = 50;
+export const SESSION_ENDPOINT = `wss://agentic-job-${SESSION_RUN}-1.tailf2eb8.ts.net/`;
+/** chat.ts's TAILNET_STEP, after which a run's endpoint resolves. */
+const TAILNET_STEP = "Join the tailnet";
+
 /** The base64 each fixture comment carries: a fraction of agent-board's, for several parts. */
 const FIXTURE_PART_CHARS = 4_000;
 
@@ -93,6 +99,12 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
     return compressedHolds(`<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${holds}\n\`\`\`\n`, at, FIXTURE_PART_CHARS);
   }
   if (pathname === "/repos/cgwalters-forge/tracker/actions/workflows/poll.yml/runs") return { total_count: 0, workflow_runs: [] };
+  // One chat session run whose agent job is on the tailnet; the browser test answers its socket.
+  if (pathname === "/repos/cgwalters-forge/tracker/actions/workflows/session.yml/runs") return { workflow_runs: [{ id: SESSION_RUN, run_attempt: 1, status: "in_progress", display_title: "Operator session (claude)", created_at: new Date(now - 60_000).toISOString(), actor: { login: "cgwalters" } }] };
+  if (pathname === "/repos/cgwalters-forge/tracker/issues/728") return { comments: 1 };
+  if (pathname === `/repos/cgwalters-forge/tracker/actions/runs/${SESSION_RUN}/jobs`) {
+    return { jobs: [{ name: "run / agent", status: "in_progress", steps: [{ name: TAILNET_STEP, status: "completed", conclusion: "success" }, { name: "Run task", status: "in_progress", conclusion: null, started_at: new Date(now - 30_000).toISOString() }] }] };
+  }
   // Live agents: the same runs answer every status query; the app keeps each once.
   const agents = /^\/repos\/([^/]+\/[^/]+)\/actions\/workflows\/(?:dispatch|agent)\.yml\/runs$/.exec(pathname);
   if (agents) {

@@ -3,7 +3,7 @@
 import { GitHubError, type GitHub } from "./api.ts";
 import { missingScopes } from "./auth.ts";
 import rawConfig from "./action-config.json" with { type: "json" };
-import { matchesActionSchema } from "./actionschema.ts";
+import { ACTION_KINDS, matchesActionSchema } from "./actionschema.ts";
 
 const REPO = /^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/;
 const OWNER = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,38}$/;
@@ -109,6 +109,47 @@ export async function comments(gh: GitHub, c: ActionConfig, issue: number): Prom
   return r.repository.issue.comments.nodes;
 }
 
+/** A proposal comment's limit, and so the largest fenced proposal read from anywhere. */
+export const PROPOSAL_LIMIT = 65536;
+
+/**
+ * The contents of each `agent-board-action` fence in `text`, in order. Each
+ * search starts where the last ended, so unclosed openers in agent text cost
+ * linear time, not the quadratic of one lazy regular expression.
+ */
+export function actionBlocks(text: string): string[] {
+  const open = /^```agent-board-action\r?\n/gm;
+  const close = /^```[ \t]*\r?$/gm;
+  const out: string[] = [];
+  for (let m; (m = open.exec(text));) {
+    close.lastIndex = open.lastIndex;
+    const end = close.exec(text);
+    // No closer after this opener means none after any later one either.
+    if (!end) break;
+    out.push(text.slice(open.lastIndex, end.index));
+    open.lastIndex = close.lastIndex;
+  }
+  return out;
+}
+
+/**
+ * A fenced proposal from elsewhere (an agent's chat message) checked as a
+ * comment's would be, or why it can't be shown. It is only ever displayed:
+ * execution takes an Offered, which only proposals() builds from trusted comments.
+ */
+export function readProposal(block: string, c: ActionConfig | undefined): { proposal: Proposal } | { error: string } {
+  if (block.length > PROPOSAL_LIMIT) return { error: `Larger than ${PROPOSAL_LIMIT} characters` };
+  let value: unknown;
+  try { value = JSON.parse(block); } catch (e) { return { error: `Not JSON: ${(e as Error).message}` }; }
+  if (!c) return { error: "Operator actions are not configured" };
+  // Named apart from other schema failures: agents propose kinds agent-board has yet to define.
+  const actions = isObject(value) && Array.isArray(value.actions) ? value.actions : [];
+  const kinds = actions.map((a) => isObject(a) ? a.type : undefined);
+  const bad = kinds.findIndex((t) => typeof t !== "string" || !ACTION_KINDS.has(t));
+  if (bad >= 0) return { error: `Action ${bad + 1}: kind ${JSON.stringify(kinds[bad] ?? null)} is not in the operator action schema` };
+  try { return { proposal: validateProposal(value, c) }; } catch (e) { return { error: (e as Error).message }; }
+}
+
 export function marker(o: Offered): string { return `<!-- agent-board-action-executed: ${o.comment.databaseId}@${o.comment.updatedAt} -->`; }
 
 function recorded(all: Comment[], o: Offered, c: ActionConfig): boolean {
@@ -119,10 +160,10 @@ export function proposals(all: Comment[], issue: number, c: ActionConfig): Offer
   const out: Offered[] = [];
   for (const comment of all) {
     if (!trusted(comment, c)) continue;
-    const blocks = [...comment.body.matchAll(/^```agent-board-action\r?\n([\s\S]*?)^```[ \t]*\r?$/gm)];
+    const blocks = actionBlocks(comment.body);
     if (!blocks.length) continue;
-    if (blocks.length !== 1 || comment.body.length > 65536) throw new Error("Ambiguous or oversized operator action comment");
-    const proposal = validateProposal(JSON.parse(blocks[0]![1]!), c);
+    if (blocks.length !== 1 || comment.body.length > PROPOSAL_LIMIT) throw new Error("Ambiguous or oversized operator action comment");
+    const proposal = validateProposal(JSON.parse(blocks[0]!), c);
     const o = { issue, comment, proposal };
     if (!recorded(all, o, c)) out.push(o);
   }

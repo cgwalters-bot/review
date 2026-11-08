@@ -542,6 +542,9 @@ body:has(.chat-full) { overflow: hidden; }
 .operator-proposal pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .operator-proposal ol { padding-left: 1.5rem; }
 .operator-proposal button { max-width: 100%; white-space: normal; min-height: 44px; }
+.chat-proposal { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; background: var(--surface-2); }
+.chat-proposal h3 { margin: 0 0 4px; font-size: var(--type-card); }
+.chat-proposal[data-supported="false"] { border-left-color: var(--warn); background: var(--warn-soft); }
 /* Review drafts: each inline comment under the hunk lines it is on. */
 .review-drafts { padding: .75rem; }
 .review-draft { min-width: 0; overflow-wrap: anywhere; border-top: 1px solid var(--border, #8884); padding-top: 8px; }
