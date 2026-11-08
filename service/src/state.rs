@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::github::Source;
+use crate::version::Version;
 
 pub const SCHEMA: &str = "review-service/v1";
 
@@ -133,6 +134,7 @@ pub struct Waiting {
 #[serde(rename_all = "camelCase")]
 pub struct State {
     pub schema: &'static str,
+    pub version: Version,
     /// Counts refreshes, as the SSE event id.
     #[serde(skip)]
     pub generation: u64,
@@ -216,6 +218,7 @@ pub async fn refresh<S: Source>(src: &S, prev: &State, now: &str) -> State {
     let (runs, prs, waiting) = tokio::join!(load_runs(src), load_prs(src), load_waiting(src));
     State {
         schema: SCHEMA,
+        version: Version::default(),
         generation: prev.generation + 1,
         refreshed_at: Some(now.to_owned()),
         runs: section(runs, &prev.runs, now),
@@ -502,7 +505,9 @@ pub(crate) mod tests {
     async fn builds_state_from_queries() {
         let state = refresh(&Recorded::fixture(), &State::empty(), NOW).await;
         let v = serde_json::to_value(&state).unwrap();
-        let expected: Value = serde_json::from_str(include_str!("../fixtures/state.json")).unwrap();
+        let mut expected: Value =
+            serde_json::from_str(include_str!("../fixtures/state.json")).unwrap();
+        expected["version"] = serde_json::to_value(Version::default()).unwrap();
         assert_eq!(
             v,
             expected,

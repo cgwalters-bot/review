@@ -23,8 +23,10 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository_owner }}/review-service:${{ github.ref_name }}
           ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ github.token }}
+          REVIEW_SERVICE_TAG: ${{ github.ref_name }}
+          REVIEW_SERVICE_COMMIT: ${{ github.sha }}
         run: |
-          podman build -f service/Containerfile -t "$IMAGE" .
+          podman build -f service/Containerfile --build-arg REVIEW_SERVICE_TAG --build-arg REVIEW_SERVICE_COMMIT -t "$IMAGE" .
           podman login ghcr.io -u "$ACTOR" --password-stdin <<< "$GH_TOKEN"
           podman push --digestfile digest "$IMAGE"
           echo "Pushed $IMAGE@$(cat digest)" >> "$GITHUB_STEP_SUMMARY"
