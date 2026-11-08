@@ -12,16 +12,15 @@ import { GitHubError, type GitHub, RateLimited } from "./api.ts";
 import { isBot } from "./authors.ts";
 import { USAGE_ISSUE, USAGE_REPO } from "./config.ts";
 import { fencedJson, isObject, type RawComment, str, time } from "./heartbeat.ts";
-import type { CostSource } from "./cost.ts";
 import config from "./usage-config.json" with { type: "json" };
 
 /**
  * Where Mistral's monthly allowance is configured, when the snapshot
  * carries none: a pools file whose "mistral" pool has an "allowance".
  * `cost` is the repository and branch whose cost/ holds agent-board's
- * daily cost reports (cost.ts). null turns either read off.
+ * daily cost reports. null leaves that source unconfigured.
  */
-export const USAGE_CONFIG = config as { mistralAllowance: { repo: string; path: string } | null; cost: CostSource | null };
+export const USAGE_CONFIG = config as { mistralAllowance: { repo: string; path: string } | null; cost: { repo: string; ref: string } | null };
 
 /** A contents or blob API's base64 content, as UTF-8 text. */
 export const decodeBase64 = (content: string): string => new TextDecoder().decode(Uint8Array.from(atob(content.replace(/\s/g, "")), (c) => c.charCodeAt(0)));

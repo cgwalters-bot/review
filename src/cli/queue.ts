@@ -10,7 +10,7 @@ import { type Fetch, GitHub, GitHubError } from "../github/api.ts";
 import { loadAnswered, loadQueue } from "../github/backend.ts";
 import { ALL, applyFilter, entryOrg, NO_ORG, parseFilterToken, type QueueFilter } from "../github/filter.ts";
 import type { ForgePr, Verdict } from "../github/forge.ts";
-import { queueJson, queueText, SCHEMA } from "../github/export.ts";
+import { queueJson, queueText, SCHEMA } from "./export.ts";
 import { loadForgePrs, loadOtherPrs, loadWaiting, refreshVerdicts, searchBotPrs, type WaitingPr } from "../github/prs.ts";
 import { buildEntries, type Entry } from "../github/queue.ts";
 

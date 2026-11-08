@@ -5,7 +5,7 @@ import {
   type FlightPr, type FlightRun, type InFlight, nothingReady, type NoStart, type Pass, type Passes, type Pool, type Pools,
   readyEvidence, redactAddresses, type RunRef, stale, type Start, underPace,
 } from "./passes.ts";
-import type { Active } from "./agents.ts";
+import type { Active } from "./inbox.ts";
 import { agoLabel } from "./view.ts";
 import { passView, type PassView } from "./passview.ts";
 

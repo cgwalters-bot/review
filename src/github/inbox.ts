@@ -24,6 +24,33 @@ import type { Ask, AskRef, NeedsYou } from "./holds.ts";
 import type { ApproveItem } from "./maintain.ts";
 import type { DraftIssue } from "./reviewdrafts.ts";
 import { ago } from "../time.ts";
+import type { Item } from "./board.ts";
+import type { Heartbeat } from "./heartbeat.ts";
+import type { UsageData } from "./usage.ts";
+import type { Holds } from "./holds.ts";
+import type { ReportBlock } from "./repositories.ts";
+import type { Passes } from "./passes.ts";
+import type { ProjectStatus } from "./backend.ts";
+import type { Sources } from "./freshness.ts";
+
+/** The inbox's last-read context; failed or uncached reads stay undefined. */
+export interface Active {
+  sources?: Sources;
+  status?: ProjectStatus | null;
+  statusError?: string;
+  board?: Item[];
+  /** null means no heartbeat was published. */
+  local?: Heartbeat | null;
+  usage?: UsageData;
+  holds?: Holds;
+  repositories?: ReportBlock[];
+  passes?: Passes | string | null;
+  passPublicationError?: string | undefined;
+  warnings: string[];
+  at: number;
+  /** Read from the cache only, before GitHub answered. */
+  fromCache?: boolean;
+}
 
 export type CardKind = "answer" | "approve" | "promote" | "open" | "do" | "digest" | "document" | "send";
 

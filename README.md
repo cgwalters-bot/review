@@ -143,8 +143,9 @@ For #239 (continuing #243 after #247/#253), LF counts across tracked production
 on main `5c01b18` to 19,477 (25 fewer). `dist/app.js` falls from 540,965 to
 532,287 bytes (8,678 fewer), with the same lockfile and `npm ci`/build. Removed
 unused decisions-refresh orchestration and the browser's legacy state derivation;
-the CLI retains `review-state/v1`, while browser debugging uses
-`review-inbox-state/v1` with published facts and source freshness.
+browser debugging uses `review-inbox-state/v1` with published facts and source
+freshness. The former unbundled `review-state/v1` CLI has since been removed;
+use the built `control-plane` commands below instead.
 `npm run check` passes 1,878 tests, typecheck and build; the redacted replay still
 makes two cold requests and one poll request, without target discovery. The full,
 capped and grouped 174-decision replays retain approval-first ordering and
@@ -766,13 +767,6 @@ npx review-queue --filter org:composefs+P0
 `review-queue/v1` schema. Authentication uses `GH_TOKEN`, then `GITHUB_TOKEN`,
 then `gh auth token --hostname github.com`. It needs `read:project` for the
 board and never answers, approves or reruns anything.
-
-The richer JSON state command is also read-only; fixture mode is offline:
-
-```sh
-node src/cli/state.ts --json
-node src/cli/state.ts --json --fixture test/fixtures --now 2026-10-02T12:00:00Z
-```
 
 `control-plane` gives the controller the app's own state, as JSON with links,
 read from the pass's published snapshot as Home and Status read it:

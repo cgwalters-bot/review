@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
-import type { Active } from "../src/github/agents.ts";
+import type { Active } from "../src/github/inbox.ts";
 import type { RawComment } from "../src/github/heartbeat.ts";
 import { HOLDS_MARKER, loadPassPublications } from "../src/github/holds.ts";
 import { findPasses, MAX_BODY, nothingReady, type Passes, PASSES_MARKER, parsePasses, redactAddresses } from "../src/github/passes.ts";

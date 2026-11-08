@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ALL } from "../src/github/filter.ts";
-import { type ActionJson, age, type EntryJson, printable, type QueueJson, SCHEMA, suggestedAction } from "../src/github/export.ts";
+import { type ActionJson, age, type EntryJson, printable, type QueueJson, SCHEMA, suggestedAction } from "../src/cli/export.ts";
 import type { Entry } from "../src/github/queue.ts";
 import type { PrWait } from "../src/github/waiting.ts";
 import { type Io, parseArgs, readOnly, run, tokenFrom, UsageError } from "../src/cli/queue.ts";

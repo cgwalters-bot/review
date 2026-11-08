@@ -3,12 +3,12 @@
 // entries in, a document or lines out. It reads the same entries the
 // app shows, so what the CLI says needs you is what the app says.
 
-import { commentNote, itemAction } from "./asks.ts";
-import { NO_PRIORITY, questionOf } from "./board.ts";
-import { entryOrg, filterToken, type QueueFilter } from "./filter.ts";
-import { promotionAction, VERDICT_LABEL } from "./forge.ts";
-import { effectivePriority, type Entry, type EntryKind, ON_BOT_GROUP, SETTLED_GROUP } from "./queue.ts";
-import { type PrReason, type PrWait, REASON_LABEL } from "./waiting.ts";
+import { commentNote, itemAction } from "../github/asks.ts";
+import { NO_PRIORITY, questionOf } from "../github/board.ts";
+import { entryOrg, filterToken, type QueueFilter } from "../github/filter.ts";
+import { promotionAction, VERDICT_LABEL } from "../github/forge.ts";
+import { effectivePriority, type Entry, type EntryKind, ON_BOT_GROUP, SETTLED_GROUP } from "../github/queue.ts";
+import { type PrReason, type PrWait, REASON_LABEL } from "../github/waiting.ts";
 
 /** The schema name and major version; a breaking change bumps it. */
 export const SCHEMA = "review-queue/v1";
