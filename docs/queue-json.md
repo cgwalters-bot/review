@@ -5,7 +5,7 @@
 `review-queue --json` prints one JSON object describing what is waiting
 on cgwalters. The same code ranks and filters this output and the app's
 queue, so the two always agree. (For contributors: the types are
-`QueueJson` and `EntryJson` in `src/github/export.ts`.)
+`QueueJson` and `EntryJson` in `src/cli/export.ts`.)
 
 Compatibility: within `review-queue/v1`, fields are only added. Removing
 or renaming a field, or changing its meaning or type, bumps the schema

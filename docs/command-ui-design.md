@@ -8,6 +8,8 @@ Evaluate one Rust/WASM view after the navigation and data contract settle.
 Observations below describe inspected code or published sources; everything
 labelled proposal describes future work.
 
+The sidebar plan is superseded by [tracker#976](https://github.com/cgwalters-forge/tracker/issues/976) and [tracker#1414](https://github.com/cgwalters-forge/tracker/issues/1414).
+
 ## 1. Architecture and the Paperclip comparison
 
 **Observed here.** The [README](../README.md) describes the running GitHub v0.
