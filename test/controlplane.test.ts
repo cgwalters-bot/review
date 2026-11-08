@@ -35,7 +35,16 @@ async function cli(argv: string[], comments: unknown = holdsComment(), route: Ro
   return { status, stdout, stderr, calls, json: () => JSON.parse(stdout) };
 }
 
-describe("control-plane", () => {
+describe("control-app", () => {
+  it("help uses the new name and explains the compatibility alias without reads", async () => {
+    const r = await cli(["--help"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^Usage: control-app COMMAND/);
+    assert.match(r.stdout, /control app's state/);
+    assert.match(r.stdout, /control-plane remains an alias for one release/);
+    assert.equal(r.calls.length, 0);
+  });
+
   it("status: live agents, capacity and the last passes with no-start reasons", async () => {
     const r = await cli(["status"]);
     assert.equal(r.status, 0, r.stderr);

@@ -92,6 +92,8 @@ async function screenshot(page: Page, view: string) {
 test("Needs you and Status render without errors", async ({ page }) => {
   problems = await serve(page);
   await page.goto("#inbox");
+  await expect(page).toHaveTitle("Control app");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Control app");
   await page.locator(".signin input[type=password]").fill(LIVE_TOKEN ?? FIXTURE_TOKEN);
   await page.locator(".signin button[type=submit]").click();
   await expect(page.locator(".published")).toBeVisible();

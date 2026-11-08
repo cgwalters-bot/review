@@ -3,7 +3,7 @@ name = "review-service"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Builds the control plane's state from GitHub queries and serves it, read-only, to the review app"
+description = "Builds the control app's state from GitHub queries and serves it, read-only, with the app"
 publish = false
 
 [dependencies]

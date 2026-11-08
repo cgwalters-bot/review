@@ -90,7 +90,7 @@ export async function dispatchPass(gh: GitHub, facts: () => PassFacts, attemptin
 }
 
 /**
- * dispatchPass without the pass view's checks, for the control-plane CLI,
+ * dispatchPass without the pass view's checks, for the control-app CLI,
  * whose caller judges capacity itself: still only the operator, with write
  * access, and never while a pass is active. `attempting` runs just before
  * the dispatch, and may refuse by throwing.

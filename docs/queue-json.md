@@ -46,7 +46,7 @@ come last. An ask about an item in the queue is nested in that item's
 | `settled` | boolean | He answered it, or the bot closed it: waiting on the bot. |
 | `bug` | boolean | Needs human, but the bot asked nothing about it. |
 | `url` | string or null | The issue or PR on github.com. |
-| `appUrl` | string | The entry in the review app, where it can be acted on. |
+| `appUrl` | string | The entry in the control app, where it can be acted on. |
 | `verdict` | object, optional | PRs: `state`, his latest review against the head (`none` when he hasn't reviewed, `approved`, `approved-older`, `changes-requested`, `changes-requested-older`, `promoted`), a `label`, and the review's `url`. A forge PR he approved at its head stays listed until he sends `/promote`; `wait`, not the state, says whose turn it is. |
 | `wait` | object, optional | PRs: whose turn it is beyond the verdict. `onBot`: he requested changes and the bot hasn't pushed or replied since, so its action is `wait` (not open), listed last. `reasons`: what he is asked to do, any of `review-requested`, `updated` (the bot responded to his change request), `resign` (approve the head so the bot can add his DCO sign-off), `rerun` (a required check failed). |
 | `blocks` | string, optional | For a top-level ask: the item it blocks, which isn't in the queue. |
