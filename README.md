@@ -461,6 +461,49 @@ do not poll. Classic tokens need `notifications` or `repo`; fine-grained
 tokens do not support notification endpoints. Inaccessible notifications
 leave review-request search results visible with a warning.
 
+## Focus publication dependency (#298)
+
+The requested P0 epic **Focus** view is not implemented yet. The concrete
+failure to avoid is calling an unread child “nothing started”, or presenting
+a previewed start as a running job. Blocker states must come from the producer,
+not from browser interpretations of labels, hold prose or missing records.
+
+Source review on 2026-11-08 against agent-board
+[`71d8b4c`](https://github.com/cgwalters-forge/agent-board/tree/71d8b4c50db182251033282b49c619bf4354b48d)
+confirms that [#799](https://github.com/cgwalters-forge/agent-board/pull/799)
+adds `pass::decision::preview` and `agent-board/decision/v1` as a Rust library
+API, not a browser endpoint or a new forge publication. Its `work` is a bounded
+decision projection, explicitly not an issue census; `preview_starts` are not
+confirmed runs. The app's existing `needs_you.epics` supplies activity and epic
+references, not Priority, titles, goals, child membership or per-epic change
+times. Existing pass publications supply run references and some review waits,
+but cannot prove that an unlisted child has no work or blocker.
+
+Required producer handoff in **cgwalters-forge/agent-board**: extend the existing
+pass/holds projection (`crates/board-forge/src/pass/holds.rs`,
+`crates/board-forge/src/pass/decision.rs` and the publication builder in
+`crates/board-forge/src/pass/usage.rs`) with a bounded, optional epic summary.
+It needs open epics selected by the project's **Priority P0** field, typed item
+references, title and first-sentence goal, and child/progress coverage from native
+sub-issues and body tasks without double-counting linked children. For each child,
+publish completion, confirmed running jobs with their actual run repositories
+and IDs, and explicit blocker facts: operator decision, upstream review, failing
+CI, pass hold reason or confirmed not-started. Preserve unknown states, source
+observation clocks, omissions and completeness. Include a per-epic last-change
+clock and operator-blocked count so the browser can order by that count, then
+oldest change, without deriving scheduler state. Keep this within the existing
+publication transport and size bounds; absence must remain off/unknown.
+
+Agree and publish the producer's wire schema and a synthetic serialization
+fixture before adding a consumer. The fixture must include one P0 epic with
+blocked, moving and done children, overlapping native/body tasks, and incomplete
+coverage. Then render compact linked cards near the top of Needs you, with
+freshness/unknown labels, and test every child/item and run link, ordering and
+phone layout. No browser option, poll, action or speculative parser is added
+here. This run cannot file the producer issue in another repository; the handoff
+above still needs filing there. #298 remains open pending that publication and
+the UI implementation.
+
 ## Today
 
 Below Needs you, **Today** renders the optional `agent-board/today/v1`
