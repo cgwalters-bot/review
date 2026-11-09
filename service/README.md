@@ -29,6 +29,8 @@ the others.
 It serves:
 
 - `GET /api/state`: the whole state (`review-service/v1`), including `version`;
+- `GET /api/v1/state`: the same document, with `generation` matching the
+  existing full-resync SSE event id;
 - `GET /api/repos/OWNER/REPO`: one repository's runs, PRs and waiting
   items, each section with the whole section's `complete`, `readAt` and
   `error`, since a list cut short may be missing this repository's items;
@@ -64,6 +66,82 @@ proxy. It refuses requests whose `Host` is a domain name other than
 `localhost` or an `--allow-host` name, so a web page can't read the state
 by pointing its own name at the service's address (DNS rebinding). Behind
 a proxy, give the name the proxy forwards in `Host`.
+
+## Board decision preview (tracker#1456 phase 1)
+
+Board reads are **off by default**. To try the integration locally, supply
+your own GitHub `agent-board.json`, in the format accepted by the pinned
+board-forge revision, and the same read-only token source as above:
+
+    cargo run --manifest-path service/Cargo.toml -- \
+      --listen 127.0.0.1:8080 --board-config /path/to/agent-board.json \
+      --github-token-file /path/to/read-only-token
+
+For tracker's board, obtain `.github/poll/agent-board.json` from
+`cgwalters-forge/tracker` into a local file; do not copy deployment prompts
+into this service. The config is read and validated once at startup (at
+most 1 MiB); restart to change it. No deployment or caller workflow is
+changed here. The service supports GitHub boards, not Forgejo boards.
+
+The threat stopped by keeping this opt-in is accidental access to another
+board's private data and consumption of its API budget. Once enabled, each
+refresh calls the exported board-forge `pass::decision::preview` once,
+not a second scheduler. It admits at most 128 forge requests over 45
+seconds, with a 10-second per-request timeout and a 2 MiB response limit.
+Exhaustion is incomplete evidence, not a successful empty board. These
+bounds apply to the added preview, not the existing runs/PR/waiting reads.
+There are no retries or overlapping refreshes.
+
+The threat stopped by the read-only transport is an accidental applying
+path writing a comment, changing labels, merging, rerunning or dispatching
+a job. It refuses all non-GET REST methods, GraphQL documents containing a
+`mutation` token, and downloads, independently of the library's preview
+guard. Only GitHub API-origin requests receive the token; redirects are
+not followed. File tokens are reread for every request, and Octo STS shares
+the existing rotation/exchange logic. **Keep the token read-only**: Projects
+read may be needed for the supplied board, but do not broaden a deployed
+token's permissions as part of enabling this preview. `poll.yml` remains
+the sole writer; preview starts are proposals, never execution receipts.
+
+When enabled, `/api/v1/state`, `/api/state` and the `state` SSE payload
+include an additional `decision` section. Its `items` has zero entries
+before observation, then one `agent-board/decision/v1` snapshot. The
+snapshot retains board-forge's coverage, omitted counts, per-source clocks,
+carried evidence, provenance and confirmed effects. A partial observation
+replaces the prior snapshot with fresh partial evidence; a failure before
+observation keeps the prior items and `readAt`, sets `complete: false` and
+reports an error. With no prior snapshot it remains unavailable, not an
+empty successful result. Missing or stale usage is not upgraded merely
+because the preview ran. Broker reads are deliberately unavailable in this
+first integration: board-forge may use published forge evidence with its
+original timestamps; missing evidence stays missing. The service contacts
+no inference endpoint and accepts no inference credential. Configured
+private URL hosts and tokens used during the read are redacted from the
+projection. Published prose is also screened independently for addresses
+and credential formats, including older installation tokens; raw
+transport/config errors are not published or logged. Typed not-found,
+authentication and rate-limit failures retain board-forge's semantics,
+including its rate-limit breaker, without exposing upstream error bodies.
+
+One watch-channel replacement publishes the legacy sections and decision
+together. The versioned HTTP endpoint does not run a preview: it returns
+that exact published generation. SSE's id and the document's `generation`
+are equal; reconnecting gets the current full document, not a delta or a
+recomputation. Runs, PRs, waiting, repository filtering and section errors
+keep their existing contracts. Disabled instances omit `decision` entirely.
+The preview captures its own observation clock after the legacy reads;
+`refreshedAt` is the publication clock, not a source validation timestamp.
+
+The dependency is pinned to immutable agent-board revision
+`7a1af07d7ffd10d2048efb98ba8010eb2f1e0c95` (includes #799's snapshot API).
+As of this integration, agent-board#794 is open. `board::Reader::refresh`
+is the explicit direct-read/cache seam: every preview receives fresh
+disposable pass state; no second response cache is implemented. Repeated
+reads and loss/restart produce the same evidence at the same clock, but
+**warm-cache acceptance remains open** pending #794's reusable API and
+fixtures. Losing this service's memory loses no authority or durable state;
+the legacy REST ETag cache is unchanged. This is not completion of #281 or
+the tracker#1456 epic, nor browser/CLI/chat migration.
 
 ## Token sources
 
@@ -138,6 +216,8 @@ against the answers in `fixtures/github.json`, the conditional requests
 against a local fake GitHub, the token sources against a fake Octo STS,
 and the endpoints and events.
 
-The app doesn't read from the service yet, nor does the service read pools,
-pace, the per-repository board or the pass's decisions (from the pass's run
-summary); those are follow-up slices.
+The added preview tests use a local fake forge for cold/repeated/lost state,
+partial board reads, stale usage, missing broker evidence and token rotation,
+and check effect rejection, read bounds, redaction and HTTP/SSE generation
+parity. Warm-cache checks await agent-board#794. The app doesn't read from
+the service yet; consumer integration remains a follow-up slice.

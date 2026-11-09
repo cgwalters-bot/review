@@ -1,6 +1,7 @@
 //! review-service: builds the control app's state from GitHub queries on
 //! a timer and serves it, read-only, with the app. See service/README.md.
 
+mod board;
 mod github;
 mod server;
 mod state;
@@ -31,6 +32,7 @@ seconds and serve it read-only: /api/state, /api/repos/OWNER/REPO,
                            and IP addresses, such as the proxy's; repeatable
   --static DIR             the built app to serve (default dist)
   --interval SECONDS       refresh period, 30 to 3600 (default 60)
+  --board-config PATH      opt in to one bounded board-forge preview per refresh
 
 The GitHub token, which needs only read access, comes from one of:
 
@@ -72,6 +74,7 @@ struct Args {
     static_dir: PathBuf,
     interval: Duration,
     token: TokenConfig,
+    board_config: Option<PathBuf>,
 }
 
 /// The arguments, with `token_file_env` the value of $GITHUB_TOKEN_FILE.
@@ -84,6 +87,7 @@ fn parse_args(
     let mut static_dir = PathBuf::from(DEFAULT_STATIC);
     let mut interval = DEFAULT_INTERVAL_SECS;
     let mut token_file = token_file_env.filter(|f| !f.is_empty());
+    let mut board_config = None;
     let (mut sts_scope, mut sts_identity, mut sts_token_file) = (None, None, None);
     while let Some(a) = args.next() {
         let (flag, inline) = match a.split_once('=') {
@@ -100,6 +104,7 @@ fn parse_args(
             "--listen" => listen = value,
             "--allow-host" => allowed_hosts.push(value),
             "--static" => static_dir = value.into(),
+            "--board-config" => board_config = Some(value.into()),
             "--interval" => {
                 interval = value
                     .parse()
@@ -147,6 +152,7 @@ fn parse_args(
         static_dir,
         interval: Duration::from_secs(interval),
         token,
+        board_config,
     }))
 }
 
@@ -171,14 +177,35 @@ fn now() -> String {
     humantime::format_rfc3339_seconds(SystemTime::now()).to_string()
 }
 
+/// Compute one whole generation before the watch channel exposes any of it.
+/// Each source gets its own observation clock; publication is not validation.
+async fn refresh_generation<S: github::Source>(
+    client: &S,
+    board: Option<&board::Reader>,
+    prev: &State,
+    clock: impl Fn() -> String,
+) -> State {
+    let mut next = state::refresh(client, prev, &clock()).await;
+    if let Some(board) = board {
+        next.decision = Some(board.refresh(prev.decision.as_ref(), &clock()).await);
+    }
+    next.refreshed_at = Some(clock());
+    next
+}
+
 /// Refresh the state every `interval`, publishing each result.
-async fn refresher(client: Client, tx: watch::Sender<Arc<State>>, interval: Duration) {
+async fn refresher(
+    client: Client,
+    board: Option<board::Reader>,
+    tx: watch::Sender<Arc<State>>,
+    interval: Duration,
+) {
     let mut ticks = tokio::time::interval(interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticks.tick().await;
         let prev = tx.borrow().clone();
-        let next = state::refresh(&client, &prev, &now()).await;
+        let next = refresh_generation(&client, board.as_ref(), &prev, now).await;
         client.sweep();
         for (name, error) in [
             ("runs", &next.runs.error),
@@ -211,15 +238,24 @@ async fn main() -> Result<()> {
         print!("{USAGE}");
         return Ok(());
     };
-    let client = Client::new(token_source(args.token)?, github::API_ROOT)?;
+    let token = Arc::new(token_source(args.token)?);
+    let board = match args.board_config {
+        Some(path) => Some(board::Reader::new(&path, token.clone()).await?),
+        None => None,
+    };
+    let client = Client::new(token, github::API_ROOT)?;
     if !args.static_dir.is_dir() {
         println!(
             "review-service: {} is not a directory; build the app (npm run build) to serve it",
             args.static_dir.display()
         );
     }
-    let (tx, rx) = watch::channel(Arc::new(State::empty()));
-    let refresher = tokio::spawn(refresher(client, tx, args.interval));
+    let mut initial = State::empty();
+    if board.is_some() {
+        initial.decision = Some(Default::default());
+    }
+    let (tx, rx) = watch::channel(Arc::new(initial));
+    let refresher = tokio::spawn(refresher(client, board, tx, args.interval));
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("listening on {}", args.listen))?;
@@ -262,6 +298,14 @@ mod tests {
         assert_eq!(a.interval, Duration::from_secs(DEFAULT_INTERVAL_SECS));
         assert_eq!(a.token, TokenConfig::Gh);
         assert!(a.allowed_hosts.is_empty());
+        assert!(a.board_config.is_none(), "board reads are off by default");
+        assert_eq!(
+            parse(&["--board-config=board.json"])
+                .unwrap()
+                .unwrap()
+                .board_config,
+            Some(PathBuf::from("board.json"))
+        );
         let a = parse(&[
             "--listen=127.0.0.1:9000",
             "--static",
