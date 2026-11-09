@@ -189,8 +189,25 @@ kinds) rank first, then by `act_now` count. While a list is incomplete,
 whether or not it publishes `act_now`, Act now also lists its open decisions
 under a note saying so, with their `act_now` count where it has one and
 "unblocks unknown" otherwise. These rows have Inspect only, never a write
-shortcut, and `control-app act-now` marks them `fallback`. A decision whose
-issue lacks a label, or that the pass left out, is still not listed.
+shortcut, and `control-app act-now` marks them `fallback`.
+
+Act now is the first home section, above Focus and active work. While the
+pass's list is missing, failed, unavailable, cached, stale or incomplete,
+Act now says which instead of hiding, and the app lists open issues
+labelled `needs-human` in the forge organization directly (one search of
+at most three pages per poll, with the viewer's token, only while the gap
+lasts). These
+rows are separate from the published ones and read-only: a GitHub link and
+"unblocks unknown", no shortcut. The label is not a question, an answer or
+permission to release the hold, and nothing removes it. A published row for
+the same issue wins. A failed, partial or capped read says so and never
+that no decision waits. A decision without the label, or outside the
+organization, cannot be found this way.
+
+Still to do for #305: structured choices for multi-question decisions,
+recorded on the issue; producer-published links to what a decision unblocks
+and counts for uncertified decisions; and a linked feed of the controller's
+reports.
 
 `src/github/merge.ts` rechecks the current publication and GitHub policy as the
 viewer before sending one mutation. GitHub's merge queue flag covers branch

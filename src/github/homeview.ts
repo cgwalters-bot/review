@@ -53,8 +53,9 @@ export function homeSkeleton(hooks: HomeHooks): Home {
   const focus = h("div", { [VIEW_ATTR]: "inbox" });
   const today = h("div", { [VIEW_ATTR]: "inbox" });
   // Routing owns the wrapper's visibility; publication owns the content's.
+  // Decisions come first: one may block what Focus and active work show.
   const actNow = h("section", { class: "act-now", "aria-label": "Act now", hidden: "" });
-  const el = h("div", { class: HOME_CLASS }, focus, active, h("div", { [VIEW_ATTR]: "inbox" }, actNow), details, today, peopleSection, passes, repositories, statusNote, freshness);
+  const el = h("div", { class: HOME_CLASS }, h("div", { [VIEW_ATTR]: "inbox" }, actNow), focus, active, details, today, peopleSection, passes, repositories, statusNote, freshness);
   return { el, sections: { needs: { details, count, body } }, slots: { focus, active, actNow, today, people, peopleCount, statusNote, passes, repositories, freshness } };
 }
 

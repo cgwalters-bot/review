@@ -53,7 +53,8 @@ import { chatPanel, type ChatPanel } from "./chat.ts";
 import { CHAT_CONFIG } from "./chatconfig.ts";
 import { type ChatAnswer, chatItem, type ChatItem, startChatButton } from "./chatitem.ts";
 import { CARD_CLASS, CARD_DONE_CLASS, cardEl, fillActNow, fillInbox, type InboxHooks, publishedContext } from "./inboxview.ts";
-import { actNowRows, mergeRefusal } from "./actnow.ts";
+import { actNowGap, actNowRows, labelledIssues, mergeRefusal } from "./actnow.ts";
+import { loadNeedsHuman, NEEDS_HUMAN_LABEL, NEEDS_HUMAN_QUERY, type NeedsHumanRead } from "./needshuman.ts";
 import {
   CLASSIC_SCOPES,
   DONE_NOTICE_MS,
@@ -125,6 +126,9 @@ interface State {
   peopleRunning?: boolean;
   peopleRevision?: number;
   peopleWrites?: number;
+  /** The direct needs-human read, made only while the pass's list cannot vouch for Act now. */
+  needsHuman?: NeedsHumanRead;
+  needsHumanRunning?: boolean;
   /** What the views show and when each is read (see newLayer). */
   layer: SourceLayer<ViewId>;
   /** The view of the page last shown, which a bare # (e.g. "Back") returns to. */
@@ -738,7 +742,12 @@ function paintInbox(state: State, force = false): void {
   const selection = epicSelection(cards, epics, epics ? choice : "all", waits);
   const filtered = !!selection?.hidden;
   fillInbox(inbox.list, selection.ordered, inboxHooks(state), force, epics && choice !== "all" ? new Set(selection.selected.map((c) => c.key)) : undefined);
-  fillActNow(home.slots.actNow, actNowRows(state.published, Date.now(), state.completedAsks), inboxHooks(state));
+  const actNow = actNowRows(state.published, Date.now(), state.completedAsks);
+  const gap = actNowGap(state.published, Date.now());
+  // A read from an earlier gap is not shown as this one's.
+  if (gap === undefined) delete state.needsHuman;
+  fillActNow(home.slots.actNow, actNow, inboxHooks(state), gap === undefined ? undefined
+    : { gap, ...(state.needsHuman ? { read: state.needsHuman } : {}), issues: labelledIssues(state.needsHuman, actNow, state.published, state.completedAsks) });
   if (inbox.startChat) inbox.startChat.hidden = !state.chat;
   const { text, settled } = publishedNote(state.published, Date.now());
   const list = state.published.list;
@@ -854,6 +863,22 @@ async function refreshPeople(state: State): Promise<boolean> {
   }
 }
 
+/** List open needs-human issues directly; a failed read is shown as failed, never as none. */
+async function refreshNeedsHuman(state: State): Promise<boolean> {
+  if (state.needsHumanRunning || state.closed) return false;
+  state.needsHumanRunning = true;
+  try {
+    const read = await readSource(state.sources, NEEDS_HUMAN_LABEL, loadNeedsHuman, state.gh);
+    if (state.closed) return false;
+    state.needsHuman = read ?? { issues: [], error: state.sources[NEEDS_HUMAN_LABEL]?.error ?? "no reason given" };
+    paintInbox(state);
+    renderChrome(state);
+    return read !== undefined;
+  } finally {
+    state.needsHumanRunning = false;
+  }
+}
+
 /** Re-read the agent workflows' unfinished runs; false if nothing was read. */
 async function refreshLive(state: State): Promise<boolean> {
   if (state.liveRunning || state.closed) return false;
@@ -929,6 +954,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
       } },
       { name: "live", path: "the agent workflows' unfinished runs (Actions API)", cadence: LIVE_POLL_MS, views: ["inbox"], read: () => refreshLive(get()) },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
+      { name: NEEDS_HUMAN_LABEL, path: `search: ${NEEDS_HUMAN_QUERY}`, cadence: POLL_INTERVAL_MS, views: ["inbox"], read: () => refreshNeedsHuman(get()), when: () => actNowGap(get().published, Date.now()) !== undefined },
     ],
     () => (get().closed ? undefined : visibleView(document, HOME_CLASS)),
   );
@@ -1530,6 +1556,8 @@ async function poll(state: State, current: () => boolean): Promise<void> {
     state.lastPoll = new Date();
     state.layer.checked("inbox");
   }
+  // A source gated on what this read found (the direct needs-human read) starts now, not a poll later.
+  tickSources(state);
   if (route().route === "home" && !state.home?.el.isConnected) renderRoute(state);
   else renderChrome(state);
 }

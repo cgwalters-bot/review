@@ -5,7 +5,9 @@
 // marked as changed, until he sends or clears it, or reloads with r.
 
 import { h, link } from "../dom.ts";
-import { mergeRefusal, type ActNowRow } from "./actnow.ts";
+import { ACT_NOW_LIMIT, mergeRefusal, type ActNowCoverage, type ActNowRow } from "./actnow.ts";
+import { FORGE_ORG } from "./config.ts";
+import { NEEDS_HUMAN_LABEL, NEEDS_HUMAN_SEARCH_URL } from "./needshuman.ts";
 import type { Renderer } from "../markdown.ts";
 import { chatButton, type ChatItem } from "./chatitem.ts";
 import type { DocumentEntry } from "./decisiondocument.ts";
@@ -148,14 +150,42 @@ function approveBody(a: Ask, hooks: InboxHooks): HTMLElement {
 /** Why Act now lists decisions the pass did not certify. */
 const ACT_NOW_FALLBACK = "The pass's list is incomplete, so its open operator decisions are listed here too, without shortcuts.";
 
-/** Compact published shortlist, with a checked action, a visible refusal or an incomplete list's note on every row. */
-export function fillActNow(slot: HTMLElement, rows: readonly ActNowRow[], hooks: InboxHooks): void {
+/**
+ * The direct needs-human read, below the published rows: links only. The
+ * label is not a question, an answer or a release, so nothing here writes.
+ * An empty failed or partial read never says that no decision waits.
+ */
+function labelledList(c: ActNowCoverage): HTMLElement {
+  const el = h("div", { class: "act-now-labelled", "aria-label": "Labelled needs-human issues" },
+    h("h3", {}, `Labelled ${NEEDS_HUMAN_LABEL}, not certified`),
+    h("p", { class: "note" }, `Open issues labelled ${NEEDS_HUMAN_LABEL} in ${FORGE_ORG}, read directly: read-only, unblocks unknown. The label alone is not a question, an answer or a release of the hold; a decision without the label is not found this way.`));
+  const read = c.read;
+  if (!read) {
+    el.append(h("p", { class: "note" }, `Listing ${NEEDS_HUMAN_LABEL} issues…`));
+    return el;
+  }
+  if (read.error) el.append(h("p", { class: "warn" }, `Couldn't list ${NEEDS_HUMAN_LABEL} issues: ${read.error}. Decisions may still be waiting.`));
+  if (read.partial) el.append(h("p", { class: "warn" }, `Partial: ${read.partial}. More may be waiting: `, link(NEEDS_HUMAN_SEARCH_URL, "search on GitHub"), "."));
+  if (!read.error && !read.issues.length && !read.partial) el.append(h("p", { class: "note" }, `No open ${NEEDS_HUMAN_LABEL} issue found.`));
+  else if (read.issues.length && !c.issues.length) el.append(h("p", { class: "note" }, "Every labelled issue read is listed above or done here."));
+  const shown = c.issues.slice(0, ACT_NOW_LIMIT);
+  if (shown.length) el.append(h("ul", {}, ...shown.map((i) => h("li", {}, link(i.url, i.item), " ", i.title, " · unblocks unknown"))));
+  if (c.issues.length > shown.length) el.append(h("p", { class: "note" }, `${c.issues.length - shown.length} more: `, link(NEEDS_HUMAN_SEARCH_URL, "search on GitHub"), "."));
+  return el;
+}
+
+/**
+ * Compact published shortlist, with a checked action, a visible refusal or an incomplete list's note on every row.
+ * With `coverage`, the list cannot vouch for it: it says why and lists the direct read too, never hidden.
+ */
+export function fillActNow(slot: HTMLElement, rows: readonly ActNowRow[], hooks: InboxHooks, coverage?: ActNowCoverage): void {
   // Merge has no canonical writer on the Answer card. Its session outcomes
   // remain visible even after completion removes the ask from the shortlist.
   const receipts = [...(hooks.writes ?? [])].flatMap(([key, body]) => key.startsWith('["merge",') && body.querySelector(`[data-sent], [${KEEP_ATTR}]`) ?
     [h("div", { class: "merge-receipt" }, body.dataset.mergeTarget ?? "Merge / enqueue", body.querySelector(".status")!.cloneNode(true))] : []);
-  slot.hidden = rows.length === 0 && receipts.length === 0;
-  slot.replaceChildren(h("h2", {}, "Act now"), ...(rows.some((r) => r.fallback) ? [h("p", { class: "note" }, ACT_NOW_FALLBACK)] : []), h("ol", {}, ...rows.map(({ ask: a, unblocks, fallback }) => {
+  slot.hidden = !coverage && rows.length === 0 && receipts.length === 0;
+  slot.replaceChildren(h("h2", {}, "Act now"), ...(coverage ? [h("p", { class: "warn act-now-gap" }, `${coverage.gap}: Act now may be missing decisions.`)] : []),
+    ...(rows.some((r) => r.fallback) ? [h("p", { class: "note" }, ACT_NOW_FALLBACK)] : []), h("ol", {}, ...rows.map(({ ask: a, unblocks, fallback }) => {
     const card = askCard(a);
     const row = h("li", {}, link(askUrl(a.action), a.item),
       h("p", {}, a.ask, a.group ? ` · ${a.group.numbers.length} PRs: ${a.group.reason}` : "",
@@ -202,7 +232,7 @@ export function fillActNow(slot: HTMLElement, rows: readonly ActNowRow[], hooks:
       row.append(h("p", { class: "note" }, `Not offered here: ${why}`), h("a", { href: askHref(a.action) }, "Inspect"));
     }
     return row;
-  })), ...(receipts.length ? [h("div", { class: "merge-receipts", "aria-label": "Merge / enqueue receipts" }, ...receipts)] : []));
+  })), ...(coverage ? [labelledList(coverage)] : []), ...(receipts.length ? [h("div", { class: "merge-receipts", "aria-label": "Merge / enqueue receipts" }, ...receipts)] : []));
 }
 
 /** Digest rows belong to their report; other receipts stay live, including pending writes. */
