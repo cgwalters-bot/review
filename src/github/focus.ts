@@ -3,6 +3,7 @@
 import { h } from "../dom.ts";
 import { isObject, time } from "./heartbeat.ts";
 import { agoLabel } from "./view.ts";
+import { load, save } from "./store.ts";
 
 interface Blocker {
   type: "operator" | "ci" | "review" | "hold" | "not-started" | "unknown";
@@ -92,7 +93,7 @@ function blockerView(b: Blocker | null): HTMLElement {
   return h("span", {}, labels[b.type], b.reason ? ` — ${b.reason}` : "", b.pull ? h("span", {}, " · ", h("a", { href: pullUrl(b.pull) }, b.pull)) : "");
 }
 
-export function focusView(data: Focus | string | undefined, now: number, unavailable?: string): HTMLElement {
+export function focusView(data: Focus | string | undefined, now: number, unavailable?: string, login?: string): HTMLElement {
   const el = h("section", { class: "focus", "aria-label": "Focus" }, h("h2", {}, "Focus"));
   if (unavailable) el.append(h("p", { class: "note" }, `Focus unavailable: ${unavailable}; published facts below are not confirmed current.`));
   if (!data || typeof data === "string") {
@@ -102,18 +103,29 @@ export function focusView(data: Focus | string | undefined, now: number, unavail
   el.append(h("p", { class: "note" }, "P0 · Observed ", agoLabel(data.observed_at, now),
     ` · complete:${data.complete} · ${Object.entries(data.sources).map(([k, v]) => `${k}: ${v}`).join(" · ")} · ${data.omitted} epics omitted · ${data.unread_epics} unread epics`));
   for (const e of data.epics) {
-    const card = h("article", { class: "focus-card" }, h("h3", {}, h("a", { href: issueUrl(e.item) }, e.title ?? e.item)),
-      h("p", {}, e.goal ?? "Goal not published"), h("p", { class: "note" }, `${e.progress.done}/${e.progress.total} done · ${e.operator_blocked} operator blocked · `,
-        ...(e.changed_at ? ["Changed ", agoLabel(e.changed_at, now)] : ["Change time unknown"])),
-      h("p", {}, "Epic: ", blockerView(e.blocker)));
+    const open = e.children.filter((c) => c.state === "open");
+    const done = e.children.filter((c) => c.state === "done");
+    const topBlocker = e.blocker ?? open.find((c) => c.blocker?.type === "operator")?.blocker ?? open.find((c) => c.blocker)?.blocker ?? null;
+    const card = h("details", { class: "focus-card" }, h("summary", {},
+      h("h3", {}, h("a", { href: issueUrl(e.item) }, e.title ?? e.item)),
+      h("p", {}, e.goal ?? "Goal not published"), h("p", { class: "note" }, `${e.progress.done}/${e.progress.total} done · ${e.operator_blocked} operator blocked`),
+      h("p", {}, blockerView(topBlocker))));
+    const key = login ? `focus.expanded.${login.toLowerCase()}.${e.item.toLowerCase()}` : undefined;
+    card.open = key ? load(key, false, (v): v is boolean => typeof v === "boolean") : false;
+    card.addEventListener("toggle", (event) => {
+      if (event.target === card && key) save(key, card.open);
+    });
+    card.append(h("p", { class: "note" }, ...(e.changed_at ? ["Changed ", agoLabel(e.changed_at, now)] : ["Change time unknown"])));
     const runs = h("ul", { class: "focus-runs" });
     for (const r of e.runs) runs.append(h("li", {}, h("a", { href: issueUrl(r.item) }, r.item), ` · ${r.kind} · ${r.pool} · `,
       h("a", { href: `https://github.com/${r.run.repository}/actions/runs/${r.run.id}` }, `${r.run.repository}/${r.run.id}`)));
     card.append(runs, h("p", { class: "note" }, `${e.runs.length} runs listed · ${e.runs_omitted} runs omitted`));
-    const children = h("ul", { class: "focus-children" });
-    for (const c of e.children) children.append(h("li", {}, c.item ? h("a", { href: issueUrl(c.item) }, c.title ?? c.item) : h("span", {}, c.title ?? "Untitled task"),
-      " · ", c.state === "done" ? h("span", {}, "Done") : blockerView(c.blocker)));
-    card.append(children, h("p", { class: "note" }, `${e.omitted} children omitted`));
+    const childrenView = (items: Child[]) => h("ul", { class: "focus-children" }, ...items.map((c) => h("li", {},
+      c.item ? h("a", { href: issueUrl(c.item) }, c.title ?? c.item) : h("span", {}, c.title ?? "Untitled task"),
+      " · ", c.state === "done" ? h("span", {}, "Done") : blockerView(c.blocker))));
+    card.append(childrenView(open));
+    if (done.length) card.append(h("details", { class: "focus-done" }, h("summary", {}, `${done.length} done`), childrenView(done)));
+    card.append(h("p", { class: "note" }, `${e.omitted} children omitted`));
     el.append(card);
   }
   if (!data.epics.length) el.append(h("p", { class: "note" }, "No P0 epic cards listed; coverage is described above."));
