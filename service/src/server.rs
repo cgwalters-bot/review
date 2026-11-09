@@ -70,7 +70,7 @@ async fn allowed_host(
     } else {
         (
             StatusCode::FORBIDDEN,
-            "review-service answers only to localhost, an IP address or an --allow-host name\n",
+            "control-app answers only to localhost, an IP address or an --allow-host name\n",
         )
             .into_response()
     }
@@ -209,6 +209,11 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(initial["version"], version);
+        assert_eq!(initial["schema"], "review-service/v1");
+        assert_eq!(
+            initial["schemaAliases"],
+            serde_json::json!(["control-app/v1"])
+        );
 
         let mut events = http.get(format!("{base}/api/events")).send().await.unwrap();
         assert_eq!(events.headers()["content-type"], "text/event-stream");
@@ -217,6 +222,11 @@ pub(crate) mod tests {
         let (id, first) = next_state(&mut events, &mut buf).await;
         assert_eq!(id, "0");
         assert_eq!(first["schema"], "review-service/v1");
+        assert_eq!(
+            first["schemaAliases"],
+            serde_json::json!(["control-app/v1"])
+        );
+        assert_eq!(first, initial);
         assert_eq!(first["version"], version);
         assert_eq!(first["refreshedAt"], Value::Null);
 
@@ -238,30 +248,40 @@ pub(crate) mod tests {
         tx.send(Arc::new(state)).unwrap();
         let (id, second) = next_state(&mut events, &mut buf).await;
         assert_eq!(id, "1");
+        assert_eq!(second["schema"], "review-service/v1");
+        assert_eq!(
+            second["schemaAliases"],
+            serde_json::json!(["control-app/v1"])
+        );
         assert_eq!(second["refreshedAt"], "2026-11-07T12:00:00Z");
         assert_eq!(second["generation"], 1);
         assert_eq!(second["decision"]["items"][0]["failures"], 1);
 
-        // Reconnecting with the last id resyncs with the whole state.
-        let mut again = http
-            .get(format!("{base}/api/events"))
-            .header("last-event-id", "1")
-            .send()
-            .await
-            .unwrap();
-        let (id, resynced) = next_state(&mut again, &mut String::new()).await;
-        assert_eq!((id.as_str(), &resynced), ("1", &second));
+        // Both a stale and a current last id resync with the whole state,
+        // including the legacy schema and its equivalent alias.
+        for last_id in ["0", "1"] {
+            let mut again = http
+                .get(format!("{base}/api/events"))
+                .header("last-event-id", last_id)
+                .send()
+                .await
+                .unwrap();
+            let (id, resynced) = next_state(&mut again, &mut String::new()).await;
+            assert_eq!((id.as_str(), &resynced), ("1", &second));
+        }
 
-        let whole: Value = http
-            .get(format!("{base}/api/v1/state"))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(whole, second);
-        assert_eq!(whole["version"], version);
+        for path in ["/api/state", "/api/v1/state"] {
+            let whole: Value = http
+                .get(format!("{base}{path}"))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(whole, second);
+            assert_eq!(whole["version"], version);
+        }
         let board: Value = http
             .get(format!("{base}/api/repos/bootc-dev/BOOTC"))
             .send()

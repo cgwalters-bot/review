@@ -177,7 +177,7 @@ impl Direct {
                     None => reader.http.get(url),
                 }
                 .bearer_auth(token)
-                .header("User-Agent", "review-service")
+                .header("User-Agent", "control-app")
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2022-11-28");
                 if let Some((key, value)) = validator {

@@ -15,6 +15,9 @@ use crate::version::Version;
 
 pub const SCHEMA: &str = "review-service/v1";
 
+/// Equivalent names for the same full-state payload, not separate versions.
+pub const SCHEMA_ALIASES: &[&str] = &["control-app/v1"];
+
 /// Where runs come from: every workflow of the tracker (passes and the jobs
 /// they dispatch), and the devspace agent runs (bin/bot-runs in homegit).
 pub const RUN_SOURCES: &[(&str, Option<&str>)] = &[
@@ -134,6 +137,7 @@ pub struct Waiting {
 #[serde(rename_all = "camelCase")]
 pub struct State {
     pub schema: &'static str,
+    pub schema_aliases: &'static [&'static str],
     pub version: Version,
     /// Counts refreshes, as the SSE event id.
     pub generation: u64,
@@ -184,6 +188,7 @@ impl State {
     pub fn empty() -> Self {
         Self {
             schema: SCHEMA,
+            schema_aliases: SCHEMA_ALIASES,
             ..Self::default()
         }
     }
@@ -219,6 +224,7 @@ pub async fn refresh<S: Source>(src: &S, prev: &State, now: &str) -> State {
     let (runs, prs, waiting) = tokio::join!(load_runs(src), load_prs(src), load_waiting(src));
     State {
         schema: SCHEMA,
+        schema_aliases: SCHEMA_ALIASES,
         version: Version::default(),
         generation: prev.generation + 1,
         refreshed_at: Some(now.to_owned()),

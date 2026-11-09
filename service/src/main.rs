@@ -1,4 +1,4 @@
-//! review-service: builds the control app's state from GitHub queries on
+//! control-app: builds the control app's state from GitHub queries on
 //! a timer and serves it, read-only, with the app. See service/README.md.
 
 mod board;
@@ -21,7 +21,7 @@ use crate::github::Client;
 use crate::state::State;
 use crate::token::{OctoSts, TokenSource};
 
-const USAGE: &str = "Usage: review-service [OPTION...]
+const USAGE: &str = "Usage: control-app [OPTION...]
 
 Build the control app's state from GitHub queries every --interval
 seconds and serve it read-only: /api/state, /api/repos/OWNER/REPO,
@@ -213,7 +213,7 @@ async fn refresher(
             ("waiting", &next.waiting.error),
         ] {
             if let Some(e) = error {
-                println!("review-service: {name}: {e}");
+                println!("control-app: {name}: {e}");
             }
         }
         tx.send_replace(Arc::new(next));
@@ -246,7 +246,7 @@ async fn main() -> Result<()> {
     let client = Client::new(token, github::API_ROOT)?;
     if !args.static_dir.is_dir() {
         println!(
-            "review-service: {} is not a directory; build the app (npm run build) to serve it",
+            "control-app: {} is not a directory; build the app (npm run build) to serve it",
             args.static_dir.display()
         );
     }
@@ -260,17 +260,17 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("listening on {}", args.listen))?;
     let shutdown = terminated();
-    println!("review-service: serving http://{}", args.listen);
+    println!("control-app: serving http://{}", args.listen);
     axum::serve(
         listener,
         server::router(rx, Some(args.static_dir), args.allowed_hosts),
     )
     .with_graceful_shutdown(async move {
         if let Err(e) = shutdown.await {
-            println!("review-service: {e:#}");
+            println!("control-app: {e:#}");
             std::future::pending::<()>().await;
         }
-        println!("review-service: shutting down");
+        println!("control-app: shutting down");
         // Dropping the state's sender ends the event streams, which would
         // otherwise hold the graceful shutdown open.
         refresher.abort();
