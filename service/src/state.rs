@@ -136,13 +136,14 @@ pub struct State {
     pub schema: &'static str,
     pub version: Version,
     /// Counts refreshes, as the SSE event id.
-    #[serde(skip)]
     pub generation: u64,
     /// When the last refresh finished; null before the first.
     pub refreshed_at: Option<String>,
     pub runs: Section<Run>,
     pub prs: Section<Pr>,
     pub waiting: Section<Waiting>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision: Option<Section<Value>>,
 }
 
 /// One repository's part of the state, case-insensitively by name.
@@ -224,6 +225,7 @@ pub async fn refresh<S: Source>(src: &S, prev: &State, now: &str) -> State {
         runs: section(runs, &prev.runs, now),
         prs: section(prs, &prev.prs, now),
         waiting: section(waiting, &prev.waiting, now),
+        decision: prev.decision.clone(),
     }
 }
 

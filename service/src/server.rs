@@ -37,6 +37,7 @@ pub fn router(state: Shared, static_dir: Option<PathBuf>, allowed_hosts: Vec<Str
     let api = Router::new()
         .route("/healthz", get(health))
         .route("/api/state", get(whole))
+        .route("/api/v1/state", get(whole))
         .route("/api/repos/{owner}/{repo}", get(repo))
         .route("/api/events", get(events))
         .with_state(state);
@@ -125,7 +126,7 @@ async fn events(Extract(state): Extract<Shared>) -> impl IntoResponse {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use serde_json::Value;
 
     use super::*;
@@ -147,7 +148,10 @@ mod tests {
     }
 
     /// The id and data of the next complete SSE event of type `state`.
-    async fn next_state(resp: &mut reqwest::Response, buf: &mut String) -> (String, Value) {
+    pub(crate) async fn next_state(
+        resp: &mut reqwest::Response,
+        buf: &mut String,
+    ) -> (String, Value) {
         loop {
             if let Some(end) = buf.find("\n\n") {
                 let event: String = buf.drain(..end + 2).collect();
@@ -216,16 +220,27 @@ mod tests {
         assert_eq!(first["version"], version);
         assert_eq!(first["refreshedAt"], Value::Null);
 
-        let state = refresh(
+        let mut state = refresh(
             &Recorded::fixture(),
             &State::empty(),
             "2026-11-07T12:00:00Z",
         )
         .await;
+        state.decision = Some(crate::state::Section {
+            items: vec![
+                serde_json::json!({"schema": "agent-board/decision/v1", "complete": false,
+                "observed_at": "2026-11-07T12:00:00Z", "failures": 1}),
+            ],
+            complete: false,
+            read_at: Some("2026-11-07T12:00:00Z".into()),
+            error: Some("board preview has incomplete reads".into()),
+        });
         tx.send(Arc::new(state)).unwrap();
         let (id, second) = next_state(&mut events, &mut buf).await;
         assert_eq!(id, "1");
         assert_eq!(second["refreshedAt"], "2026-11-07T12:00:00Z");
+        assert_eq!(second["generation"], 1);
+        assert_eq!(second["decision"]["items"][0]["failures"], 1);
 
         // Reconnecting with the last id resyncs with the whole state.
         let mut again = http
@@ -238,7 +253,7 @@ mod tests {
         assert_eq!((id.as_str(), &resynced), ("1", &second));
 
         let whole: Value = http
-            .get(format!("{base}/api/state"))
+            .get(format!("{base}/api/v1/state"))
             .send()
             .await
             .unwrap()

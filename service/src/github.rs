@@ -4,7 +4,7 @@
 //! costs no rate budget, and is served from the cache.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -39,12 +39,12 @@ struct Cache {
 pub struct Client {
     http: reqwest::Client,
     root: String,
-    token: TokenSource,
+    token: Arc<TokenSource>,
     cache: Mutex<Cache>,
 }
 
 impl Client {
-    pub fn new(token: TokenSource, root: &str) -> Result<Self> {
+    pub fn new(token: impl Into<Arc<TokenSource>>, root: &str) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
@@ -52,7 +52,7 @@ impl Client {
         Ok(Self {
             http,
             root: root.trim_end_matches('/').to_owned(),
-            token,
+            token: token.into(),
             cache: Mutex::default(),
         })
     }
