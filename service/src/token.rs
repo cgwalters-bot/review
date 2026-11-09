@@ -136,7 +136,7 @@ impl OctoSts {
             .http
             .get(url)
             .header(AUTHORIZATION, format!("Bearer {oidc}"))
-            .header(USER_AGENT, "review-service")
+            .header(USER_AGENT, "control-app")
             .send()
             .await?;
         let status = resp.status();

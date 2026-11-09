@@ -29,7 +29,8 @@ ARG REVIEW_SERVICE_COMMIT
 RUN REVIEW_SERVICE_TAG="$REVIEW_SERVICE_TAG" REVIEW_SERVICE_COMMIT="$REVIEW_SERVICE_COMMIT" cargo build --release --locked
 
 FROM registry.access.redhat.com/ubi10/ubi-minimal
-COPY --from=service /src/target/release/review-service /usr/local/bin/review-service
+COPY --from=service /src/target/release/control-app /usr/local/bin/control-app
+RUN ln -s control-app /usr/local/bin/review-service
 COPY --from=app /src/dist /app/dist
 WORKDIR /app
 # No state and no writes: run it with a read-only root filesystem and, for
@@ -37,4 +38,4 @@ WORKDIR /app
 ENV TMPDIR=/tmp
 USER 65532:65532
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/review-service"]
+ENTRYPOINT ["/usr/local/bin/control-app"]

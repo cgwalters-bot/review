@@ -83,7 +83,7 @@ impl Source for Client {
             .header(AUTHORIZATION, format!("Bearer {token}"))
             .header(ACCEPT, "application/vnd.github+json")
             .header("X-GitHub-Api-Version", API_VERSION)
-            .header(USER_AGENT, "review-service");
+            .header(USER_AGENT, "control-app");
         if let Some((etag, _)) = &cached {
             req = req.header(IF_NONE_MATCH, etag);
         }

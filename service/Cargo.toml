@@ -6,6 +6,10 @@ rust-version = "1.88"
 description = "Builds the control app's state from GitHub queries and serves it, read-only, with the app"
 publish = false
 
+[[bin]]
+name = "control-app"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1"
 board-forge = { git = "https://github.com/cgwalters-forge/agent-board", rev = "7a1af07d7ffd10d2048efb98ba8010eb2f1e0c95" }

@@ -28,7 +28,8 @@ the others.
 
 It serves:
 
-- `GET /api/state`: the whole state (`review-service/v1`), including `version`;
+- `GET /api/state`: the whole state (`review-service/v1`), including `version`
+  and `schemaAliases: ["control-app/v1"]`;
 - `GET /api/v1/state`: the same document, with `generation` matching the
   existing full-resync SSE event id;
 - `GET /api/repos/OWNER/REPO`: one repository's runs, PRs and waiting
@@ -44,6 +45,12 @@ It serves:
 
 It has no route that writes, and its GitHub client sends only GETs. It logs
 to stdout and exits cleanly on SIGTERM.
+
+The full-state JSON keeps `schema: "review-service/v1"` for existing clients.
+The additive `schemaAliases: ["control-app/v1"]` is the recommended migration
+mechanism: both names describe the same payload, not different versions.
+Both state endpoints and all full-state SSE events include the alias, before
+the first refresh, after refreshes and on reconnects.
 
 Both endpoints report `version: {"tag": "v…", "commit": "…"}` with the
 release tag and full commit embedded at build time. Each field is `null`
@@ -201,8 +208,13 @@ only a `/tmp` for scratch. Pushing a `v*` tag publishes
 `ghcr.io/cgwalters-forge/control-app:TAG` (`.github/workflows/image.yml`).
 For one release, the same image is also published as
 `ghcr.io/cgwalters-forge/review-service:TAG` so existing deployments keep
-working while they migrate. The service binary remains `review-service`
-and its wire schema remains `review-service/v1` for compatibility.
+working while they migrate. The service executable, help and logs use
+`control-app`; the image's entrypoint is `/usr/local/bin/control-app`.
+`/usr/local/bin/review-service` remains a working compatibility symlink to
+that executable, accepting the same flags. The Cargo package name remains
+`review-service`; CLI aliases and Octo STS identity/trust-policy names are
+unchanged. The wire schema remains `review-service/v1`, with the additive
+`control-app/v1` alias described above.
 
 That workflow supplies `REVIEW_SERVICE_TAG` and `REVIEW_SERVICE_COMMIT` as
 container build arguments, embedding the pushed tag and commit in the binary.
