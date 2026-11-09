@@ -121,6 +121,15 @@ test("Needs you and Status render without errors", async ({ page }) => {
   }
   await screenshot(page, "inbox");
   if (!LIVE_TOKEN && DATA !== "259") {
+    const focus = page.getByRole("region", { name: "Focus", exact: true });
+    await expect(focus).toBeVisible();
+    await expect(focus).toContainText("Issue 2 · Waiting on operator — Ship it?");
+    await expect(focus).toContainText("Issue 3 · Moving");
+    await expect(focus).toContainText("Issue 4 · Done");
+    await expect(focus.getByRole("link", { name: "o/runner/41" })).toHaveAttribute("href", "https://github.com/o/runner/actions/runs/41");
+    await focus.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await focus.screenshot({ path: `${SCREENSHOT_DIR}/focus-${test.info().project.name}.png` });
     const today = page.getByRole("region", { name: "Today", exact: true });
     await expect(today).toBeVisible();
     await expect(today.getByText("3", { exact: true })).toBeVisible();
