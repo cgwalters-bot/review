@@ -5,6 +5,7 @@
 import { formatAnswer, parseQuestion } from "../answer.ts";
 import { h } from "../dom.ts";
 import { todayView } from "./today.ts";
+import { focusView } from "./focus.ts";
 import { readSource, type Sources } from "./freshness.ts";
 import { createRenderer } from "../markdown.ts";
 import { GitHub, GitHubError } from "./api.ts";
@@ -897,6 +898,7 @@ function paintActive(state: State): void {
   if (state.active?.repositories) state.repositories = state.active.repositories;
   const work = state.active?.passPublicationError ? undefined : state.active?.holds;
   state.home.slots.today.replaceChildren(todayView(work?.today, Date.now(), passUnavailable));
+  state.home.slots.focus.replaceChildren(focusView(work?.epicFocus, Date.now(), passUnavailable));
   if (!passUnavailable || work) state.repositoryWork = { work: work?.dispatchableWork, at: work?.at };
   state.home.slots.repositories.replaceChildren(repositoriesView(state.repositories ?? [], Date.now(), unavailable, {
     ...state.repositoryWork, pass, unavailable: passUnavailable,

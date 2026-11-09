@@ -461,6 +461,32 @@ do not poll. Classic tokens need `notifications` or `repo`; fine-grained
 tokens do not support notification endpoints. Inaccessible notifications
 leave review-request search results visible with a warning.
 
+## Focus
+
+**Focus** is the first section of the home (Needs you) page, not a separate
+route. It reads `epic_focus` (`agent-board/epic-focus/v1`) from the existing
+holds snapshot, with no additional fetch, poll, browser setting or write.
+Cards and children retain the producer's order (open children first). Each
+card links its epic title and shows its goal, done/total progress, operator
+blocked count, own blocker, Actions run links and children with plain-language
+blockers. A not-started child means nothing is moving it now, not that it
+never ran. Plain tasks without an item cannot have an item link.
+
+Coverage, observation time, omitted epics/children/runs and unread epics remain
+visible; partial or unread sources are not a complete inventory. An absent
+section explicitly says Focus is not published while tracker's existing
+off-by-default `holds.epicFocus` is being turned on. Unknown schemas and
+malformed records make only Focus unavailable. To prevent unbounded DOM growth
+and arbitrary publisher-address navigation, the reader bounds the section to
+10 epics, 50 children and 8 runs per epic, bounds prose and counts, and builds
+links from validated typed identities. Published prose is text, not authority.
+
+`test/fixtures/epic-focus.json` is the verbatim synthetic producer fixture from
+cgwalters-forge/agent-board at `7448aaf1deaf840e2833b79d1a61cbb56193ca24`,
+documented in its `docs/pass.md#epic-focus`, not live publication evidence.
+Browser tests capture Focus at desktop and phone widths. No producer or
+tracker settings are changed here.
+
 ## Today
 
 Below Needs you, **Today** renders the optional `agent-board/today/v1`
