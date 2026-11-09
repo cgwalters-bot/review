@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { run } from "../src/cli/controlplane.ts";
 import type { Io } from "../src/cli/queue.ts";
+import { GitHub } from "../src/github/api.ts";
+import { loadPassPublications } from "../src/github/holds.ts";
+import { firstPublished, inboxCards } from "../src/github/inbox.ts";
 import { usagePath } from "../src/github/usage.ts";
 import { compressedHolds, fixture, publishedTestHolds, scriptedFetch } from "./helpers.ts";
 
@@ -79,6 +82,67 @@ describe("control-app", () => {
     assert.deepEqual(r.json().rows, []);
   });
 
+  describe("needs-you", () => {
+    const actNowList = () => fixture<{ needs_you: Record<string, unknown> & { items: { key: string }[] } }>("act-now-needs-you.json").needs_you;
+    // The same snapshot, read with the same loader, as the panel would derive it.
+    async function panelCards(comments: unknown) {
+      const { fetchImpl } = scriptedFetch((method, url) => (method === "GET" && url === `${API}${usagePath}` ? { body: comments } : undefined));
+      const { holds } = await loadPassPublications(new GitHub(async () => "t", fetchImpl));
+      return inboxCards({ published: firstPublished(holds!, NOW.getTime()) }).map((c) => c.key);
+    }
+
+    for (const { name, comments, keys, listError, detailMissing } of [
+      { name: "a complete list, in inventory order", comments: holdsComment(),
+        keys: ["o/t#11", "o/t#2", "o/t#7", "o/t#10", "o/t#20", "o/t#30", "o/a#1", "o/a#2", "o/a#3", "o/d#1/digest", "o/ops#1"], listError: null, detailMissing: [] },
+      { name: "an identity whose detail is missing, as a placeholder in its place",
+        comments: holdsComment({ needs_you: { ...actNowList(), items: actNowList().items.filter((i) => i.key !== "o/t#7") } }),
+        keys: ["o/t#11", "o/t#2", "o/t#7", "o/t#10", "o/t#20", "o/t#30", "o/a#1", "o/a#2", "o/a#3", "o/d#1/digest", "o/ops#1"], listError: null, detailMissing: ["o/t#7"] },
+      { name: "the snapshot's own operator holds without a list", comments: holdsComment({ needs_you: undefined }),
+        keys: undefined, listError: /has no needs-you list/, detailMissing: [] },
+      { name: "the snapshot's own operator holds with an unusable list", comments: holdsComment({ needs_you: "garbage" }),
+        keys: undefined, listError: /needs-you list can't be used/, detailMissing: [] },
+    ]) {
+      it(name, async () => {
+        const r = await cli(["needs-you"], comments);
+        assert.equal(r.status, 0, r.stderr);
+        const doc = r.json();
+        assert.equal(doc.command, "needs-you");
+        assert.equal(doc.snapshotAt, "2026-11-06T12:00:00Z");
+        const cards = doc.cards as { key: string; url: string | null; detailMissing: boolean }[];
+        // The panel's derivation gives the same cards in the same order.
+        assert.deepEqual(cards.map((c) => c.key), await panelCards(comments));
+        if (keys) assert.deepEqual(cards.map((c) => c.key), keys);
+        assert.deepEqual(cards.filter((c) => c.detailMissing).map((c) => c.key), detailMissing);
+        if (listError) {
+          assert.match(doc.listError, listError);
+          assert.equal(doc.validatedAt, null);
+          assert.ok(cards.length > 0 && cards.every((c) => c.url?.startsWith("https://github.com/")));
+          assert.match(doc.note, /snapshot's own operator holds/);
+        } else {
+          assert.equal(doc.listError, null);
+          assert.equal(doc.validatedAt, "2026-11-06T12:00:00Z");
+          assert.match(doc.note, /checked on GitHub/);
+          assert.equal(doc.settled, doc.complete);
+        }
+        assert.deepEqual([...new Set(r.calls.map((c) => c.method))], ["GET"]);
+      });
+    }
+
+    it("a card names its ask, recommendation, source and link", async () => {
+      const [first] = (await cli(["needs-you"])).json().cards;
+      assert.deepEqual(first, {
+        key: "o/t#11", kind: "answer", title: "Pick A or B for o/t#11?", where: "o/t#11 · needs-human", url: "https://github.com/o/t/issues/11", since: "2026-11-06T12:00:00Z",
+        priority: "P0", note: "Carried over: the pass did not read its source again. The pass marks this request unverified-carried.", unavailable: false, item: "o/t#11", source: "items", askKind: "needs-human", recommendation: null, detailMissing: false,
+      });
+    });
+
+    it("fails, naming why, without a hold snapshot", async () => {
+      const r = await cli(["needs-you"], []);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /no hold snapshot/);
+    });
+  });
+
   it("repo: one repository's work, live runs and asks, case-insensitively", async () => {
     const r = await cli(["repo", "Example/Work"]);
     assert.equal(r.status, 0, r.stderr);
@@ -104,7 +168,7 @@ describe("control-app", () => {
   });
 
   for (const [argv, why] of [[[], /a command is needed/], [["fold"], /unknown command/], [["repo"], /OWNER\/REPO/], [["repo", "a/b", "c"], /OWNER\/REPO/],
-    [["changes"], /--since/], [["changes", "--since", "yesterday"], /--since/], [["status", "x"], /no arguments/],
+    [["changes"], /--since/], [["changes", "--since", "yesterday"], /--since/], [["status", "x"], /no arguments/], [["needs-you", "x"], /no arguments/],
     [["cancel", "42"], /--dry-run or --yes/], [["cancel", "42", "--dry-run", "--yes"], /--dry-run or --yes/], [["cancel", "--dry-run"], /needs one RUN/],
     [["retry", "x", "--yes"], /needs one RUN/], [["run-pass", "--yes", "now"], /no arguments/], [["run-pass", "--yes", "--kind", "fix"], /takes no --kind/],
     [["dispatch", "o/r", "--kind", "fix", "--brief", "b", "--yes"], /OWNER\/REPO#N/], [["dispatch", "o/r#1", "--brief", "b", "--yes"], /needs --kind/],
