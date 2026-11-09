@@ -8,6 +8,7 @@ import { GitHub } from "../src/github/api.ts";
 import { ResponseCache, tokenHash } from "../src/github/cache.ts";
 import { TOKEN_KEY } from "../src/github/config.ts";
 import { IdbStore } from "../src/github/idbstore.ts";
+import { NEEDS_HUMAN_QUERY } from "../src/github/needshuman.ts";
 import { PASSES_MARKER } from "../src/github/passes.ts";
 import { usagePath } from "../src/github/usage.ts";
 import { fixture } from "./helpers.ts";
@@ -42,7 +43,8 @@ for (const route of ["inbox", "status"]) it(`retains cold cached history without
     fetch: async (input: string, init?: RequestInit) => {
       assert.ok(!init?.method || init.method === "GET" || new URL(input).pathname === "/graphql", "no live writes");
       const url = new URL(input);
-      requests.push(url.pathname);
+      // The failed publication's one allowed search: Act now's direct needs-human read.
+      requests.push(url.pathname === "/search/issues" && url.searchParams.get("q") === NEEDS_HUMAN_QUERY ? "needs-human" : url.pathname);
       if (url.pathname + url.search === usagePath) {
         await gate;
         return Response.json({ message: "Synthetic publication failure" }, { status: 503 });

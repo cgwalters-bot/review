@@ -84,9 +84,9 @@ describe("Focus publication", () => {
 });
 
 describe("Focus section", () => {
-  it("is the first home section, not a route", () => {
+  it("is the first home section after Act now's decisions, not a route", () => {
     const home = homeSkeleton({ toggled() {} });
-    assert.equal(home.el.firstElementChild, home.slots.focus);
+    assert.equal(home.el.children[1], home.slots.focus);
   });
 
   it("renders cards and children in producer order, with blocked, moving and done states and typed links", () => {

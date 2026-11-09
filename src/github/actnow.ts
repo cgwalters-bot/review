@@ -1,6 +1,7 @@
 // Readiness and dependency counts belong to the pass, never to browser prose parsing.
 import type { Ask } from "./holds.ts";
 import { decisionKey, githubTarget, NEEDS_YOU_MAX_AGE_MS, refusal, type Published } from "./inbox.ts";
+import { issueKey, type LabelledIssue, type NeedsHumanRead } from "./needshuman.ts";
 
 export const ACT_NOW_LIMIT = 10;
 
@@ -54,4 +55,36 @@ export function actNowRows(p: Published, now: number, completed: ReadonlyMap<str
   return rows.sort((a, b) => decision(a) - decision(b) || b.unblocks - a.unblocks ||
     (a.ask.priority ?? "P9").localeCompare(b.ask.priority ?? "P9") ||
     Date.parse(a.ask.waitingSince) - Date.parse(b.ask.waitingSince) || a.ask.key.localeCompare(b.ask.key)).slice(0, ACT_NOW_LIMIT);
+}
+
+/**
+ * Why the pass's list cannot vouch that Act now holds every decision;
+ * undefined while it is complete and current, or before its first read ends.
+ */
+export function actNowGap(p: Published, now: number): string | undefined {
+  const list = p.list;
+  if (p.error) return p.error;
+  if (!list) return undefined;
+  if (p.unavailable) return "The pass's needs-you list can't be read now";
+  if (p.checkedAt === undefined) return "The pass's needs-you list is this browser's cached copy, not yet checked on GitHub";
+  const age = now - Date.parse(list.validatedAt);
+  if (!Number.isFinite(age) || age < 0 || age > NEEDS_YOU_MAX_AGE_MS) return "The pass's needs-you list is stale: not confirmed within its age bound";
+  if (!list.complete) return "The pass's needs-you list is incomplete";
+  return undefined;
+}
+
+/** What Act now shows besides its rows while the list cannot vouch for it. */
+export interface ActNowCoverage {
+  gap: string;
+  /** The direct label read; undefined until it has run. */
+  read?: NeedsHumanRead;
+  /** The read's issues not already shown or done here. */
+  issues: readonly LabelledIssue[];
+}
+
+/** The direct read's issues, less any shown as a published row or completed here: published evidence wins. */
+export function labelledIssues(read: NeedsHumanRead | undefined, rows: readonly ActNowRow[], p: Published, completed: ReadonlyMap<string, string> = new Map()): LabelledIssue[] {
+  const target = (a: Ask) => issueKey(a.action.repository, a.action.number);
+  const shown = new Set([...rows.map((r) => target(r.ask)), ...p.asks.filter((a) => completed.get(a.key) === decisionKey(a)).map(target)]);
+  return (read?.issues ?? []).filter((i) => !shown.has(i.key));
 }

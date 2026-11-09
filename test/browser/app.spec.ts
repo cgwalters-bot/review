@@ -19,7 +19,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
-import { FIXTURE_DATA, type FixtureData, FIXTURE_TOKEN, fixtureResponse, isWrite, SESSION_ENDPOINT } from "../e2e/fixture-api.ts";
+import { DECISION, FIXTURE_DATA, type FixtureData, FIXTURE_TOKEN, fixtureResponse, isWrite, SESSION_ENDPOINT } from "../e2e/fixture-api.ts";
 import { countProblems, DIAGNOSTICS, diagnosticTexts, liveReport, type ViewReport } from "../e2e/live-report.ts";
 
 const API = "https://api.github.com";
@@ -30,7 +30,7 @@ const DATA = (process.env.BROWSER_DATA ?? "group") as FixtureData;
 if (!FIXTURE_DATA.includes(DATA)) throw new Error(`BROWSER_DATA=${DATA}: not one of ${FIXTURE_DATA.join(", ")}`);
 
 /** Answers or passes the app's requests, and collects what went wrong. */
-async function serve(page: Page): Promise<string[]> {
+async function serve(page: Page, data: FixtureData = DATA): Promise<string[]> {
   const problems: string[] = [];
   page.on("console", (m) => { if (m.type() === "error") problems.push(`console: ${m.text()}`); });
   page.on("pageerror", (e) => problems.push(`uncaught: ${e.message}`));
@@ -48,7 +48,7 @@ async function serve(page: Page): Promise<string[]> {
       return route.abort();
     }
     if (LIVE_TOKEN) return route.continue();
-    return route.fulfill({ json: fixtureResponse(DATA, req.method(), path, body) });
+    return route.fulfill({ json: fixtureResponse(data, req.method(), path, body) });
   });
   return problems;
 }
@@ -156,6 +156,36 @@ test("Needs you and Status render without errors", async ({ page }) => {
   }
   await screenshot(page, "status");
 
+  expect(problems).toEqual([]);
+});
+
+test("Act now's decisions come first, with labelled needs-human issues read-only", async ({ page }) => {
+  test.skip(!!LIVE_TOKEN, "the decisions fixture is synthetic");
+  problems = await serve(page, "decisions");
+  await page.goto("#inbox");
+  await page.locator(".signin input[type=password]").fill(FIXTURE_TOKEN);
+  await page.locator(".signin button[type=submit]").click();
+  const actNow = page.getByRole("region", { name: "Act now", exact: true });
+  await expect(actNow).toBeVisible();
+  await expect(actNow.locator(".act-now-gap")).toContainText("incomplete: Act now may be missing decisions");
+  const first = actNow.locator("ol > li").first();
+  await expect(first).toContainText("Which promotion posture? · unblocks 12");
+  await expect(first.getByRole("link", { name: DECISION })).toHaveAttribute("href", `https://github.com/${DECISION.replace("#", "/issues/")}`);
+  // agent-board#308 is published, so only tracker#1401 is listed from the label.
+  const labelled = actNow.locator(".act-now-labelled li");
+  await expect(labelled).toHaveCount(1);
+  await expect(labelled.getByRole("link", { name: "cgwalters-forge/tracker#1401" })).toHaveAttribute("href", "https://github.com/cgwalters-forge/tracker/issues/1401");
+  await expect(labelled).toContainText("unblocks unknown");
+  await expect(actNow.locator(".act-now-labelled").locator("button, input, form")).toHaveCount(0);
+  const focus = page.getByRole("region", { name: "Focus", exact: true });
+  await expect(focus).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const top = (await actNow.boundingBox())!.y;
+  expect(top).toBeLessThan((await focus.boundingBox())!.y);
+  expect(top).toBeLessThan(page.viewportSize()!.height / 2);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await screenshot(page, "decisions");
+  await page.screenshot({ path: `${SCREENSHOT_DIR}/decisions-top-${test.info().project.name}.png` });
   expect(problems).toEqual([]);
 });
 

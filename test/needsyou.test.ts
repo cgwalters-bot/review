@@ -16,6 +16,8 @@ const MINUTE = 60_000;
 const iso = (t: number) => new Date(t).toISOString();
 const HOLDS = new URL(`https://api.github.com${usagePath}`).pathname;
 const FOCUS = "cgwalters-forge/tracker#976";
+/** Act now's direct needs-human read, made only while the pass's list cannot vouch for it. */
+const SEARCH = "/search/issues";
 const epics = { [FOCUS]: { active: true, activeWhy: ["focus"], complete: true } };
 const proposal = (comment: number) => rawAsk(1013, { key: `cgwalters-forge/tracker#1013/comment-${comment}`, source: "proposals", kind: "operator-action", ask: `Decision ${comment}`, action: { type: "operator_action", repository: "cgwalters-forge/tracker", number: 1013, comment } });
 const proposalComment = (n: number) => ({ id: `IC_${n}`, databaseId: n, updatedAt: "2026-10-29T12:00:00Z", author: { login: "cgwalters-bot" }, editor: null, lastEditedAt: null,
@@ -38,10 +40,10 @@ it("Today shares the inbox read, ages on 304, labels failures and recovers witho
     assert.equal(panel().querySelectorAll("dd").length, 3);
     assert.equal(panel().querySelector(".today-cost"), null);
     assert.equal(app.reads.holds.length, 1);
-    assert.equal(app.reads.all.length, 2, "only viewer and publication on cold load");
+    assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS, SEARCH], "only viewer, publication and, with no needs-you list, the direct needs-human read on cold load");
     await app.wake(1441 * MINUTE);
     assert.match(panel().textContent!, /observed 2026-10-30T12:00:00.000Z · stale \(over a day old\)/);
-    assert.equal(app.reads.all.length, 3, "one conditional publication read on poll");
+    assert.equal(app.reads.all.filter((r) => r.path !== SEARCH).length, 3, "one conditional publication read on poll");
     const live = app.reads.live.length;
     assert.ok(live >= 12 && live % 6 === 0, `Live agents read each source's in_progress, queued and pending runs (${live})`);
     assert.ok(app.reads.live.slice(6).every((r) => r.etag === '"live"'), "and reread them conditionally");
@@ -416,7 +418,8 @@ describe("Needs you from the pass's published list", () => {
     try {
       const slot = app.doc.querySelector<HTMLElement>(".act-now")!;
       assert.equal(slot.hidden, false);
-      assert.equal(slot.parentElement?.nextElementSibling?.id, "sec-needs");
+      assert.equal(slot.parentElement, app.doc.querySelector(".home")!.firstElementChild, "decisions come before Focus and active work");
+      assert.equal(slot.querySelector(".act-now-labelled"), null, "a complete, current list needs no direct read");
       assert.deepEqual([...slot.querySelectorAll("li > a:first-child")].map((a) => a.textContent), ["cgwalters-forge/tracker#2", "cgwalters-forge/tracker#1", "up/proj#7"], "needs-human decisions first, then by count");
       assert.match(slot.textContent!, /3 PRs: shared verdict/);
       assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS], "no target reads to assemble Act now");
@@ -427,7 +430,11 @@ describe("Needs you from the pass's published list", () => {
       assert.match(app.doc.querySelector('.card[data-key="up/proj#7"]')!.textContent!, /Approved:/);
       holds.status = 503;
       await app.reload();
-      assert.equal(slot.hidden, true, "an unavailable publication cannot retain an Act now list");
+      assert.equal(slot.querySelectorAll("ol > li").length, 0, "an unavailable publication cannot retain an Act now list");
+      assert.equal(slot.hidden, false, "it says so instead of hiding");
+      assert.match(slot.querySelector(".act-now-gap")!.textContent!, /Act now may be missing decisions/);
+      await app.until(() => !!slot.querySelector(".act-now-labelled")?.textContent?.includes("No open needs-human issue found"), "direct read drawn");
+      assert.equal(slot.querySelector(".act-now-labelled button"), null);
     } finally { await app.close(); }
   });
 
@@ -478,9 +485,9 @@ describe("Needs you from the pass's published list", () => {
       const poll = { requests: app.reads.all.length - before, elapsedMs: performance.now() - pollAt, paths: app.reads.all.slice(before).map((r) => r.path) };
       t.diagnostic(JSON.stringify({ cold, poll }));
       if (!process.env.REPLAY_ENTRY) {
-        assert.equal(cold.requests, 2);
-        assert.equal(poll.requests, 1);
-        assert.deepEqual(poll.paths, [HOLDS]);
+        // The real list is incomplete, so Act now lists needs-human directly too.
+        assert.deepEqual(cold.paths, ["/user", HOLDS, SEARCH]);
+        assert.deepEqual(poll.paths, [HOLDS, SEARCH]);
         assert.equal(app.reads.writes.length, 0);
       }
     } finally { await app.close(); }
@@ -771,7 +778,8 @@ describe("Needs you from the pass's published list", () => {
       assert.equal(chip("active").textContent, `In progress + approvals · ${total}`);
       assert.equal(chip("all").textContent, `Show everything · ${total}`);
       assert.ok(app.doc.querySelector("#sec-needs")!.textContent!.includes(line(total, 0)));
-      assert.equal(app.reads.all.filter((r) => r.path !== HOLDS && r.path !== "/user").length, 0);
+      // Capped and grouped lists are incomplete: only those read needs-human directly.
+      assert.deepEqual(app.reads.all.filter((r) => r.path !== HOLDS && r.path !== "/user").map((r) => r.path), variant === "full" ? [] : [SEARCH]);
       // Explicit filters still select exactly their named epic; only the default
       // retains approval waits outside in-progress epics.
       chip(`epic:${FOCUS}`).click();
@@ -804,7 +812,7 @@ describe("Needs you from the pass's published list", () => {
       assert.equal(app.keys().filter((k) => !app.doc.querySelector<HTMLElement>(`[data-key="${k}"]`)!.hidden)[0], "cgwalters-forge/tracker#1261");
       assert.match(app.doc.querySelector(".epic-filter")!.textContent!, /2 epics in progress: tracker#976 \(focus, the operator's comment this week\), tracker#1100/);
       assert.match(line(), /8 decisions reported: 8 listed, 0 not listed\. 8 rows \(7 with detail\): 6 waiting, 0 done here, 2 hidden by the epic filter\./);
-      assert.deepEqual(app.reads.all.filter((r) => r.path !== HOLDS && r.path !== "/user").map((r) => r.path), [], "the filter reads nothing");
+      assert.deepEqual(app.reads.all.filter((r) => r.path !== HOLDS && r.path !== "/user").map((r) => r.path), [SEARCH], "the filter reads nothing; the incomplete list reads needs-human once");
       chips().find((b) => b.textContent!.startsWith("Show everything"))!.click();
       assert.deepEqual([app.count(), pressed(), stored()], ["8", "all", '"all"']);
       assert.match(line(), /8 rows \(7 with detail\): 8 waiting, 0 done here, 0 hidden by the epic filter\./);
@@ -859,7 +867,7 @@ describe("Needs you from the pass's published list", () => {
       const members = app.doc.querySelector(`[data-key="${group}"] .members`)!;
       assert.equal(members.querySelector("nav, h4, button"), null);
       assert.deepEqual([...members.querySelectorAll<HTMLElement>(".member")].map((d) => d.dataset.member), [1, 2, 3].map((n) => `cgwalters-forge/bootc#${n}`));
-      assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS], "drawing reads nothing else");
+      assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS, SEARCH], "drawing reads nothing else; the incomplete list reads needs-human directly");
     } finally { await app.close(); }
   });
 

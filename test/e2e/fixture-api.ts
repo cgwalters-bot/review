@@ -6,16 +6,27 @@
 // shape), `174` / `174-capped` / `174-grouped` (synthetic operator-path
 // approval; see its fixture), or `group` (661 plus a #680 promote group
 // with review buckets), or `approval` (the producer's compact evidence
-// projection, with its observation clock rebased). Each but `259`, which
+// projection, with its observation clock rebased), or `decisions` (661,
+// incomplete, plus an agent-board#308-shaped decision and labelled
+// needs-human issues for Act now's direct read). Each but `259`, which
 // keeps the plain single comment, publishes its holds compressed across
 // comments as agent-board does past one (agent-board#774), in smaller
 // pieces so that every run reads more than one.
 
 import { readFileSync } from "node:fs";
 import { needsYou174 } from "../fixtures/needs-you-174.ts";
-import { compressedHolds, publishedTestHolds } from "../helpers.ts";
+import { compressedHolds, publishedTestHolds, rawActNow } from "../helpers.ts";
 
-export const FIXTURE_DATA = ["real", "661", "group", "approval", "174", "174-capped", "174-grouped", "259"] as const;
+export const FIXTURE_DATA = ["real", "661", "group", "approval", "174", "174-capped", "174-grouped", "259", "decisions"] as const;
+
+/** `decisions`' agent-board#308-shaped decision, published with a synthetic count. */
+export const DECISION = "cgwalters-forge/agent-board#308";
+
+/** `decisions`' open needs-human issues: one also published, one only labelled. */
+const LABELLED = [
+  { html_url: `https://github.com/${DECISION.replace("#", "/issues/")}`, title: "Promotion posture for approved midstream PRs" },
+  { html_url: "https://github.com/cgwalters-forge/tracker/issues/1401", title: "Which forge holds the release notes?" },
+];
 
 export type FixtureData = (typeof FIXTURE_DATA)[number];
 
@@ -47,6 +58,16 @@ function needsYou(data: FixtureData, at: string): Record<string, unknown> {
       approval_evidence: { ...evidence.approval_evidence, observed_at: at } };
   }
   if (data === "661") return published;
+  if (data === "decisions") {
+    // Synthetic: 12 is not a claim about agent-board#308's live count.
+    const decision = { ...published.items[0], key: DECISION, item: DECISION, ask: "Which promotion posture?", target: `https://github.com/${DECISION.replace("#", "/issues/")}`,
+      priority: "P1", action: { type: "issue", repository: "cgwalters-forge/agent-board", number: 308 }, source_ref: { type: "hold", repository: "cgwalters-forge/agent-board", number: 308 } };
+    const items = [...published.items, decision];
+    const request = published.requests.find((r: { key: string }) => r.key === published.items[0].key);
+    const requests = [...published.requests, { ...request, key: DECISION, identity: `github.com/${DECISION}/question`, question: decision.ask, target: decision.action, sources: [decision.source_ref] }];
+    return { ...published, complete: false, sources: { ...published.sources, items: "partial" }, items, requests, identities: undefined, count: items.length,
+      counts: { decisions: items.length, groups: 0, members: items.length }, act_now: [rawActNow(decision, 12), rawActNow(published.items[0], 2)] };
+  }
   const bucketed = fixture("draft-review-needs-you.json");
   const key = "cgwalters-forge/bootc#1";
   const epic = "cgwalters-forge/tracker#976";
@@ -124,6 +145,7 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
   if (pathname.endsWith("/check-runs")) return { total_count: 1, check_runs: [{ name: "ci", status: "completed", conclusion: "success" }] };
   if (pathname.endsWith("/status")) return { state: "success", statuses: [] };
   if (pathname.endsWith("/fields")) return fixture("fields.json");
-  if (pathname === "/search/issues") return { items: [], total_count: 0 };
+  // Only `decisions` labels issues; a PR search skips them, as they aren't PRs.
+  if (pathname === "/search/issues") return data === "decisions" ? { items: LABELLED, total_count: LABELLED.length } : { items: [], total_count: 0 };
   return pathname === "/graphql" ? { data: {} } : [];
 }
