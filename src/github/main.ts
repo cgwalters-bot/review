@@ -923,7 +923,7 @@ function paintActive(state: State): void {
   if (state.active?.repositories) state.repositories = state.active.repositories;
   const work = state.active?.passPublicationError ? undefined : state.active?.holds;
   state.home.slots.today.replaceChildren(todayView(work?.today, Date.now(), passUnavailable));
-  state.home.slots.focus.replaceChildren(focusView(work?.epicFocus, Date.now(), passUnavailable));
+  state.home.slots.focus.replaceChildren(focusView(work?.epicFocus, Date.now(), passUnavailable, state.login));
   if (!passUnavailable || work) state.repositoryWork = { work: work?.dispatchableWork, at: work?.at };
   state.home.slots.repositories.replaceChildren(repositoriesView(state.repositories ?? [], Date.now(), unavailable, {
     ...state.repositoryWork, pass, unavailable: passUnavailable,

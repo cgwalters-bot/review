@@ -515,11 +515,14 @@ leave review-request search results visible with a warning.
 
 **Focus** is the first section of the home (Needs you) page, not a separate
 route. It reads `epic_focus` (`agent-board/epic-focus/v1`) from the existing
-holds snapshot, with no additional fetch, poll, browser setting or write.
-Cards and children retain the producer's order (open children first). Each
-card links its epic title and shows its goal, done/total progress, operator
-blocked count, own blocker, Actions run links and children with plain-language
-blockers. A not-started child means nothing is moving it now, not that it
+holds snapshot, with no additional fetch, poll or remote write.
+Cards start collapsed, showing the linked epic title, goal, done/total progress,
+operator blocked count and the epic's own blocker (otherwise an open child's
+operator blocker, then the first published open-child blocker). Expansion is
+remembered locally per signed-in viewer and epic where storage works; without
+storage the folds still work. Expanded cards show Actions run links and open
+children, with completed children behind an **N done** fold. Cards and each
+child group retain producer order. A not-started child means nothing is moving it now, not that it
 never ran. Plain tasks without an item cannot have an item link.
 
 Coverage, observation time, omitted epics/children/runs and unread epics remain

@@ -100,8 +100,11 @@ describe("Focus section", () => {
     assert.match(rows[4]!.textContent!, /On hold \(blocked\) — board Status is Blocked/);
     assert.match(rows[5]!.textContent!, /Nothing moving it now/);
     assert.match(rows[6]!.textContent!, /Blocker unknown/);
-    assert.equal(rows[8]!.textContent, "Issue 4 · Done");
-    assert.equal(rows[9]!.textContent, "Plain task · Done");
+    assert.equal(rows.length, 8);
+    const done = el.querySelector(".focus-done")!;
+    assert.equal(done.querySelector("summary")!.textContent, "2 done");
+    assert.equal(done.querySelectorAll("li")[0]!.textContent, "Issue 4 · Done");
+    assert.equal(done.querySelectorAll("li")[1]!.textContent, "Plain task · Done");
     assert.match(el.textContent!, /Ship the thing to users.*2\/10 done · 1 operator blocked/s);
     const links = [...el.querySelectorAll("a")].map((a) => a.getAttribute("href"));
     for (const path of ["o/t/issues/1", "o/t/issues/2", "o/t/issues/3", "o/t/issues/4", "o/w/pull/50", "o/w/pull/60", "o/runner/actions/runs/41"]) assert.ok(links.includes(`https://github.com/${path}`), path);
@@ -113,6 +116,62 @@ describe("Focus section", () => {
     data.epics[0]!.blocker = data.epics[0]!.children[0]!.blocker;
     const el = focusView(data, now, "cached");
     assert.match(el.textContent!, /Focus unavailable: cached/);
-    assert.match(el.textContent!, /Epic: Waiting on operator — Ship it\?/);
+    assert.match(el.querySelector(".focus-card > summary")!.textContent!, /Waiting on operator — Ship it\?/);
+  });
+
+  it("starts collapsed with only the overview in its summary", () => {
+    const el = focusView(sample(), now);
+    const card = el.querySelector<HTMLDetailsElement>(".focus-card")!;
+    assert.equal(card.open, false);
+    const summary = card.querySelector("summary")!;
+    assert.equal(summary.querySelector("a")!.getAttribute("href"), "https://github.com/o/t/issues/1");
+    assert.match(summary.textContent!, /Issue 1.*Ship the thing.*2\/10 done · 1 operator blocked.*Waiting on operator — Ship it\?/);
+    assert.doesNotMatch(summary.textContent!, /Issue 3|runs listed|Changed/);
+  });
+
+  it("keeps done children collapsed when expanded, and toggles them independently", () => {
+    const el = focusView(sample(), now);
+    const card = el.querySelector<HTMLDetailsElement>(".focus-card")!;
+    card.open = true;
+    const done = card.querySelector<HTMLDetailsElement>(".focus-done")!;
+    assert.equal(done.open, false);
+    assert.equal(card.querySelectorAll(":scope > .focus-children > li").length, 8);
+    done.open = true;
+    assert.equal(done.querySelectorAll("li").length, 2);
+    done.open = false;
+    assert.equal(card.open, true);
+    assert.equal(el.querySelectorAll(".focus-done").length, 1);
+  });
+
+  it("remembers expansion per viewer and epic, without remembering the done fold", () => {
+    const values = new Map<string, string>();
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    } });
+    try {
+      const card = focusView(sample(), now, undefined, "alice").querySelector<HTMLDetailsElement>(".focus-card")!;
+      card.open = true;
+      card.dispatchEvent(new window.Event("toggle"));
+      const again = focusView(sample(), now, undefined, "ALICE");
+      assert.equal(again.querySelector<HTMLDetailsElement>(".focus-card")!.open, true);
+      assert.equal(again.querySelectorAll<HTMLDetailsElement>(".focus-card")[1]!.open, false);
+      assert.equal(again.querySelector<HTMLDetailsElement>(".focus-done")!.open, false);
+      assert.equal(focusView(sample(), now, undefined, "bob").querySelector<HTMLDetailsElement>(".focus-card")!.open, false);
+      card.open = false;
+      card.dispatchEvent(new window.Event("toggle"));
+      assert.equal(focusView(sample(), now, undefined, "alice").querySelector<HTMLDetailsElement>(".focus-card")!.open, false);
+      values.set("review.focus.expanded.alice.o/t#1", '"invalid"');
+      assert.equal(focusView(sample(), now, undefined, "alice").querySelector<HTMLDetailsElement>(".focus-card")!.open, false);
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, get() { throw new Error("blocked"); } });
+      const blocked = focusView(sample(), now, undefined, "alice").querySelector<HTMLDetailsElement>(".focus-card")!;
+      assert.equal(blocked.open, false);
+      blocked.open = true;
+      assert.doesNotThrow(() => blocked.dispatchEvent(new window.Event("toggle")));
+    } finally {
+      if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+      else Reflect.deleteProperty(globalThis, "localStorage");
+    }
   });
 });
