@@ -67,11 +67,12 @@ describe("control-app", () => {
     assert.equal(r.calls.length, 1 + 6);
   });
 
-  it("act-now: Home's shortlist, ranked by what it unblocks, with links", async () => {
+  it("act-now: Home's shortlist, decisions first, then ranked by what it unblocks, with links", async () => {
     const r = await cli(["act-now"]);
     assert.equal(r.status, 0, r.stderr);
-    const rows = r.json().rows as { key: string; unblocks: number; url: string; mergeRefusal: string | null }[];
-    assert.deepEqual(rows.map((x) => [x.key, x.unblocks]), [["o/t#20", 63], ["o/t#30", 3], ["o/t#10", 1], ["o/a#1", 1]]);
+    const rows = r.json().rows as { key: string; unblocks: number; url: string; mergeRefusal: string | null; fallback: boolean }[];
+    assert.deepEqual(rows.map((x) => [x.key, x.unblocks]), [["o/t#10", 1], ["o/t#20", 63], ["o/t#30", 3], ["o/a#1", 1]]);
+    assert.ok(rows.every((x) => x.fallback === false));
     assert.ok(rows.every((x) => x.url.startsWith("https://github.com/o/")));
   });
 

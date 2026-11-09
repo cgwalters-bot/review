@@ -159,8 +159,8 @@ function actNow(h: Holds, now: number) {
   return {
     validatedAt: list.validatedAt,
     complete: list.complete,
-    rows: rows.map(({ ask: a, unblocks }) => ({
-      key: a.key, item: a.item, kind: a.kind, priority: a.priority, waitingSince: a.waitingSince, ask: a.ask, unblocks,
+    rows: rows.map(({ ask: a, unblocks, fallback }) => ({
+      key: a.key, item: a.item, kind: a.kind, priority: a.priority, waitingSince: a.waitingSince, ask: a.ask, unblocks, fallback: fallback ?? false,
       action: a.action, url: askUrl(a.action), mergeRefusal: mergeRefusal(a) ?? null,
     })),
   };

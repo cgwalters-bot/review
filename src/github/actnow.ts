@@ -4,9 +4,14 @@ import { decisionKey, githubTarget, NEEDS_YOU_MAX_AGE_MS, refusal, type Publishe
 
 export const ACT_NOW_LIMIT = 10;
 
+/** Hold kinds of a question only the operator answers: these rank first. */
+export const DECISION_KINDS: readonly string[] = ["needs-human", "needs-operator", "needs-design", "review-needs-human"];
+
 export interface ActNowRow {
   ask: Ask;
   unblocks: number;
+  /** Listed directly because the pass's list is incomplete: read-only, never a write shortcut. */
+  fallback?: true;
 }
 
 /** A new destructive write never inherits the inbox's legacy descriptor fallback. */
@@ -14,20 +19,39 @@ export function mergeRefusal(a: Ask): string | undefined {
   return refusal(a, "merge-or-enqueue") ?? (!a.requests?.length ? "No supported merge-or-enqueue descriptor was published." : undefined);
 }
 
-/** One row per published group, independent of the inbox's epic filter. */
+/**
+ * One row per published group, independent of the inbox's epic filter.
+ * Operator decisions first, then what unblocks most. While the list is
+ * incomplete, its open decisions are listed too, ranked by the shortlist's
+ * count where it has one, so a decision that blocks work (agent-board#308)
+ * does not go unseen because the pass read a source in part.
+ */
 export function actNowRows(p: Published, now: number, completed: ReadonlyMap<string, string> = new Map()): ActNowRow[] {
   const list = p.list;
-  if (!list?.actNow || p.unavailable || p.error || p.checkedAt === undefined) return [];
+  if (!list || p.unavailable || p.error || p.checkedAt === undefined) return [];
   const age = now - Date.parse(list.validatedAt);
   if (!Number.isFinite(age) || age < 0 || age > NEEDS_YOU_MAX_AGE_MS) return [];
   const asks = new Map(p.asks.map((a) => [a.key, a]));
-  return list.actNow.flatMap(({ key, unblocks }): ActNowRow[] => {
+  const done = (a: Ask) => completed.get(a.key) === decisionKey(a);
+  const certified = (list.actNow ?? []).flatMap(({ key, unblocks }): ActNowRow[] => {
     const a = asks.get(key);
     // Unknown, carried or incomplete evidence cannot certify "right now".
     if (!a || a.detailMissing || a.carried || !githubTarget(a) || list.sources[a.source] !== "complete" ||
-        a.requests?.some((r) => r.quality !== "decision") || completed.get(key) === decisionKey(a)) return [];
+        a.requests?.some((r) => r.quality !== "decision") || done(a)) return [];
     return [{ ask: a, unblocks }];
-  }).sort((a, b) => b.unblocks - a.unblocks ||
+  });
+  const rows = [...certified];
+  if (!list.complete) {
+    const listed = new Set(certified.map((r) => r.ask.key));
+    const counts = new Map((list.actNow ?? []).map((r) => [r.key, r.unblocks]));
+    // A placeholder without detail is listed too: it is read-only here anyway.
+    for (const a of p.asks) {
+      if (!DECISION_KINDS.includes(a.kind) || listed.has(a.key) || !githubTarget(a) || done(a)) continue;
+      rows.push({ ask: a, unblocks: counts.get(a.key) ?? 0, fallback: true });
+    }
+  }
+  const decision = (r: ActNowRow) => (DECISION_KINDS.includes(r.ask.kind) ? 0 : 1);
+  return rows.sort((a, b) => decision(a) - decision(b) || b.unblocks - a.unblocks ||
     (a.ask.priority ?? "P9").localeCompare(b.ask.priority ?? "P9") ||
     Date.parse(a.ask.waitingSince) - Date.parse(b.ask.waitingSince) || a.ask.key.localeCompare(b.ask.key)).slice(0, ACT_NOW_LIMIT);
 }
