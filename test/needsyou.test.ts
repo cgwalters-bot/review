@@ -417,7 +417,7 @@ describe("Needs you from the pass's published list", () => {
       const slot = app.doc.querySelector<HTMLElement>(".act-now")!;
       assert.equal(slot.hidden, false);
       assert.equal(slot.parentElement?.nextElementSibling?.id, "sec-needs");
-      assert.deepEqual([...slot.querySelectorAll("li > a:first-child")].map((a) => a.textContent), ["up/proj#7", "cgwalters-forge/tracker#2", "cgwalters-forge/tracker#1"]);
+      assert.deepEqual([...slot.querySelectorAll("li > a:first-child")].map((a) => a.textContent), ["cgwalters-forge/tracker#2", "cgwalters-forge/tracker#1", "up/proj#7"], "needs-human decisions first, then by count");
       assert.match(slot.textContent!, /3 PRs: shared verdict/);
       assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS], "no target reads to assemble Act now");
       slot.querySelector<HTMLButtonElement>("button")!.click();

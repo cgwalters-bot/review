@@ -145,18 +145,24 @@ function approveBody(a: Ask, hooks: InboxHooks): HTMLElement {
   return body;
 }
 
-/** Compact published shortlist, with a checked action or a visible refusal on every row. */
+/** Why Act now lists decisions the pass did not certify. */
+const ACT_NOW_FALLBACK = "The pass's list is incomplete, so its open operator decisions are listed here too, without shortcuts.";
+
+/** Compact published shortlist, with a checked action, a visible refusal or an incomplete list's note on every row. */
 export function fillActNow(slot: HTMLElement, rows: readonly ActNowRow[], hooks: InboxHooks): void {
   // Merge has no canonical writer on the Answer card. Its session outcomes
   // remain visible even after completion removes the ask from the shortlist.
   const receipts = [...(hooks.writes ?? [])].flatMap(([key, body]) => key.startsWith('["merge",') && body.querySelector(`[data-sent], [${KEEP_ATTR}]`) ?
     [h("div", { class: "merge-receipt" }, body.dataset.mergeTarget ?? "Merge / enqueue", body.querySelector(".status")!.cloneNode(true))] : []);
   slot.hidden = rows.length === 0 && receipts.length === 0;
-  slot.replaceChildren(h("h2", {}, "Act now"), h("ol", {}, ...rows.map(({ ask: a, unblocks }) => {
+  slot.replaceChildren(h("h2", {}, "Act now"), ...(rows.some((r) => r.fallback) ? [h("p", { class: "note" }, ACT_NOW_FALLBACK)] : []), h("ol", {}, ...rows.map(({ ask: a, unblocks, fallback }) => {
     const card = askCard(a);
     const row = h("li", {}, link(askUrl(a.action), a.item),
-      h("p", {}, a.ask, a.group ? ` · ${a.group.numbers.length} PRs: ${a.group.reason}` : "", ` · unblocks ${unblocks}`));
-    if (card.kind === "approve" && !a.group && a.action.head && hooks.mayAct && hooks.approve && hooks.writes && !refusal(a, "review-at-head")) {
+      h("p", {}, a.ask, a.group ? ` · ${a.group.numbers.length} PRs: ${a.group.reason}` : "",
+      unblocks ? ` · unblocks ${unblocks}` : " · unblocks unknown", a.carried ? " · carried over; may be resolved" : ""));
+    if (fallback) {
+      row.append(h("a", { href: askHref(a.action) }, "Inspect"));
+    } else if (card.kind === "approve" && !a.group && a.action.head && hooks.mayAct && hooks.approve && hooks.writes && !refusal(a, "review-at-head")) {
       // Forward to the canonical action, even if its card is past the first
       // page. Never create a second writer or move a live receipt off its card.
       const body = approveBody(a, hooks);

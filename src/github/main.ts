@@ -640,7 +640,7 @@ export function inboxHooks(state: State, drafts = REVIEW_DRAFT_CONFIG): InboxHoo
     merge: async (a, head) => {
       const result = await mergeOrEnqueue(state.gh, askPr(a), head, () => {
         singleAsk(state, a);
-        const current = actNowRows(state.published, Date.now(), state.completedAsks).find((r) => r.ask.key === a.key)?.ask;
+        const current = actNowRows(state.published, Date.now(), state.completedAsks).find((r) => r.ask.key === a.key && !r.fallback)?.ask;
         if (!current || current.action.type !== "pull_request" || current.action.head !== head) throw new Error("Ask no longer actionable at this head; reload.");
         const no = mergeRefusal(current);
         if (no) throw new Error(no);

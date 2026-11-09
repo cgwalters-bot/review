@@ -182,6 +182,16 @@ requires a published full head and supported `merge-or-enqueue` descriptors;
 older publications without either explicitly refuse it. Other actions requiring
 an editor, diff or proposal inspection explain why no shortcut is offered.
 
+An incomplete list must not hide a decision that blocks work: agent-board#308
+blocked PRs while Act now was empty (#305). So operator decisions (the
+`needs-human`, `needs-operator`, `needs-design` and `review-needs-human`
+kinds) rank first, then by `act_now` count. While a list is incomplete,
+whether or not it publishes `act_now`, Act now also lists its open decisions
+under a note saying so, with their `act_now` count where it has one and
+"unblocks unknown" otherwise. These rows have Inspect only, never a write
+shortcut, and `control-app act-now` marks them `fallback`. A decision whose
+issue lacks a label, or that the pass left out, is still not listed.
+
 `src/github/merge.ts` rechecks the current publication and GitHub policy as the
 viewer before sending one mutation. GitHub's merge queue flag covers branch
 protection and rulesets. Queue admission uses `expectedHeadOid`; direct merge

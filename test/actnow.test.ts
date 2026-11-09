@@ -35,13 +35,14 @@ describe("Act now publication", () => {
     const list = parseNeedsYou(raw.needs_you);
     assert.ok(typeof list === "object");
     const rows = actNowRows({ list, asks: list.items, unavailable: false, checkedAt: NOW }, NOW);
-    assert.deepEqual(rows.map((r) => [r.ask.key, r.unblocks]), [["o/t#20", 63], ["o/t#30", 3], ["o/t#10", 1], ["o/a#1", 1]]);
+    // o/t#10 is the one needs-human decision: decisions rank first.
+    assert.deepEqual(rows.map((r) => [r.ask.key, r.unblocks]), [["o/t#10", 1], ["o/t#20", 63], ["o/t#30", 3], ["o/a#1", 1]]);
     const slot = document.createElement("section");
     fillActNow(slot, rows, { ...hooks, writes: new Map(), approve: async () => { throw new Error("replay must not write"); } });
     const rendered = [...slot.querySelectorAll("li")];
     assert.equal(rendered.length, 4);
     assert.match(rendered[0]!.textContent!, /Not offered here:.*reply requires/);
-    assert.match(rendered[1]!.textContent!, /Not offered here: Only the poll may merge/);
+    assert.match(rendered[2]!.textContent!, /Not offered here: Only the poll may merge/);
     assert.match(rendered[3]!.querySelector("button")!.textContent!, /Approve aaaaaaa/);
   });
 
@@ -193,6 +194,40 @@ describe("Act now publication", () => {
     p.asks[0]!.requestsUnreadable = false;
     p.asks[0]!.requests = [{ quality: "decision", forge: "other.invalid", actions: [] }];
     assert.deepEqual(actNowRows(p, NOW), []);
+  });
+
+  it("ranks agent-board#308's decision first from an incomplete list, read-only", () => {
+    // The pass read items in part, so #308 cannot be certified. Its count of
+    // 12 is synthetic, not a claim about the live issue.
+    const board = "cgwalters-forge/agent-board";
+    const decision = rawAsk(308, { key: `${board}#308`, item: `${board}#308`, priority: "P1", target: `https://github.com/${board}/issues/308`,
+      action: { type: "issue", repository: board, number: 308 }, source_ref: { type: "hold", repository: board, number: 308 }, ask: "Which promotion posture?" });
+    const head = "a".repeat(40);
+    const review = rawAsk(5, { source: "reviews", kind: "review-approve", action: { type: "approve_pull_request", repository: "cgwalters-forge/tracker", number: 5, head } });
+    const pr = rawAsk(6, { action: { type: "pull_request", repository: "cgwalters-forge/tracker", number: 6, head } });
+    const items = [review, rawAsk(1, { carried: true }), pr, decision];
+    const records = [{ key: decision.key, unblocks: 12 }, { key: review.key, unblocks: 3 }];
+    const sources = { epics: "complete", items: "partial", reviews: "complete", proposals: "complete", digest: "off" };
+    const p = published(items, records, { sources });
+    assert.equal(p.list!.complete, false);
+    const rows = actNowRows(p, NOW);
+    assert.deepEqual(rows.map((r) => [r.ask.key, r.unblocks, r.fallback ?? false]),
+      [[`${board}#308`, 12, true], [key(1), 0, true], [key(6), 0, true], [key(5), 3, false]]);
+    const slot = document.createElement("section");
+    fillActNow(slot, rows, { ...hooks, writes: new Map(), merge: async () => { throw new Error("a fallback row must not write"); } });
+    assert.match(slot.querySelector("p.note")!.textContent!, /list is incomplete/);
+    const rendered = [...slot.querySelectorAll("li")];
+    assert.deepEqual(rendered.map((li) => li.querySelector("a")!.href), [`https://github.com/${board}/issues/308`,
+      "https://github.com/cgwalters-forge/tracker/issues/1", "https://github.com/cgwalters-forge/tracker/pull/6", "https://github.com/cgwalters-forge/tracker/pull/5"]);
+    assert.match(rendered[0]!.textContent!, /Which promotion posture\? · unblocks 12Inspect$/);
+    assert.match(rendered[1]!.textContent!, /unblocks unknown · carried over; may be resolved/);
+    assert.equal(rendered[2]!.querySelector("button"), null, "a needs-human PR listed directly gets no merge shortcut");
+
+    const complete = published(items, records);
+    assert.deepEqual(actNowRows(complete, NOW).map((r) => r.ask.key), [`${board}#308`, key(5)], "a complete list lists only certified rows");
+    delete p.list!.actNow;
+    assert.deepEqual(actNowRows(p, NOW).map((r) => [r.ask.key, r.unblocks]), [[`${board}#308`, 0], [key(1), 0], [key(6), 0]],
+      "an incomplete list without act_now still lists its decisions, counts unknown");
   });
 
   for (const fullFirst of [true, false]) it(`reuses the head-checked approval and shared receipts (${fullFirst ? "card drawn" : "card paginated"})`, async () => {
