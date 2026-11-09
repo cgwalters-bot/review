@@ -20,7 +20,7 @@
 
 import type { DocumentEntry, Mark } from "./decisiondocument.ts";
 import { OPERATOR } from "./config.ts";
-import type { Ask, AskRef, NeedsYou } from "./holds.ts";
+import { type Ask, type AskRef, holdAsks, type NeedsYou } from "./holds.ts";
 import type { ApproveItem } from "./maintain.ts";
 import type { DraftIssue } from "./reviewdrafts.ts";
 import { ago } from "../time.ts";
@@ -247,6 +247,23 @@ export interface Published {
   unavailable: boolean;
   /** Current snapshot holds alongside an unavailable older list; these supersede matching keys. */
   holds?: Ask[];
+}
+
+/**
+ * What one read of the pass's snapshot says of its needs-you list, with no
+ * list read before: the list, else the snapshot's own operator holds and
+ * why there is no list. `checkedAt` is when GitHub confirmed the read.
+ * The app and control-app's needs-you both read it this way.
+ */
+export function firstPublished(holds: Holds | undefined, checkedAt?: number): Published {
+  const list = holds?.needsYou;
+  if (typeof list === "object") return { asks: list.items, list, unavailable: false, ...(checkedAt === undefined ? {} : { checkedAt }) };
+  const error = !holds
+    ? "The pass has published no hold snapshot"
+    : list === undefined
+      ? "The pass's snapshot has no needs-you list"
+      : `The pass's needs-you list can't be used: ${list}`;
+  return { asks: holds ? holdAsks(holds) : [], unavailable: false, error };
 }
 
 /**

@@ -47,7 +47,7 @@ import { fileCapture, loadCaptureEpics, loadCaptureLabels, loadLinkTitle } from 
 import { type CaptureBar, captureBar, forgetDraft } from "./captureview.ts";
 import { answerShownEntry, DECISIONS_CONFIG, DOCUMENT_KEPT, DocumentChanged, type DocumentEntry, documentPath, type Mark, parseDocument, sendDocumentEdit } from "./decisiondocument.ts";
 import { epicChips, epicChoice, epicSelection, saveEpicChoice, type EpicFilter } from "./epicfilter.ts";
-import { type Card, askHref, cardOutstanding, decisionKey, githubTarget, inboxCards, inboxCounts, mayAct, members, type Published, publishedNote, refusal } from "./inbox.ts";
+import { type Card, askHref, cardOutstanding, decisionKey, firstPublished, githubTarget, inboxCards, inboxCounts, mayAct, members, type Published, publishedNote, refusal } from "./inbox.ts";
 import { mergeOrEnqueue } from "./merge.ts";
 import { chatPanel, type ChatPanel } from "./chat.ts";
 import { CHAT_CONFIG } from "./chatconfig.ts";
@@ -78,7 +78,7 @@ import { draftCard, draftReviewForm } from "./reviewdraftsview.ts";
 import { type ApproveResult, approveSelected } from "./maintain.ts";
 import { loadProjectStatus } from "./backend.ts";
 import { type Need, needStops } from "./needs.ts";
-import { type Ask, holdAsks, loadPassPublications, readHoldAsk } from "./holds.ts";
+import { type Ask, loadPassPublications, readHoldAsk } from "./holds.ts";
 import { repositoriesView, type ReportBlock } from "./repositories.ts";
 import type { BoardPublication } from "./repositoryboard.ts";
 import { actionButton, activePassView, type AgentActions, type PassView, retainPassView } from "./passview.ts";
@@ -961,15 +961,9 @@ function readPublished(prev: Published, active: Active): Published {
     ? { asks: [...prev.asks.filter((a) => !prev.holds?.some((h) => h.key === a.key)), ...(prev.holds ?? [])], list: prev.list, ...(prev.checkedAt === undefined ? {} : { checkedAt: prev.checkedAt }), unavailable: true }
     : { asks: prev.asks, unavailable: prev.asks.length > 0 };
   if (source?.state === "unavailable") return { ...kept, error: `Couldn't read the pass's snapshot: ${source.error ?? "no reason given"}` };
-  const holds = active.holds;
-  const list = holds?.needsYou;
-  if (typeof list === "object") return { asks: list.items, list, unavailable: false, ...(source?.state === "ok" && source.checkedAt !== undefined ? { checkedAt: source.checkedAt } : {}) };
-  const error = !holds
-    ? "The pass has published no hold snapshot"
-    : list === undefined
-      ? "The pass's snapshot has no needs-you list"
-      : `The pass's needs-you list can't be used: ${list}`;
-  return prev.list ? { ...kept, error, holds: holds ? holdAsks(holds) : [] } : { asks: holds ? holdAsks(holds) : [], unavailable: false, error };
+  const read = firstPublished(active.holds, source?.state === "ok" ? source.checkedAt : undefined);
+  // Without a list, a first read's asks are the snapshot's own operator holds.
+  return read.list || !prev.list ? read : { ...kept, error: read.error!, holds: read.asks };
 }
 
 /**

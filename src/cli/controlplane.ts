@@ -1,6 +1,6 @@
 // control-app: the app's state on the command line, for the controller.
 // The read commands use the app's loaders and derivations: the pass's
-// published holds snapshot (Home's Act now, Live agents and capacity,
+// published holds snapshot (Home's Needs you, Act now, Live agents and capacity,
 // Status's repository board) and review-queue's queue. Each prints one
 // JSON document whose order is the publication's, with links.
 // The read commands' client refuses anything but GET.
@@ -22,7 +22,8 @@ import { parseRunUrl } from "../github/asks.ts";
 import { captureRequest, fileCapture } from "../github/capture.ts";
 import { TRACKER_REPO } from "../github/config.ts";
 import { type Holds, loadPassPublications } from "../github/holds.ts";
-import { askUrl } from "../github/inbox.ts";
+import { askUrl, type Card, firstPublished, inboxCards, inboxCounts, publishedNote } from "../github/inbox.ts";
+import type { ApproveItem } from "../github/maintain.ts";
 import { enrich, LIVE_SOURCES, type LiveRun, type LiveRuns, loadLiveRuns } from "../github/liveruns.ts";
 import { redactAddresses, stale } from "../github/passes.ts";
 import type { AgentRun, PassView } from "../github/passview.ts";
@@ -46,6 +47,8 @@ The old command name control-plane remains an alias for one release.
   status               the agent runs in flight (from the Actions API, so even
                        without a publication), then capacity (pools, WIP) and
                        the last passes with their starts and no-start reasons
+  needs-you            Home's Needs you cards in its order, with how current
+                       and complete the pass's list is
   act-now              the pass's Act now shortlist, as Home shows it
   queue [ARGS]         the review queue; ARGS as for review-queue (--help)
   repo OWNER/REPO      the pass's dispatchable work, live runs and asks on a repository
@@ -163,6 +166,40 @@ function actNow(h: Holds, now: number) {
   };
 }
 
+/** One Needs you card; the pass's cards are an ask's or the digest's group. */
+function cardJson(c: Card) {
+  const base = { key: c.key, kind: c.kind, title: c.title, where: c.where, url: c.url ?? null, since: c.since ?? null, priority: c.priority ?? null, note: c.note ?? null, unavailable: c.unavailable ?? false };
+  if ("ask" in c) return { ...base, item: c.ask.item, source: c.ask.source, askKind: c.ask.kind, recommendation: c.ask.recommendation, detailMissing: c.ask.detailMissing ?? false };
+  if (c.kind !== "digest") return base;
+  const pr = (i: ApproveItem) => `${i.pr.owner}/${i.pr.repo}`;
+  return { ...base, items: c.items.map((i) => ({ item: `${pr(i)}#${i.pr.number}`, head: i.head, reason: i.reason, url: `https://github.com/${pr(i)}/pull/${i.pr.number}` })) };
+}
+
+/**
+ * Needs you as Home shows it on a first read, from the same derivation:
+ * the list's cards in its order, else the snapshot's own operator holds
+ * and listError saying why there is no list. The read is GitHub's answer
+ * just now, so the note says it was checked now.
+ */
+function needsYou(h: Holds, now: number) {
+  const published = firstPublished(h, now);
+  const l = published.list;
+  const { text, settled } = publishedNote(published, now);
+  const { known, listed, unlisted } = inboxCounts(published);
+  return {
+    snapshotAt: h.at,
+    snapshotStale: stale(h.at, now),
+    listError: published.error ?? null,
+    validatedAt: l?.validatedAt ?? null,
+    changedAt: l?.changedAt ?? null,
+    complete: l?.complete ?? null,
+    note: text,
+    settled,
+    counts: { known, listed, unlisted },
+    cards: inboxCards({ published }).map(cardJson),
+  };
+}
+
 function repo(h: Holds, name: string, now: number) {
   const work = part(h.dispatchableWork, "dispatchable work");
   const lower = name.toLowerCase();
@@ -211,7 +248,7 @@ function parse(command: string, args: readonly string[]): { repo?: string; since
   return {};
 }
 
-const COMMANDS = ["status", "act-now", "repo", "changes"] as const;
+const COMMANDS = ["status", "needs-you", "act-now", "repo", "changes"] as const;
 
 /** Each act command's flags that take a value; --label may repeat. */
 const ACT_FLAGS = {
@@ -379,7 +416,8 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
       return 0;
     }
     const holds = await loadHolds(gh);
-    const body = command === "act-now" ? actNow(holds, now)
+    const body = command === "needs-you" ? needsYou(holds, now)
+      : command === "act-now" ? actNow(holds, now)
         : command === "repo" ? repo(holds, opts.repo!, now)
           : changes(holds, opts.since!, now);
     io.stdout(`${JSON.stringify({ ...head, ...body }, null, 2)}\n`);

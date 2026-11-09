@@ -799,6 +799,7 @@ read from the pass's published snapshot as Home and Status read it:
 
 ```sh
 npx control-app status                  # agents in flight (Actions API), capacity, last passes and no-start reasons
+npx control-app needs-you               # Home's Needs you cards, in order, with the list's freshness
 npx control-app act-now                 # Home's Act now shortlist
 npx control-app queue --filter infra    # review-queue's queue
 npx control-app repo cgwalters-forge/review
