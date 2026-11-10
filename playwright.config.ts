@@ -18,5 +18,5 @@ export default defineConfig({
     { name: "phone", use: { ...devices["Pixel 7"], browserName: "chromium" } },
   ],
   // Never another checkout's dev server on the same port: its screenshots would pass for this one's.
-  webServer: { command: "node build.ts --serve", url: BASE_URL, reuseExistingServer: false },
+  webServer: { command: `node build.ts --serve${process.env.BROWSER_HOSTED ? " --hosted" : ""}`, url: BASE_URL, reuseExistingServer: false },
 });

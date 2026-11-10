@@ -66,7 +66,7 @@ only when starting the service does not change its reported identity.
 
 ## Running it locally
 
-    npm run build
+    npm run build -- --hosted
     cargo run --manifest-path service/Cargo.toml -- --listen 127.0.0.1:8080
 
 and open http://127.0.0.1:8080. Without a token source it uses
@@ -266,7 +266,7 @@ when nothing could be read, the section keeps its last items and reports
 the error. The section is absent when Forgejo isn't
 configured, and `/api/repos/OWNER/REPO` doesn't include it. Like the rest
 of the state, it is served only to whoever can reach the service; the app
-doesn't render it yet (review#310 c).
+renders it in the hosted personal-infra panel.
 
 ## Kubernetes source (review#310 b)
 
@@ -316,7 +316,30 @@ incomplete. The lists run at once, alongside the GitHub reads, each with
 a 15-second timeout. Failures and the last items are kept as in the other
 sections. The section is `kubernetes` in the state, absent when no
 namespace is configured, and `/api/repos/OWNER/REPO` doesn't include it.
-The app doesn't render it yet (review#310 c).
+The hosted app renders it beside Forgejo in the personal-infra panel.
+
+### Hosted personal-infra panel (review#310 c)
+
+The concrete threat is the public Pages app fetching private infrastructure
+data. The default build therefore contains neither the panel entry point nor
+its API reads. `npm run build -- --hosted`, used by `service/Containerfile`,
+adds the panel and permits same-origin connections in the CSP. Never publish
+that build to Pages. No data is fetched or pre-rendered during either build.
+
+The existing private-network ACL or authenticating proxy is the operator gate;
+GitHub sign-in is not that gate. The panel is absent unless the service reports
+at least one configured source. No additional source option is needed. It reads
+`/api/v1/state` once per minute while visible, without overlapping requests,
+with a 15-second timeout and no browser persistence or export. Forgejo's Needs
+you remains separate from GitHub. Kubernetes shows readiness, revisions,
+images/tags, rollout counts and troubled pods. Each source labels incomplete,
+unavailable, stale (over five minutes) and future-clock observations; failures
+are not healthy empty lists. Failed refreshes remove displayed old facts.
+
+To prevent unbounded DOM growth and executable upstream prose, rendering is
+text-only, capped at 6,000 items per source, 100 images per deployment and
+4,096 characters per field; overflow is labelled. Forge links accept HTTPS
+only. Tests reuse the recorded source-state fixtures, never live infra data.
 
 ## Token sources
 
@@ -402,5 +425,5 @@ in `fixtures/kubernetes.json`, giving `fixtures/kubernetes-state.json`.
 The added preview tests use a local fake forge for cold/repeated/lost state,
 partial board reads, stale usage, missing broker evidence and token rotation,
 and check effect rejection, read bounds, redaction and HTTP/SSE generation
-parity. Warm-cache checks await agent-board#794. The app doesn't read from
-the service yet; consumer integration remains a follow-up slice.
+parity. Warm-cache checks await agent-board#794. The hosted personal-infra
+panel reads the service; migration of the GitHub browser remains a follow-up.
