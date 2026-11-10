@@ -1,7 +1,8 @@
-//! A read-only GitHub REST client. It has only `get`, so the service can't
-//! write with the token it holds. Each GET is conditional on the ETag of
-//! the last answer to the same path: an unchanged answer is a 304, which
-//! costs no rate budget, and is served from the cache.
+//! A read-only REST client for GitHub, or for Forgejo's API. It has only
+//! `get`, so the service can't write with the token it holds. Each GET is
+//! conditional on the ETag of the last answer to the same path: an
+//! unchanged answer is a 304, which costs no rate budget, and is served
+//! from the cache.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,10 @@ pub const API_ROOT: &str = "https://api.github.com";
 
 /// Give up on a request GitHub hasn't answered in this long, as the app does.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Give up on a Forgejo request sooner: a refresh makes up to three rounds
+/// of them, and publishing GitHub's sections waits for the last.
+const FORGEJO_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 const API_VERSION: &str = "2022-11-28";
 
@@ -36,23 +41,46 @@ struct Cache {
     next: HashMap<String, (String, Value)>,
 }
 
+/// Which API a client speaks, which decides how it sends the token.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Api {
+    GitHub,
+    Forgejo,
+}
+
 pub struct Client {
     http: reqwest::Client,
+    api: Api,
     root: String,
     token: Arc<TokenSource>,
     cache: Mutex<Cache>,
 }
 
 impl Client {
+    /// A GitHub client for the API at `root`.
     pub fn new(token: impl Into<Arc<TokenSource>>, root: &str) -> Result<Self> {
+        Self::build(Api::GitHub, token.into(), root)
+    }
+
+    /// A Forgejo client for the API at `root`, a base URL ending in /api/v1.
+    pub fn forgejo(token: impl Into<Arc<TokenSource>>, root: &str) -> Result<Self> {
+        Self::build(Api::Forgejo, token.into(), root)
+    }
+
+    fn build(api: Api, token: Arc<TokenSource>, root: &str) -> Result<Self> {
+        let timeout = match api {
+            Api::GitHub => REQUEST_TIMEOUT,
+            Api::Forgejo => FORGEJO_REQUEST_TIMEOUT,
+        };
         let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .build()
             .context("building the HTTP client")?;
         Ok(Self {
             http,
+            api,
             root: root.trim_end_matches('/').to_owned(),
-            token: token.into(),
+            token,
             cache: Mutex::default(),
         })
     }
@@ -80,10 +108,16 @@ impl Source for Client {
         let mut req = self
             .http
             .get(format!("{}{path}", self.root))
-            .header(AUTHORIZATION, format!("Bearer {token}"))
-            .header(ACCEPT, "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", API_VERSION)
             .header(USER_AGENT, "control-app");
+        req = match self.api {
+            Api::GitHub => req
+                .header(AUTHORIZATION, format!("Bearer {token}"))
+                .header(ACCEPT, "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", API_VERSION),
+            Api::Forgejo => req
+                .header(AUTHORIZATION, format!("token {token}"))
+                .header(ACCEPT, "application/json"),
+        };
         if let Some((etag, _)) = &cached {
             req = req.header(IF_NONE_MATCH, etag);
         }
@@ -158,6 +192,15 @@ mod tests {
                 }),
             )
             .route(
+                "/auth",
+                get(|headers: HeaderMap| async move {
+                    axum::Json(serde_json::json!({
+                        "authorization": headers["authorization"].to_str().unwrap(),
+                        "api": headers.get("x-github-api-version").is_some(),
+                    }))
+                }),
+            )
+            .route(
                 "/missing",
                 get(|| async {
                     (
@@ -199,5 +242,23 @@ mod tests {
         assert_eq!(full.load(Ordering::SeqCst), 2);
         let err = client.get("/missing").await.unwrap_err().to_string();
         assert_eq!(err, "GET /missing: HTTP 404: Not Found");
+    }
+
+    #[tokio::test]
+    async fn sends_each_api_its_token_scheme() {
+        let root = fake_github(Arc::new(AtomicUsize::new(0))).await;
+        let token = || TokenSource::Fixed("t".into());
+        for (client, expected) in [
+            (
+                Client::new(token(), &root).unwrap(),
+                serde_json::json!({"authorization": "Bearer t", "api": true}),
+            ),
+            (
+                Client::forgejo(token(), &root).unwrap(),
+                serde_json::json!({"authorization": "token t", "api": false}),
+            ),
+        ] {
+            assert_eq!(client.get("/auth").await.unwrap(), expected);
+        }
     }
 }
