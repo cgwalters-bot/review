@@ -4,6 +4,7 @@
 mod board;
 mod forgejo;
 mod github;
+mod kubernetes;
 mod server;
 mod state;
 mod token;
@@ -57,6 +58,12 @@ A Forgejo section, off unless --forgejo-url is given, reads with GETs:
                             repeatable (20)
   --forgejo-reviewer USER   the token's user, whose requested reviews on
                             open PRs are read
+
+A Kubernetes section, off unless a namespace is given, lists with GETs
+the cluster's Flux Kustomizations, Deployments, and crash-looping,
+restarting or pending pods, using in-cluster config:
+
+  --kubernetes-namespace NS a namespace to list in; repeatable (10)
 ";
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
@@ -89,6 +96,7 @@ struct Args {
     token: TokenConfig,
     board_config: Option<PathBuf>,
     forgejo: Option<forgejo::Config>,
+    kubernetes: Option<kubernetes::Config>,
 }
 
 /// The arguments, with `token_file_env` the value of $GITHUB_TOKEN_FILE.
@@ -104,6 +112,7 @@ fn parse_args(
     let mut board_config = None;
     let (mut forgejo_url, mut forgejo_token_file, mut forgejo_reviewer) = (None, None, None);
     let (mut forgejo_orgs, mut forgejo_labels) = (Vec::new(), Vec::new());
+    let mut kubernetes_namespaces = Vec::new();
     let (mut sts_scope, mut sts_identity, mut sts_token_file) = (None, None, None);
     while let Some(a) = args.next() {
         let (flag, inline) = match a.split_once('=') {
@@ -135,6 +144,7 @@ fn parse_args(
             "--forgejo-org" => forgejo_orgs.push(value),
             "--forgejo-label" => forgejo_labels.push(value),
             "--forgejo-reviewer" => forgejo_reviewer = Some(value),
+            "--kubernetes-namespace" => kubernetes_namespaces.push(value),
             _ => bail!("unknown option {flag:?}"),
         }
     }
@@ -184,6 +194,11 @@ fn parse_args(
         }
         None => None,
     };
+    let kubernetes = if kubernetes_namespaces.is_empty() {
+        None
+    } else {
+        Some(kubernetes::Config::new(kubernetes_namespaces)?)
+    };
     Ok(Some(Args {
         listen,
         allowed_hosts,
@@ -192,6 +207,7 @@ fn parse_args(
         token,
         board_config,
         forgejo,
+        kubernetes,
     }))
 }
 
@@ -218,16 +234,17 @@ fn now() -> String {
 
 /// Compute one whole generation before the watch channel exposes any of it.
 /// Each source gets its own observation clock; publication is not validation.
-async fn refresh_generation<S: github::Source, F: github::Source>(
+async fn refresh_generation<S: github::Source, F: github::Source, K: github::Source>(
     client: &S,
     board: Option<&board::Reader>,
     forgejo: Option<(&F, &forgejo::Config)>,
+    kubernetes: Option<(&K, &kubernetes::Config)>,
     prev: &State,
     clock: impl Fn() -> String,
 ) -> State {
     let at = clock();
-    // Forgejo is read alongside GitHub, so a slow instance delays the
-    // publication of GitHub's sections by its own reads at most.
+    // Forgejo and Kubernetes are read alongside GitHub, so a slow one delays
+    // the publication of GitHub's sections by its own reads at most.
     let forgejo_read = async {
         match forgejo {
             Some((src, config)) => {
@@ -236,8 +253,21 @@ async fn refresh_generation<S: github::Source, F: github::Source>(
             None => None,
         }
     };
-    let (mut next, forgejo_section) = tokio::join!(state::refresh(client, prev, &at), forgejo_read);
+    let kubernetes_read = async {
+        match kubernetes {
+            Some((src, config)) => {
+                Some(kubernetes::refresh(src, config, prev.kubernetes.as_ref(), &clock()).await)
+            }
+            None => None,
+        }
+    };
+    let (mut next, forgejo_section, kubernetes_section) = tokio::join!(
+        state::refresh(client, prev, &at),
+        forgejo_read,
+        kubernetes_read
+    );
     next.forgejo = forgejo_section;
+    next.kubernetes = kubernetes_section;
     if let Some(board) = board {
         next.decision = Some(board.refresh(prev.decision.as_ref(), &clock()).await);
     }
@@ -250,6 +280,7 @@ async fn refresher(
     client: Client,
     board: Option<board::Reader>,
     forgejo: Option<(Client, forgejo::Config)>,
+    kubernetes: Option<(Client, kubernetes::Config)>,
     tx: watch::Sender<Arc<State>>,
     interval: Duration,
 ) {
@@ -259,17 +290,30 @@ async fn refresher(
         ticks.tick().await;
         let prev = tx.borrow().clone();
         let forgejo_ref = forgejo.as_ref().map(|(c, config)| (c, config));
-        let next = refresh_generation(&client, board.as_ref(), forgejo_ref, &prev, now).await;
-        client.sweep();
-        if let Some((c, _)) = &forgejo {
+        let kubernetes_ref = kubernetes.as_ref().map(|(c, config)| (c, config));
+        let next = refresh_generation(
+            &client,
+            board.as_ref(),
+            forgejo_ref,
+            kubernetes_ref,
+            &prev,
+            now,
+        )
+        .await;
+        for c in std::iter::once(&client)
+            .chain(forgejo.iter().map(|(c, _)| c))
+            .chain(kubernetes.iter().map(|(c, _)| c))
+        {
             c.sweep();
         }
         let forgejo_error = next.forgejo.as_ref().and_then(|s| s.error.as_ref());
+        let kubernetes_error = next.kubernetes.as_ref().and_then(|s| s.error.as_ref());
         for (name, error) in [
             ("runs", next.runs.error.as_ref()),
             ("prs", next.prs.error.as_ref()),
             ("waiting", next.waiting.error.as_ref()),
             ("forgejo", forgejo_error),
+            ("kubernetes", kubernetes_error),
         ] {
             if let Some(e) = error {
                 println!("control-app: {name}: {e}");
@@ -310,6 +354,19 @@ async fn main() -> Result<()> {
         }
         None => None,
     };
+    let kubernetes = match args.kubernetes {
+        Some(config) => {
+            let root = kubernetes::in_cluster_root(
+                std::env::var(kubernetes::HOST_ENV).ok(),
+                std::env::var(kubernetes::PORT_ENV).ok(),
+            )?;
+            let ca = std::fs::read(kubernetes::CA_FILE)
+                .with_context(|| format!("reading {}", kubernetes::CA_FILE))?;
+            let token = TokenSource::File(kubernetes::TOKEN_FILE.into());
+            Some((Client::kubernetes(token, &root, &ca)?, config))
+        }
+        None => None,
+    };
     if !args.static_dir.is_dir() {
         println!(
             "control-app: {} is not a directory; build the app (npm run build) to serve it",
@@ -323,8 +380,18 @@ async fn main() -> Result<()> {
     if forgejo.is_some() {
         initial.forgejo = Some(Default::default());
     }
+    if kubernetes.is_some() {
+        initial.kubernetes = Some(Default::default());
+    }
     let (tx, rx) = watch::channel(Arc::new(initial));
-    let refresher = tokio::spawn(refresher(client, board, forgejo, tx, args.interval));
+    let refresher = tokio::spawn(refresher(
+        client,
+        board,
+        forgejo,
+        kubernetes,
+        tx,
+        args.interval,
+    ));
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("listening on {}", args.listen))?;
@@ -475,12 +542,50 @@ mod tests {
         .unwrap();
         let clock = || "2026-11-10T12:00:00Z".to_owned();
         let empty = State::empty();
-        let off = refresh_generation(&github, None, None::<(&Recorded, _)>, &empty, clock);
+        let off = refresh_generation(&github, None, NO_FORGEJO, NO_KUBERNETES, &empty, clock);
         let off = serde_json::to_value(off.await).unwrap();
         assert!(off.get("forgejo").is_none());
-        let on = refresh_generation(&github, None, Some((&forge, &config)), &empty, clock);
+        let forgejo = Some((&forge, &config));
+        let on = refresh_generation(&github, None, forgejo, NO_KUBERNETES, &empty, clock);
         let on = on.await.forgejo.unwrap();
         assert_eq!((on.items.len(), on.complete), (2, true));
+    }
+
+    const NO_FORGEJO: Option<(&state::tests::Recorded, &forgejo::Config)> = None;
+
+    const NO_KUBERNETES: Option<(&state::tests::Recorded, &kubernetes::Config)> = None;
+
+    #[test]
+    fn kubernetes_args() {
+        let a = parse(&[]).unwrap().unwrap();
+        assert!(
+            a.kubernetes.is_none(),
+            "Kubernetes reads are off by default"
+        );
+        let a = parse(&["--kubernetes-namespace=a", "--kubernetes-namespace", "b"]);
+        assert_eq!(
+            a.unwrap().unwrap().kubernetes,
+            Some(kubernetes::Config {
+                namespaces: vec!["a".into(), "b".into()]
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn kubernetes_section_only_when_configured() {
+        use crate::state::tests::Recorded;
+        let github = Recorded::fixture();
+        let cluster = Recorded::from_fixture(include_str!("../fixtures/kubernetes.json"));
+        let config = kubernetes::Config::new(vec!["apps".into()]).unwrap();
+        let clock = || "2026-11-10T12:00:00Z".to_owned();
+        let empty = State::empty();
+        let off = refresh_generation(&github, None, NO_FORGEJO, NO_KUBERNETES, &empty, clock);
+        let off = serde_json::to_value(off.await).unwrap();
+        assert!(off.get("kubernetes").is_none());
+        let kubernetes = Some((&cluster, &config));
+        let on = refresh_generation(&github, None, NO_FORGEJO, kubernetes, &empty, clock);
+        let on = on.await.kubernetes.unwrap();
+        assert_eq!((on.items.len(), on.complete), (5, true));
     }
 
     #[test]

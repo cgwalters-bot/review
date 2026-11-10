@@ -151,6 +151,9 @@ pub struct State {
     /// What waits on the operator on a Forgejo instance, when one is configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forgejo: Option<Section<crate::forgejo::Item>>,
+    /// The configured namespaces of the cluster, when any are configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kubernetes: Option<Section<crate::kubernetes::Item>>,
 }
 
 /// One repository's part of the state, case-insensitively by name.
@@ -238,6 +241,7 @@ pub async fn refresh<S: Source>(src: &S, prev: &State, now: &str) -> State {
         waiting: section(waiting, &prev.waiting, now),
         decision: prev.decision.clone(),
         forgejo: prev.forgejo.clone(),
+        kubernetes: prev.kubernetes.clone(),
     }
 }
 

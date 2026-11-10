@@ -43,7 +43,7 @@ It serves:
 - `GET /healthz`: JSON with `status: "ok"` and `version`, without touching GitHub;
 - everything else from the built app (`--static`, default `dist`).
 
-It has no route that writes, and its GitHub and Forgejo clients send only GETs. It logs
+It has no route that writes, and its GitHub, Forgejo and Kubernetes clients send only GETs. It logs
 to stdout and exits cleanly on SIGTERM.
 
 The full-state JSON keeps `schema: "review-service/v1"` for existing clients.
@@ -190,6 +190,56 @@ configured, and `/api/repos/OWNER/REPO` doesn't include it. Like the rest
 of the state, it is served only to whoever can reach the service; the app
 doesn't render it yet (review#310 c).
 
+## Kubernetes source (review#310 b)
+
+Kubernetes reads are **off by default**. With `--kubernetes-namespace NS`,
+repeatable up to 10 times, each refresh lists with GETs, in each of those
+namespaces of the cluster the service runs in:
+
+- Flux Kustomizations (`kustomize.toolkit.fluxcd.io/v1`): `ready` (the
+  Ready condition; null when Unknown), its `message`, and
+  `appliedRevision`;
+- Deployments: `images`, one per container of the pod template with its
+  `container`, `image` and `tag` (null for an untagged or digest-only
+  reference), the desired `replicas`, `readyReplicas`, `updatedReplicas`,
+  and `rollingOut`, decided as `kubectl rollout status` does: the
+  controller hasn't observed the latest spec, or fewer replicas are
+  updated than desired, or old or unavailable ones remain;
+- pods, other than finished ones, that have a `problem`: `crash-looping`
+  (a container in CrashLoopBackOff), `pending` (Pending for at least 5
+  minutes, so a pod that is just starting isn't listed) or `restarting`
+  (a container that restarted after terminating within the last hour, so
+  old restarts aren't listed), the first that applies, with `phase`, total
+  `restarts` and a `reason`: the waiting or last termination reason, or
+  the scheduling reason.
+
+Each item has a `kind` (`Kustomization`, `Deployment` or `Pod`),
+`namespace` and `name`, and they come in configured namespace order, each
+namespace's Kustomizations, Deployments and pods in the API server's order.
+
+It uses in-cluster config only: the API server from
+`$KUBERNETES_SERVICE_HOST` and `$KUBERNETES_SERVICE_PORT`, the pod's
+automounted service-account token, reread for every request as the
+kubelet rotates it, and the cluster's CA as the only trusted root. The
+service fails at startup when a namespace is given outside a cluster.
+
+The code names no namespace; they are configuration. Keeping it opt-in
+keeps a deployment that runs in a cluster from listing that cluster's
+workloads to whoever can reach the service. Listing only the configured
+namespaces lets the service account have a namespaced Role in each of
+them rather than a ClusterRole that reads every namespace. It needs
+`list` on `pods`, `deployments` in the `apps` group and `kustomizations`
+in the `kustomize.toolkit.fluxcd.io` group, and nothing else; in
+particular not Secrets. A namespace without Flux's API, or where a list
+is refused, shows as a failure while the other lists' items stay.
+
+Each list reads one page of at most 200; a longer list makes the section
+incomplete. The lists run at once, alongside the GitHub reads, each with
+a 15-second timeout. Failures and the last items are kept as in the other
+sections. The section is `kubernetes` in the state, absent when no
+namespace is configured, and `/api/repos/OWNER/REPO` doesn't include it.
+The app doesn't render it yet (review#310 c).
+
 ## Token sources
 
 The token never comes from a flag or environment value, which leak into
@@ -268,7 +318,8 @@ against the answers in `fixtures/github.json`, the conditional requests
 against a local fake GitHub, the token sources against a fake Octo STS,
 and the endpoints and events. The Forgejo section is checked against the
 recorded answers in `fixtures/forgejo.json`, giving
-`fixtures/forgejo-state.json`.
+`fixtures/forgejo-state.json`, and the Kubernetes section against those
+in `fixtures/kubernetes.json`, giving `fixtures/kubernetes-state.json`.
 
 The added preview tests use a local fake forge for cold/repeated/lost state,
 partial board reads, stale usage, missing broker evidence and token rotation,
