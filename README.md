@@ -547,6 +547,39 @@ focused Today sections at desktop and phone widths.
 
 ## Status and navigation
 
+### Repository Chat dispatch (slice 1 of #315)
+
+The concrete threats are leaking a private repository name into public workflow
+inputs, attributing another tab's run to this dispatch, and repeating a dispatch
+whose response was lost. The optional `dispatch` object in
+`src/github/chat-config.json` is `null` (off) by default. When configured, the
+existing Chat drawer becomes dispatch-only, with repository, issue/PR and Start
+session fields; repository rows and issue/PR panes also offer Chat. It never
+connects to the old direct-tailnet listener. The operator confirms each start;
+fresh `/user` and repository visibility reads precede one dispatch with their
+token. Actions read/write permission is required on the caller repository.
+
+The object has `repo` (workflow caller), `workflow` (for example `dispatch.yml`),
+`ref`, `runner` (a name in that caller's `AGENT_RUNNERS`) and `issue` (a public
+context issue in the caller). It requires a caller implementing agentic-job#3320's
+`docs/dispatch.md` contract, not the legacy tracker `session.yml`. The caller's
+runner must already have session configuration and network access. No inference
+address or attach credential belongs in the browser configuration.
+
+Starts use `kind=research`, `session=true`, `idle-minutes=10`, the chosen `repo`
+and item, and a fixed task to wait for questions. The upstream workflow requires
+an item: without a selected issue/PR, the shown configured context issue is used
+with `item-repo` naming the caller when different from the target. Both repositories
+must be public and allowed by the caller's bounds. Research may propose a report
+after the session; enabling change proposals is not part of this slice.
+
+A returned run ID is shown immediately and read at most 24 times, five seconds
+apart, stopping on completion or drawer disposal. A 204 links workflow history
+without guessing a run; a lost response blocks another start in this drawer.
+No dispatch retries, ACP bridge, attach-secret handling, conversation pane or
+end-of-session change application is added. Tests are offline; a real session
+and exchanging a message remain acceptance work for later slices.
+
 **Status** (`#status`) shows the coordinator's newest published ProjectV2
 status update as sanitized Markdown, with its publication age and an
 **Expand** control. Missing, cached and unreadable sources are labelled;

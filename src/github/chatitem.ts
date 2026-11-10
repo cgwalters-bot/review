@@ -73,3 +73,11 @@ export function chatButton(item: ChatItem | undefined): HTMLButtonElement | null
 export function startChatButton(): HTMLButtonElement | null {
   return CHAT_CONFIG ? requestButton("Start a chat", "Start a chat", undefined, "start-chat") : null;
 }
+
+export function repositoryChatButton(repository: string): HTMLButtonElement | null {
+  return CHAT_CONFIG?.dispatch ? requestButton(`Chat about ${repository}`, "Chat", { ref: repository, title: repository }, "repository-chat") : null;
+}
+
+export function dispatchChatButton(url: string | undefined, title: string): HTMLButtonElement | null {
+  return CHAT_CONFIG?.dispatch ? chatButton(chatItem(url, title)) : null;
+}

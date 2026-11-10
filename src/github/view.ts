@@ -3,6 +3,7 @@
 
 import { type Answer, parseAnswer, parseBlocks, type Question, unfencedLines } from "../answer.ts";
 import { h, link } from "../dom.ts";
+import { dispatchChatButton } from "./chatitem.ts";
 import type { Renderer } from "../markdown.ts";
 import { age, ago, time } from "../time.ts";
 export { age, ago, clock, time } from "../time.ts";
@@ -703,6 +704,7 @@ export function itemView(item: Item, data: ItemViewData, render: Renderer, handl
       ),
     ),
     h("h2", {}, item.title),
+    dispatchChatButton(item.url, item.title),
     links,
     h("section", {}, h("h3", {}, "Why"), h("div", { class: "md" }, render(item.why || "(empty)"))),
     // A tracker item's own asks, when it is one of their parents too.

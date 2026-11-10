@@ -4,6 +4,7 @@ import { isBot } from "./authors.ts";
 import { USAGE_ISSUE, USAGE_REPO } from "./config.ts";
 import { isObject, type RawComment } from "./heartbeat.ts";
 import { boardNote, boardRepositories, repositoryTable, type BoardPublication } from "./repositoryboard.ts";
+import { repositoryChatButton } from "./chatitem.ts";
 
 export const REPORT_SCHEMA = "agent-board/maintainer-report/v1";
 const MARKER = "<!-- agent-board-maintainer-report -->";
@@ -96,7 +97,7 @@ export function repositoriesView(blocks: readonly ReportBlock[], now = Date.now(
   }
   const names = new Set([...latest.keys(), ...boardRepositories(board).map((r) => r.toLowerCase())]);
   for (const repository of [...names].sort()) {
-    const row = h("article", { class: "pass-record" }, h("h3", {}, h("a", { href: `https://github.com/${repository}` }, repository)), repositoryTable(repository, board));
+    const row = h("article", { class: "pass-record" }, h("h3", {}, h("a", { href: `https://github.com/${repository}` }, repository), repositoryChatButton(repository)), repositoryTable(repository, board));
     el.append(row);
     const observation = latest.get(repository);
     if (!observation) continue;
