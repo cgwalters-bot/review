@@ -797,7 +797,7 @@ mod tests {
             let prev = tx.borrow().clone();
             let clocks = AtomicUsize::new(0);
             let state =
-                crate::refresh_generation(&Recorded::fixture(), Some(&source), &prev, || {
+                crate::refresh_generation(&Recorded::fixture(), Some(&source), None, &prev, || {
                     // Legacy reads may take long enough that their starting clock
                     // is no longer suitable for assessing the preview's freshness.
                     if clocks.fetch_add(1, Ordering::SeqCst) == 0 {

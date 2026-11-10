@@ -150,6 +150,63 @@ fixtures. Losing this service's memory loses no authority or durable state;
 the legacy REST ETag cache is unchanged. This is not completion of #281 or
 the tracker#1456 epic, nor browser/CLI/chat migration.
 
+## Optional Forgejo source (review#310, slice a)
+
+Accidentally reading private forge data or spending its API budget is the
+threat stopped by making this source **off by default**. Enable it only in
+the operator-only service, with all of these options:
+
+- `--forgejo-base-url URL`: the instance root, including any installation
+  subpath, not `/api/v1`. HTTPS is required except on loopback for local tests.
+- `--forgejo-token-file PATH`: a separate read-only Forgejo token file,
+  reread on every request using the existing file-token reader. GitHub
+  credentials, `gh` and Octo STS are never used for Forgejo.
+- `--forgejo-org NAME`: repeat for each organization (1–16).
+- `--forgejo-label LABEL`: repeat for operator-gated issue labels (1–32).
+  Matching is **any** configured label, by exact case-sensitive name, not
+  all labels together. Choose labels reserved for operator-gated items.
+- `--forgejo-reviewer USER`: the user whose explicitly requested PR reviews
+  should appear (case-insensitive login match, not team membership).
+
+The source enumerates repositories only in configured organizations and
+reads their open issues and PRs. It filters out closed items, PRs in issue
+lists, issues without a matching label and PRs not requesting that user.
+Repository owners returned by the server must match the configured org.
+Items are deduplicated by a typed identity containing the configured forge
+base, case-normalized repository, kind (`issue` or `pull-request`) and number.
+This is a separate `forgejo` section in runtime `/api/state`, `/api/v1/state`
+and full-state SSE, never mixed into GitHub `waiting` or repository boards.
+It is absent when disabled, including before the first refresh. When enabled
+but not yet read it is empty, incomplete and has no `readAt`.
+
+A broken or hostile endpoint could otherwise hold refreshes open or exhaust
+memory: each Forgejo refresh permits at most 64 GETs over 45 seconds, with a
+10-second request timeout, 2 MiB response limit, 50 items per page and three
+pages per list. Reads are sequential with no retries; caps conservatively
+mark the section incomplete, including a full final page. Partial reads
+publish fresh partial evidence with their own `readAt`; total item-read
+failure carries prior items and their original `readAt`, with `complete:
+false`. A successful empty organization or item list is an observation;
+repository enumeration alone followed by failed item reads is not. `error`
+reports generic failures or limits, never raw transport errors, response
+bodies, tokens or configured names. Items intentionally contain private
+titles and locally constructed URLs, so protect the runtime API.
+
+To prevent token exfiltration and accidental writes, the transport is
+GET-only, confines authentication to the configured origin and follows no
+redirects. It never fetches response-provided URLs or pagination links;
+pagination uses locally constructed page numbers. No browser fetching,
+persistence, publication/chat integration or static-build data/config is
+added. Keep the existing operator-only network ACL/authenticating proxy
+requirement above: Host checks are DNS-rebinding protection, not user
+authentication. Do not expose these endpoints publicly. This change does
+not alter deployments, credentials, network policy or RBAC.
+
+Kubernetes source (b) and hosted personal-infra panel (c) remain separate
+PRs. The current browser does not render this section. Offline tests use
+only fabricated API-shaped data and loopback servers; never record or
+publish actual private responses as fixtures or build artifacts.
+
 ## Token sources
 
 The token never comes from a flag or environment value, which leak into

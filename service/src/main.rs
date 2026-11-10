@@ -2,6 +2,7 @@
 //! a timer and serves it, read-only, with the app. See service/README.md.
 
 mod board;
+mod forgejo;
 mod github;
 mod server;
 mod state;
@@ -33,6 +34,11 @@ seconds and serve it read-only: /api/state, /api/repos/OWNER/REPO,
   --static DIR             the built app to serve (default dist)
   --interval SECONDS       refresh period, 30 to 3600 (default 60)
   --board-config PATH      opt in to one bounded board-forge preview per refresh
+  --forgejo-base-url URL   opt in to server-side Forgejo reads (instance root)
+  --forgejo-token-file PATH  separate read-only token, reread on every request
+  --forgejo-org NAME       organization to read; repeatable, at most 16
+  --forgejo-label LABEL    any of these issue labels; repeatable, at most 32
+  --forgejo-reviewer USER  user whose requested PR reviews to read
 
 The GitHub token, which needs only read access, comes from one of:
 
@@ -75,6 +81,7 @@ struct Args {
     interval: Duration,
     token: TokenConfig,
     board_config: Option<PathBuf>,
+    forgejo: forgejo::Config,
 }
 
 /// The arguments, with `token_file_env` the value of $GITHUB_TOKEN_FILE.
@@ -88,6 +95,7 @@ fn parse_args(
     let mut interval = DEFAULT_INTERVAL_SECS;
     let mut token_file = token_file_env.filter(|f| !f.is_empty());
     let mut board_config = None;
+    let mut forgejo = forgejo::Config::default();
     let (mut sts_scope, mut sts_identity, mut sts_token_file) = (None, None, None);
     while let Some(a) = args.next() {
         let (flag, inline) = match a.split_once('=') {
@@ -105,6 +113,11 @@ fn parse_args(
             "--allow-host" => allowed_hosts.push(value),
             "--static" => static_dir = value.into(),
             "--board-config" => board_config = Some(value.into()),
+            "--forgejo-base-url" => forgejo.base_url = Some(value),
+            "--forgejo-token-file" => forgejo.token_file = Some(value.into()),
+            "--forgejo-org" => forgejo.organizations.push(value),
+            "--forgejo-label" => forgejo.labels.push(value),
+            "--forgejo-reviewer" => forgejo.reviewer = Some(value),
             "--interval" => {
                 interval = value
                     .parse()
@@ -153,6 +166,7 @@ fn parse_args(
         interval: Duration::from_secs(interval),
         token,
         board_config,
+        forgejo,
     }))
 }
 
@@ -182,6 +196,7 @@ fn now() -> String {
 async fn refresh_generation<S: github::Source>(
     client: &S,
     board: Option<&board::Reader>,
+    forgejo: Option<&forgejo::Reader>,
     prev: &State,
     clock: impl Fn() -> String,
 ) -> State {
@@ -189,6 +204,10 @@ async fn refresh_generation<S: github::Source>(
     if let Some(board) = board {
         next.decision = Some(board.refresh(prev.decision.as_ref(), &clock()).await);
     }
+    next.forgejo = match forgejo {
+        Some(reader) => Some(reader.refresh(prev.forgejo.as_ref(), &clock()).await),
+        None => None,
+    };
     next.refreshed_at = Some(clock());
     next
 }
@@ -197,6 +216,7 @@ async fn refresh_generation<S: github::Source>(
 async fn refresher(
     client: Client,
     board: Option<board::Reader>,
+    forgejo: Option<forgejo::Reader>,
     tx: watch::Sender<Arc<State>>,
     interval: Duration,
 ) {
@@ -205,7 +225,7 @@ async fn refresher(
     loop {
         ticks.tick().await;
         let prev = tx.borrow().clone();
-        let next = refresh_generation(&client, board.as_ref(), &prev, now).await;
+        let next = refresh_generation(&client, board.as_ref(), forgejo.as_ref(), &prev, now).await;
         client.sweep();
         for (name, error) in [
             ("runs", &next.runs.error),
@@ -238,6 +258,7 @@ async fn main() -> Result<()> {
         print!("{USAGE}");
         return Ok(());
     };
+    let forgejo = args.forgejo.reader()?;
     let token = Arc::new(token_source(args.token)?);
     let board = match args.board_config {
         Some(path) => Some(board::Reader::new(&path, token.clone()).await?),
@@ -254,8 +275,11 @@ async fn main() -> Result<()> {
     if board.is_some() {
         initial.decision = Some(Default::default());
     }
+    if forgejo.is_some() {
+        initial.forgejo = Some(Default::default());
+    }
     let (tx, rx) = watch::channel(Arc::new(initial));
-    let refresher = tokio::spawn(refresher(client, board, tx, args.interval));
+    let refresher = tokio::spawn(refresher(client, board, forgejo, tx, args.interval));
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("listening on {}", args.listen))?;
@@ -299,6 +323,19 @@ mod tests {
         assert_eq!(a.token, TokenConfig::Gh);
         assert!(a.allowed_hosts.is_empty());
         assert!(a.board_config.is_none(), "board reads are off by default");
+        assert!(a.forgejo.reader().unwrap().is_none(), "Forgejo is opt-in");
+        let configured = parse(&[
+            "--forgejo-base-url=https://forge.invalid",
+            "--forgejo-token-file=/unused/forge-token",
+            "--forgejo-org=sample-team",
+            "--forgejo-label=gate-a",
+            "--forgejo-label=gate-b",
+            "--forgejo-reviewer=sample-reviewer",
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(configured.forgejo.labels, ["gate-a", "gate-b"]);
+        assert!(configured.forgejo.reader().unwrap().is_some());
         assert_eq!(
             parse(&["--board-config=board.json"])
                 .unwrap()
