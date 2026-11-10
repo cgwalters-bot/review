@@ -58,7 +58,7 @@ pub struct Section<T> {
     pub complete: bool,
     /// When `items` were read; null until the first read succeeds.
     pub read_at: Option<String>,
-    /// Why the last read failed. Wholly, when `read_at` is older than the
+    /// Why the last read failed or was incomplete. Wholly, when `read_at` is older than the
     /// state's `refreshedAt` and `items` are from then; or in part, when
     /// `complete` is false and the failed part's items are missing.
     pub error: Option<String>,
@@ -264,11 +264,21 @@ fn list<'a>(v: &'a Value, key: &str) -> Result<&'a [Value]> {
         .with_context(|| format!("answer has no list {key:?}"))
 }
 
-/// Whether a list answer holds all of its `total_count`.
-fn whole(v: &Value, items: &[Value]) -> bool {
-    v.get("total_count")
-        .and_then(Value::as_u64)
-        .is_some_and(|n| n as usize <= items.len())
+/// Explain each way a bounded list read is incomplete, naming the exact query.
+fn list_incompleteness(v: &Value, items: &[Value], path: &str) -> Option<String> {
+    let mut reasons = Vec::new();
+    match v.get("total_count").and_then(Value::as_u64) {
+        Some(n) if n > items.len() as u64 => reasons.push(format!(
+            "read {} of {n} items (first-page limit {PAGE_SIZE}; pagination disabled)",
+            items.len()
+        )),
+        None => reasons.push("missing or invalid total_count; cannot verify completeness".into()),
+        _ => {}
+    }
+    if v.get("incomplete_results") == Some(&Value::Bool(true)) {
+        reasons.push("GitHub reported incomplete_results=true".into());
+    }
+    (!reasons.is_empty()).then(|| format!("GET {path}: {}", reasons.join("; ")))
 }
 
 /// OWNER/REPO from a github.com issue, PR or run URL.
@@ -334,7 +344,7 @@ async fn load_runs<S: Source>(src: &S) -> Result<Read<Run>> {
     }
     let paths: Vec<String> = lists.iter().map(|(_, p)| p.clone()).collect();
     let answers = get_all(src, &paths).await;
-    let mut complete = true;
+    let mut incomplete = Vec::new();
     // One failure per source: its status lists usually fail alike.
     let mut failed: BTreeMap<&str, String> = BTreeMap::new();
     // A run can move between status lists while they are read; one entry per run.
@@ -345,12 +355,12 @@ async fn load_runs<S: Source>(src: &S) -> Result<Read<Run>> {
             let runs = items.iter().map(parse_run).collect::<Result<Vec<_>>>();
             Ok((
                 runs.with_context(|| format!("GET {path}"))?,
-                whole(&a, items),
+                list_incompleteness(&a, items, path),
             ))
         });
         match parsed {
-            Ok((read, whole)) => {
-                complete &= whole;
+            Ok((read, reason)) => {
+                incomplete.extend(reason);
                 for run in read {
                     runs.insert((run.repository.to_lowercase(), run.id), run);
                 }
@@ -362,15 +372,19 @@ async fn load_runs<S: Source>(src: &S) -> Result<Read<Run>> {
             }
         }
     }
-    let failures: Vec<String> = failed.into_values().collect();
+    let mut failures: Vec<String> = failed.into_values().collect();
     if failures.len() == RUN_SOURCES.len() {
         anyhow::bail!(summarize(&failures).unwrap_or_default());
+    }
+    // Keep every incomplete query visible, even when failures are summarized.
+    if !incomplete.is_empty() {
+        failures.insert(0, incomplete.join("; "));
     }
     let mut runs: Vec<Run> = runs.into_values().collect();
     runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(Read {
         items: runs,
-        complete,
+        complete: failures.is_empty(),
         failures,
     })
 }
@@ -386,8 +400,8 @@ struct Hit {
     updated_at: String,
 }
 
-/// A search answer's items, and whether they are all it found.
-fn search_hits(a: &Value) -> Result<(Vec<Hit>, bool)> {
+/// A search answer's items, and why they may not be all it found.
+fn search_hits(a: &Value, path: &str) -> Result<(Vec<Hit>, Option<String>)> {
     let items = list(a, "items")?;
     let hits = items
         .iter()
@@ -404,24 +418,22 @@ fn search_hits(a: &Value) -> Result<(Vec<Hit>, bool)> {
             })
         })
         .collect::<Result<_>>()?;
-    Ok((
-        hits,
-        whole(a, items) && a.get("incomplete_results") != Some(&Value::Bool(true)),
-    ))
+    Ok((hits, list_incompleteness(a, items, path)))
 }
 
 /// The bot's open PRs, most recently updated first, each with its merge
 /// state read from the PR itself (search doesn't give it). A PR whose read
 /// fails has none, and is a failure naming it.
 async fn load_prs<S: Source>(src: &S) -> Result<Read<Pr>> {
-    let answer = src.get(&search_path(BOT_PRS_QUERY)).await?;
-    let (hits, complete) = search_hits(&answer)?;
+    let path = search_path(BOT_PRS_QUERY);
+    let answer = src.get(&path).await?;
+    let (hits, incomplete) = search_hits(&answer, &path)?;
     let paths: Vec<String> = hits
         .iter()
         .map(|h| format!("/repos/{}/pulls/{}", h.repository, h.number))
         .collect();
     let pulls = get_all(src, &paths).await;
-    let mut failures = Vec::new();
+    let mut failures: Vec<String> = incomplete.into_iter().collect();
     let prs = hits
         .into_iter()
         .zip(pulls)
@@ -445,7 +457,7 @@ async fn load_prs<S: Source>(src: &S) -> Result<Read<Pr>> {
         .collect();
     Ok(Read {
         items: prs,
-        complete,
+        complete: failures.is_empty(),
         failures,
     })
 }
@@ -453,12 +465,13 @@ async fn load_prs<S: Source>(src: &S) -> Result<Read<Pr>> {
 /// Open issues and PRs assigned to the operator or requesting their review, most
 /// recently updated first; one entry for an item with both reasons.
 async fn load_waiting<S: Source>(src: &S) -> Result<Read<Waiting>> {
-    let mut complete = true;
+    let mut incomplete = Vec::new();
     let mut found: Vec<Waiting> = Vec::new();
     for (reason, query) in WAITING_QUERIES {
-        let answer = src.get(&search_path(query)).await?;
-        let (hits, whole) = search_hits(&answer)?;
-        complete &= whole;
+        let path = search_path(query);
+        let answer = src.get(&path).await?;
+        let (hits, diagnostic) = search_hits(&answer, &path)?;
+        incomplete.extend(diagnostic);
         for h in hits {
             if let Some(w) = found
                 .iter_mut()
@@ -481,8 +494,12 @@ async fn load_waiting<S: Source>(src: &S) -> Result<Read<Waiting>> {
     found.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(Read {
         items: found,
-        complete,
-        failures: Vec::new(),
+        complete: incomplete.is_empty(),
+        failures: if incomplete.is_empty() {
+            Vec::new()
+        } else {
+            vec![incomplete.join("; ")]
+        },
     })
 }
 
@@ -523,6 +540,141 @@ pub(crate) mod tests {
     }
 
     const NOW: &str = "2026-11-07T12:00:00Z";
+
+    #[test]
+    fn list_completeness_reasons() {
+        for (count, total, partial, expected) in [
+            (0, serde_json::json!(0), false, None),
+            (99, serde_json::json!(99), false, None),
+            (100, serde_json::json!(100), false, None),
+            (
+                100,
+                serde_json::json!(101),
+                false,
+                Some("read 100 of 101 items (first-page limit 100; pagination disabled)"),
+            ),
+            (
+                100,
+                serde_json::json!(100),
+                true,
+                Some("GitHub reported incomplete_results=true"),
+            ),
+            (
+                100,
+                serde_json::json!(101),
+                true,
+                Some(
+                    "read 100 of 101 items (first-page limit 100; pagination disabled); GitHub reported incomplete_results=true",
+                ),
+            ),
+            (
+                0,
+                Value::Null,
+                false,
+                Some("missing or invalid total_count; cannot verify completeness"),
+            ),
+            (
+                0,
+                serde_json::json!("invalid"),
+                false,
+                Some("missing or invalid total_count; cannot verify completeness"),
+            ),
+        ] {
+            let answer = serde_json::json!({"total_count": total, "incomplete_results": partial});
+            assert_eq!(
+                list_incompleteness(&answer, &vec![Value::Null; count], "/list"),
+                expected.map(|reason| format!("GET /list: {reason}")),
+                "count={count}, total={total}, partial={partial}"
+            );
+        }
+        assert_eq!(
+            list_incompleteness(&serde_json::json!({}), &[], "/list").as_deref(),
+            Some("GET /list: missing or invalid total_count; cannot verify completeness")
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_lists_name_every_query() {
+        let mut src = Recorded::fixture();
+        let mut paths = Vec::new();
+        // More than 100 results in each nonempty run-status list and all three
+        // searches. Waiting deduplication must not hide either truncated query.
+        for (path, answer) in &mut src.0 {
+            let key = if path.contains("/actions/") {
+                "workflow_runs"
+            } else {
+                "items"
+            };
+            let Some(items) = answer.get_mut(key).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            let Some(item) = items.first().cloned() else {
+                continue;
+            };
+            items.resize(PAGE_SIZE, item);
+            answer["total_count"] = 101.into();
+            paths.push(path.clone());
+        }
+        assert_eq!(paths.len(), 6);
+        let state = refresh(&src, &State::empty(), NOW).await;
+        assert!(!state.runs.complete && !state.prs.complete && !state.waiting.complete);
+        assert_eq!(state.runs.items.len(), 3, "runs stay deduplicated");
+        assert_eq!(state.prs.items.len(), PAGE_SIZE);
+        assert_eq!(
+            state.waiting.items.len(),
+            2,
+            "waiting items stay deduplicated"
+        );
+        for path in paths {
+            let (read_at, error, repo_error) = if path.contains("/actions/") {
+                (
+                    &state.runs.read_at,
+                    &state.runs.error,
+                    state.repo("nobody/nothing").runs.error,
+                )
+            } else if path == search_path(BOT_PRS_QUERY) {
+                (
+                    &state.prs.read_at,
+                    &state.prs.error,
+                    state.repo("nobody/nothing").prs.error,
+                )
+            } else {
+                (
+                    &state.waiting.read_at,
+                    &state.waiting.error,
+                    state.repo("nobody/nothing").waiting.error,
+                )
+            };
+            let error = error.as_deref().unwrap();
+            assert_eq!(read_at.as_deref(), Some(NOW));
+            assert!(
+                error.contains(&format!(
+                    "GET {path}: read 100 of 101 items (first-page limit 100; pagination disabled)"
+                )),
+                "{error}"
+            );
+            assert_eq!(repo_error, Some(error));
+        }
+    }
+
+    #[tokio::test]
+    async fn incomplete_search_and_merge_failure_are_both_reported() {
+        let mut src = Recorded::fixture();
+        let path = search_path(BOT_PRS_QUERY);
+        src.0.get_mut(&path).unwrap()["incomplete_results"] = true.into();
+        src.0.remove("/repos/bootc-dev/bootc/pulls/1201");
+        let state = refresh(&src, &State::empty(), NOW).await;
+        assert!(!state.prs.complete);
+        assert_eq!(
+            state.prs.error.as_deref(),
+            Some(
+                format!("GET {path}: GitHub reported incomplete_results=true (and 1 more)")
+                    .as_str()
+            )
+        );
+        assert_eq!(state.prs.items.len(), 2);
+        assert_eq!(state.prs.items[0].merge_state, None);
+    }
 
     #[tokio::test]
     async fn builds_state_from_queries() {
@@ -653,7 +805,7 @@ pub(crate) mod tests {
         for (section, complete) in [("runs", true), ("prs", true), ("waiting", false)] {
             assert_eq!(
                 board[section],
-                serde_json::json!({"items": [], "complete": complete, "readAt": NOW, "error": null}),
+                serde_json::json!({"items": [], "complete": complete, "readAt": NOW, "error": if section == "waiting" { fresh.waiting.error.as_deref() } else { None }}),
                 "{section}"
             );
         }

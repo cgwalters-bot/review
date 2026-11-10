@@ -19,12 +19,16 @@ answer costs no rate budget; the three searches have no ETags and are what
 bounds the interval (search allows 30 a minute).
 
 Each section has `items`, `complete`, `readAt` and `error`. `complete` is
-false when a list was longer than the one page of 100 that is read, or when
-part of the section couldn't be read. `error` says what failed: if the
+false when a list was longer than the one page of 100 that is read, GitHub
+reported incomplete search results, the total count was unavailable, or
+part of the section couldn't be read. `error` names every incomplete list
+by its GET path and query, with the returned and total counts and the
+first-page limit when truncated; pagination remains disabled. It also
+says what failed: if the
 whole read failed, the section keeps the items it last read and `readAt`
 says when that was; if only part did (one run source, or some PRs' merge
 states), the rest is fresh and `error` names the first failure and counts
-the others.
+the others. Incomplete-list diagnostics stay visible alongside that summary.
 
 It serves:
 

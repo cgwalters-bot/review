@@ -88,6 +88,6 @@
     ],
     "complete": false,
     "readAt": "2026-11-07T12:00:00Z",
-    "error": null
+    "error": "GET /search/issues?q=is:open archived:false assignee:cgwalters&sort=updated&order=desc&per_page=100: read 2 of 3 items (first-page limit 100; pagination disabled)"
   }
 }
