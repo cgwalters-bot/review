@@ -14,13 +14,15 @@ import { CHAT_CONFIG } from "./src/github/chatconfig.ts";
 import * as esbuild from "esbuild";
 
 const OUT_DIR = "dist";
+// Only the private service build may contact same-origin infrastructure APIs.
+const hosted = process.argv.includes("--hosted");
 const CLIS = { "dist-cli/review-queue.js": "src/cli/main.ts", "dist-cli/control-app.js": "src/cli/controlplanemain.ts" };
 const STATIC_FILES = ["index.html", "style.css"];
 const DEV_HOST = "127.0.0.1";
 const DEV_PORT = 8787;
 
 const options: esbuild.BuildOptions = {
-  entryPoints: { app: "src/github/main.ts" },
+  entryPoints: { app: "src/github/main.ts", ...(hosted ? { "personal-infra": "src/hosted/main.ts" } : {}) },
   bundle: true,
   format: "esm",
   target: "es2022",
@@ -38,6 +40,12 @@ await Promise.all(STATIC_FILES.map((f) => copyFile(`static/${f}`, `${OUT_DIR}/${
 if (CHAT_CONFIG) {
   const html = await readFile(`${OUT_DIR}/index.html`, "utf8");
   await writeFile(`${OUT_DIR}/index.html`, html.replace("connect-src https://api.github.com;", `connect-src https://api.github.com wss://*.${CHAT_CONFIG.tailnetDomain};`));
+}
+if (hosted) {
+  const html = await readFile(`${OUT_DIR}/index.html`, "utf8");
+  await writeFile(`${OUT_DIR}/index.html`, html
+    .replace("connect-src https://api.github.com", "connect-src 'self' https://api.github.com")
+    .replace('</head>', '<script type="module" src="personal-infra.js"></script>\n</head>'));
 }
 
 if (process.argv.includes("--serve")) {

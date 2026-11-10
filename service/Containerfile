@@ -15,7 +15,7 @@ COPY build.ts tsconfig.json ./
 COPY src src
 COPY static static
 COPY docs docs
-RUN npm run build
+RUN npm run build -- --hosted
 
 # A static musl binary (rustls, no OpenSSL), so the runtime image needs no
 # Rust or C libraries of its own.

@@ -582,3 +582,6 @@ nav.views a[aria-current="page"] { color: var(--accent); border-bottom-color: va
 @media (any-pointer: coarse) {
   textarea, select, input:not([type]), input[type=text], input[type=password], input[type=search], input[type=url], input[type=email] { font-size: 16px !important; }
 }
+/* Hosted-only markup; long resource names must wrap on phones. */
+.personal-infra { overflow-wrap: anywhere; }
+.personal-infra li { margin-block: 1rem; }
