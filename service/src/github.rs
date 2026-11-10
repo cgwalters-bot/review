@@ -1,4 +1,4 @@
-//! A read-only REST client for GitHub, or for Forgejo's API. It has only
+//! A read-only REST client for the GitHub, Forgejo or Kubernetes API. It has only
 //! `get`, so the service can't write with the token it holds. Each GET is
 //! conditional on the ETag of the last answer to the same path: an
 //! unchanged answer is a 304, which costs no rate budget, and is served
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, AUTHORIZATION, ETAG, HeaderValue, IF_NONE_MATCH, USER_AGENT};
 use serde_json::Value;
@@ -20,9 +20,10 @@ pub const API_ROOT: &str = "https://api.github.com";
 /// Give up on a request GitHub hasn't answered in this long, as the app does.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Give up on a Forgejo request sooner: a refresh makes up to three rounds
-/// of them, and publishing GitHub's sections waits for the last.
-const FORGEJO_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Give up on a Forgejo or Kubernetes request sooner: a refresh makes rounds
+/// of them, up to three for Forgejo, and publishing GitHub's sections waits
+/// for the last.
+const SHORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 const API_VERSION: &str = "2022-11-28";
 
@@ -46,6 +47,7 @@ struct Cache {
 enum Api {
     GitHub,
     Forgejo,
+    Kubernetes,
 }
 
 pub struct Client {
@@ -59,23 +61,32 @@ pub struct Client {
 impl Client {
     /// A GitHub client for the API at `root`.
     pub fn new(token: impl Into<Arc<TokenSource>>, root: &str) -> Result<Self> {
-        Self::build(Api::GitHub, token.into(), root)
+        Self::build(Api::GitHub, token.into(), root, None)
     }
 
     /// A Forgejo client for the API at `root`, a base URL ending in /api/v1.
     pub fn forgejo(token: impl Into<Arc<TokenSource>>, root: &str) -> Result<Self> {
-        Self::build(Api::Forgejo, token.into(), root)
+        Self::build(Api::Forgejo, token.into(), root, None)
     }
 
-    fn build(api: Api, token: Arc<TokenSource>, root: &str) -> Result<Self> {
+    /// A Kubernetes client for the API server at `root`, trusting only the
+    /// PEM certificates in `ca`.
+    pub fn kubernetes(token: impl Into<Arc<TokenSource>>, root: &str, ca: &[u8]) -> Result<Self> {
+        Self::build(Api::Kubernetes, token.into(), root, Some(ca))
+    }
+
+    fn build(api: Api, token: Arc<TokenSource>, root: &str, ca: Option<&[u8]>) -> Result<Self> {
         let timeout = match api {
             Api::GitHub => REQUEST_TIMEOUT,
-            Api::Forgejo => FORGEJO_REQUEST_TIMEOUT,
+            Api::Forgejo | Api::Kubernetes => SHORT_REQUEST_TIMEOUT,
         };
-        let http = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .context("building the HTTP client")?;
+        let mut http = reqwest::Client::builder().timeout(timeout);
+        if let Some(ca) = ca {
+            let certs = reqwest::Certificate::from_pem_bundle(ca).context("reading the CA")?;
+            ensure!(!certs.is_empty(), "the CA has no certificate");
+            http = http.tls_certs_only(certs);
+        }
+        let http = http.build().context("building the HTTP client")?;
         Ok(Self {
             http,
             api,
@@ -116,6 +127,9 @@ impl Source for Client {
                 .header("X-GitHub-Api-Version", API_VERSION),
             Api::Forgejo => req
                 .header(AUTHORIZATION, format!("token {token}"))
+                .header(ACCEPT, "application/json"),
+            Api::Kubernetes => req
+                .header(AUTHORIZATION, format!("Bearer {token}"))
                 .header(ACCEPT, "application/json"),
         };
         if let Some((etag, _)) = &cached {
@@ -257,8 +271,21 @@ mod tests {
                 Client::forgejo(token(), &root).unwrap(),
                 serde_json::json!({"authorization": "token t", "api": false}),
             ),
+            (
+                // Without the cluster's CA, which only an https root needs.
+                Client::build(Api::Kubernetes, token().into(), &root, None).unwrap(),
+                serde_json::json!({"authorization": "Bearer t", "api": false}),
+            ),
         ] {
             assert_eq!(client.get("/auth").await.unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn kubernetes_needs_a_ca() {
+        let err = Client::kubernetes(TokenSource::Fixed("t".into()), "https://k", b"")
+            .err()
+            .unwrap();
+        assert_eq!(err.to_string(), "the CA has no certificate");
     }
 }

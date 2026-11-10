@@ -800,6 +800,7 @@ mod tests {
                 &Recorded::fixture(),
                 Some(&source),
                 None::<(&Recorded, _)>,
+                None::<(&Recorded, _)>,
                 &prev,
                 || {
                     // Legacy reads may take long enough that their starting clock
