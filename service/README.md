@@ -43,7 +43,7 @@ It serves:
 - `GET /healthz`: JSON with `status: "ok"` and `version`, without touching GitHub;
 - everything else from the built app (`--static`, default `dist`).
 
-It has no route that writes, and its GitHub client sends only GETs. It logs
+It has no route that writes, and its GitHub and Forgejo clients send only GETs. It logs
 to stdout and exits cleanly on SIGTERM.
 
 The full-state JSON keeps `schema: "review-service/v1"` for existing clients.
@@ -150,6 +150,46 @@ fixtures. Losing this service's memory loses no authority or durable state;
 the legacy REST ETag cache is unchanged. This is not completion of #281 or
 the tracker#1456 epic, nor browser/CLI/chat migration.
 
+## Forgejo source (review#310 a)
+
+Forgejo reads are **off by default**. With `--forgejo-url URL`, the
+instance's base URL, and `--forgejo-token-file PATH`, a file holding a
+read-only token that is reread for every request like the GitHub token
+file, each refresh reads with GETs only:
+
+- with `--forgejo-org ORG` (up to 10) and `--forgejo-label LABEL` (up to
+  20), both repeatable: open issues in each organization carrying any of
+  the labels, one search per organization. Forgejo drops label names it
+  doesn't know, and with none left it doesn't filter by label at all, so
+  the service keeps only issues carrying a configured label, by exact name,
+  and reports any others it dropped as a failure;
+- with `--forgejo-reviewer USER`: open PRs requesting that user's review.
+  Forgejo's search lists only the token user's requested reviews, so the
+  service checks `GET /user` names the reviewer and reports a failure
+  instead of the search if not, rather than show someone else's reviews
+  as the operator's.
+
+The token needs read scopes only: `read:issue`, `read:repository` and,
+with `--forgejo-reviewer`, `read:user`.
+
+The code names no instance, organization or label; all of it is
+configuration. Keeping it opt-in keeps a deployment that isn't given an
+instance from contacting one. The results are their own `forgejo` section
+of the state, beside GitHub's `waiting`, with the same `complete`, `readAt`
+and `error`. Each item has `repository` (OWNER/REPO on the instance),
+`number`, `url`, `title`, `pullRequest`, `draft`, `labels`, `reason`
+(`labeled` or `review-requested`) and `updatedAt`, most recently updated
+first. Each search reads one page of at most 50, or the instance's
+`max_response_items` (read from `/settings/api`) if lower; a full page
+makes the section incomplete. The searches run at once, alongside the
+GitHub reads, each with a 15-second timeout. A failed search makes the
+section incomplete and names the failure while the others' items stay;
+when nothing could be read, the section keeps its last items and reports
+the error. The section is absent when Forgejo isn't
+configured, and `/api/repos/OWNER/REPO` doesn't include it. Like the rest
+of the state, it is served only to whoever can reach the service; the app
+doesn't render it yet (review#310 c).
+
 ## Token sources
 
 The token never comes from a flag or environment value, which leak into
@@ -226,7 +266,9 @@ are reported as `null`.
 `cargo test --manifest-path service/Cargo.toml` checks the state model
 against the answers in `fixtures/github.json`, the conditional requests
 against a local fake GitHub, the token sources against a fake Octo STS,
-and the endpoints and events.
+and the endpoints and events. The Forgejo section is checked against the
+recorded answers in `fixtures/forgejo.json`, giving
+`fixtures/forgejo-state.json`.
 
 The added preview tests use a local fake forge for cold/repeated/lost state,
 partial board reads, stale usage, missing broker evidence and token rotation,

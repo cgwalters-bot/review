@@ -66,14 +66,14 @@ pub struct Section<T> {
 
 /// What a section's read found: its items, whether its lists were whole,
 /// and the parts that failed, whose items are missing.
-struct Read<T> {
-    items: Vec<T>,
-    complete: bool,
-    failures: Vec<String>,
+pub(crate) struct Read<T> {
+    pub items: Vec<T>,
+    pub complete: bool,
+    pub failures: Vec<String>,
 }
 
 /// One message for a section's failures: the first, and how many more.
-fn summarize(failures: &[String]) -> Option<String> {
+pub(crate) fn summarize(failures: &[String]) -> Option<String> {
     let (first, rest) = failures.split_first()?;
     Some(match rest.len() {
         0 => first.clone(),
@@ -148,6 +148,9 @@ pub struct State {
     pub waiting: Section<Waiting>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decision: Option<Section<Value>>,
+    /// What waits on the operator on a Forgejo instance, when one is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forgejo: Option<Section<crate::forgejo::Item>>,
 }
 
 /// One repository's part of the state, case-insensitively by name.
@@ -205,22 +208,24 @@ impl State {
     }
 }
 
+/// A section from its read at `now`; one that failed wholly keeps `prev`'s items.
+pub(crate) fn section<T: Clone>(read: Result<Read<T>>, prev: &Section<T>, now: &str) -> Section<T> {
+    match read {
+        Ok(read) => Section {
+            complete: read.complete && read.failures.is_empty(),
+            error: summarize(&read.failures),
+            items: read.items,
+            read_at: Some(now.to_owned()),
+        },
+        Err(e) => Section {
+            error: Some(format!("{e:#}")),
+            ..prev.clone()
+        },
+    }
+}
+
 /// Read every section afresh; one that fails wholly keeps `prev`'s items.
 pub async fn refresh<S: Source>(src: &S, prev: &State, now: &str) -> State {
-    fn section<T: Clone>(read: Result<Read<T>>, prev: &Section<T>, now: &str) -> Section<T> {
-        match read {
-            Ok(read) => Section {
-                complete: read.complete && read.failures.is_empty(),
-                error: summarize(&read.failures),
-                items: read.items,
-                read_at: Some(now.to_owned()),
-            },
-            Err(e) => Section {
-                error: Some(format!("{e:#}")),
-                ..prev.clone()
-            },
-        }
-    }
     let (runs, prs, waiting) = tokio::join!(load_runs(src), load_prs(src), load_waiting(src));
     State {
         schema: SCHEMA,
@@ -232,16 +237,17 @@ pub async fn refresh<S: Source>(src: &S, prev: &State, now: &str) -> State {
         prs: section(prs, &prev.prs, now),
         waiting: section(waiting, &prev.waiting, now),
         decision: prev.decision.clone(),
+        forgejo: prev.forgejo.clone(),
     }
 }
 
-fn str_of<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
+pub(crate) fn str_of<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v.get(key)
         .and_then(Value::as_str)
         .with_context(|| format!("answer has no string {key:?}"))
 }
 
-fn u64_of(v: &Value, key: &str) -> Result<u64> {
+pub(crate) fn u64_of(v: &Value, key: &str) -> Result<u64> {
     v.get(key)
         .and_then(Value::as_u64)
         .with_context(|| format!("answer has no number {key:?}"))
@@ -487,7 +493,12 @@ pub(crate) mod tests {
 
     impl Recorded {
         pub(crate) fn fixture() -> Self {
-            let v: Value = serde_json::from_str(include_str!("../fixtures/github.json")).unwrap();
+            Self::from_fixture(include_str!("../fixtures/github.json"))
+        }
+
+        /// The answers of a fixture file's `answers` object.
+        pub(crate) fn from_fixture(json: &str) -> Self {
+            let v: Value = serde_json::from_str(json).unwrap();
             let answers = v["answers"].as_object().unwrap();
             Self(
                 answers

@@ -2,6 +2,7 @@
 //! a timer and serves it, read-only, with the app. See service/README.md.
 
 mod board;
+mod forgejo;
 mod github;
 mod server;
 mod state;
@@ -44,6 +45,18 @@ The GitHub token, which needs only read access, comes from one of:
                             token in PATH (audience octo-sts.dev) for an
                             installation token, under trust policy NAME
   (none of these)           `gh auth token`, for local runs
+
+A Forgejo section, off unless --forgejo-url is given, reads with GETs:
+
+  --forgejo-url URL         the instance's base URL
+  --forgejo-token-file PATH a file holding its read-only token, reread
+                            for every request
+  --forgejo-org ORG         an organization to search for labeled open
+                            issues, with --forgejo-label; repeatable (10)
+  --forgejo-label LABEL     a label those issues carry, any of them;
+                            repeatable (20)
+  --forgejo-reviewer USER   the token's user, whose requested reviews on
+                            open PRs are read
 ";
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
@@ -75,6 +88,7 @@ struct Args {
     interval: Duration,
     token: TokenConfig,
     board_config: Option<PathBuf>,
+    forgejo: Option<forgejo::Config>,
 }
 
 /// The arguments, with `token_file_env` the value of $GITHUB_TOKEN_FILE.
@@ -88,6 +102,8 @@ fn parse_args(
     let mut interval = DEFAULT_INTERVAL_SECS;
     let mut token_file = token_file_env.filter(|f| !f.is_empty());
     let mut board_config = None;
+    let (mut forgejo_url, mut forgejo_token_file, mut forgejo_reviewer) = (None, None, None);
+    let (mut forgejo_orgs, mut forgejo_labels) = (Vec::new(), Vec::new());
     let (mut sts_scope, mut sts_identity, mut sts_token_file) = (None, None, None);
     while let Some(a) = args.next() {
         let (flag, inline) = match a.split_once('=') {
@@ -114,6 +130,11 @@ fn parse_args(
             "--octo-sts-scope" => sts_scope = Some(value),
             "--octo-sts-identity" => sts_identity = Some(value),
             "--octo-sts-token-file" => sts_token_file = Some(value),
+            "--forgejo-url" => forgejo_url = Some(value),
+            "--forgejo-token-file" => forgejo_token_file = Some(value.into()),
+            "--forgejo-org" => forgejo_orgs.push(value),
+            "--forgejo-label" => forgejo_labels.push(value),
+            "--forgejo-reviewer" => forgejo_reviewer = Some(value),
             _ => bail!("unknown option {flag:?}"),
         }
     }
@@ -146,6 +167,23 @@ fn parse_args(
             "Octo STS needs all of --octo-sts-scope, --octo-sts-identity and --octo-sts-token-file"
         ),
     };
+    let forgejo = match forgejo_url {
+        Some(url) => Some(forgejo::Config::new(
+            &url,
+            forgejo_token_file,
+            forgejo_orgs,
+            forgejo_labels,
+            forgejo_reviewer,
+        )?),
+        None if forgejo_token_file.is_some()
+            || forgejo_reviewer.is_some()
+            || !forgejo_orgs.is_empty()
+            || !forgejo_labels.is_empty() =>
+        {
+            bail!("the --forgejo-* options need --forgejo-url")
+        }
+        None => None,
+    };
     Ok(Some(Args {
         listen,
         allowed_hosts,
@@ -153,6 +191,7 @@ fn parse_args(
         interval: Duration::from_secs(interval),
         token,
         board_config,
+        forgejo,
     }))
 }
 
@@ -179,13 +218,26 @@ fn now() -> String {
 
 /// Compute one whole generation before the watch channel exposes any of it.
 /// Each source gets its own observation clock; publication is not validation.
-async fn refresh_generation<S: github::Source>(
+async fn refresh_generation<S: github::Source, F: github::Source>(
     client: &S,
     board: Option<&board::Reader>,
+    forgejo: Option<(&F, &forgejo::Config)>,
     prev: &State,
     clock: impl Fn() -> String,
 ) -> State {
-    let mut next = state::refresh(client, prev, &clock()).await;
+    let at = clock();
+    // Forgejo is read alongside GitHub, so a slow instance delays the
+    // publication of GitHub's sections by its own reads at most.
+    let forgejo_read = async {
+        match forgejo {
+            Some((src, config)) => {
+                Some(forgejo::refresh(src, config, prev.forgejo.as_ref(), &clock()).await)
+            }
+            None => None,
+        }
+    };
+    let (mut next, forgejo_section) = tokio::join!(state::refresh(client, prev, &at), forgejo_read);
+    next.forgejo = forgejo_section;
     if let Some(board) = board {
         next.decision = Some(board.refresh(prev.decision.as_ref(), &clock()).await);
     }
@@ -197,6 +249,7 @@ async fn refresh_generation<S: github::Source>(
 async fn refresher(
     client: Client,
     board: Option<board::Reader>,
+    forgejo: Option<(Client, forgejo::Config)>,
     tx: watch::Sender<Arc<State>>,
     interval: Duration,
 ) {
@@ -205,12 +258,18 @@ async fn refresher(
     loop {
         ticks.tick().await;
         let prev = tx.borrow().clone();
-        let next = refresh_generation(&client, board.as_ref(), &prev, now).await;
+        let forgejo_ref = forgejo.as_ref().map(|(c, config)| (c, config));
+        let next = refresh_generation(&client, board.as_ref(), forgejo_ref, &prev, now).await;
         client.sweep();
+        if let Some((c, _)) = &forgejo {
+            c.sweep();
+        }
+        let forgejo_error = next.forgejo.as_ref().and_then(|s| s.error.as_ref());
         for (name, error) in [
-            ("runs", &next.runs.error),
-            ("prs", &next.prs.error),
-            ("waiting", &next.waiting.error),
+            ("runs", next.runs.error.as_ref()),
+            ("prs", next.prs.error.as_ref()),
+            ("waiting", next.waiting.error.as_ref()),
+            ("forgejo", forgejo_error),
         ] {
             if let Some(e) = error {
                 println!("control-app: {name}: {e}");
@@ -244,6 +303,13 @@ async fn main() -> Result<()> {
         None => None,
     };
     let client = Client::new(token, github::API_ROOT)?;
+    let forgejo = match args.forgejo {
+        Some(config) => {
+            let token = TokenSource::File(config.token_file.clone());
+            Some((Client::forgejo(token, &config.api_root())?, config))
+        }
+        None => None,
+    };
     if !args.static_dir.is_dir() {
         println!(
             "control-app: {} is not a directory; build the app (npm run build) to serve it",
@@ -254,8 +320,11 @@ async fn main() -> Result<()> {
     if board.is_some() {
         initial.decision = Some(Default::default());
     }
+    if forgejo.is_some() {
+        initial.forgejo = Some(Default::default());
+    }
     let (tx, rx) = watch::channel(Arc::new(initial));
-    let refresher = tokio::spawn(refresher(client, board, tx, args.interval));
+    let refresher = tokio::spawn(refresher(client, board, forgejo, tx, args.interval));
     let listener = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("listening on {}", args.listen))?;
@@ -354,6 +423,64 @@ mod tests {
                 Some(why)
             );
         }
+    }
+
+    #[test]
+    fn forgejo_args() {
+        assert!(
+            parse(&[]).unwrap().unwrap().forgejo.is_none(),
+            "Forgejo reads are off by default"
+        );
+        let a = parse(&[
+            "--forgejo-url=https://forge.example",
+            "--forgejo-token-file=/run/forgejo-token",
+            "--forgejo-org=o1",
+            "--forgejo-org=o2",
+            "--forgejo-label=l",
+            "--forgejo-reviewer=u",
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            a.forgejo,
+            Some(forgejo::Config {
+                url: "https://forge.example".into(),
+                token_file: "/run/forgejo-token".into(),
+                orgs: vec!["o1".into(), "o2".into()],
+                labels: vec!["l".into()],
+                reviewer: Some("u".into()),
+            })
+        );
+        assert_eq!(
+            parse(&["--forgejo-reviewer=u"])
+                .err()
+                .map(|e| e.to_string())
+                .as_deref(),
+            Some("the --forgejo-* options need --forgejo-url")
+        );
+    }
+
+    #[tokio::test]
+    async fn forgejo_section_only_when_configured() {
+        use crate::state::tests::Recorded;
+        let github = Recorded::fixture();
+        let forge = Recorded::from_fixture(include_str!("../fixtures/forgejo.json"));
+        let config = forgejo::Config::new(
+            "https://forge.example",
+            Some("t".into()),
+            vec![],
+            vec![],
+            Some("operator".into()),
+        )
+        .unwrap();
+        let clock = || "2026-11-10T12:00:00Z".to_owned();
+        let empty = State::empty();
+        let off = refresh_generation(&github, None, None::<(&Recorded, _)>, &empty, clock);
+        let off = serde_json::to_value(off.await).unwrap();
+        assert!(off.get("forgejo").is_none());
+        let on = refresh_generation(&github, None, Some((&forge, &config)), &empty, clock);
+        let on = on.await.forgejo.unwrap();
+        assert_eq!((on.items.len(), on.complete), (2, true));
     }
 
     #[test]

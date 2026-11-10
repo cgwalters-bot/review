@@ -796,8 +796,12 @@ mod tests {
             }
             let prev = tx.borrow().clone();
             let clocks = AtomicUsize::new(0);
-            let state =
-                crate::refresh_generation(&Recorded::fixture(), Some(&source), &prev, || {
+            let state = crate::refresh_generation(
+                &Recorded::fixture(),
+                Some(&source),
+                None::<(&Recorded, _)>,
+                &prev,
+                || {
                     // Legacy reads may take long enough that their starting clock
                     // is no longer suitable for assessing the preview's freshness.
                     if clocks.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -805,8 +809,9 @@ mod tests {
                     } else {
                         AT.into()
                     }
-                })
-                .await;
+                },
+            )
+            .await;
             let value = serde_json::to_value(&state).unwrap();
             assert_eq!(value["generation"], generation);
             assert_eq!(value["decision"]["items"][0]["observed_at"], AT);
