@@ -17,6 +17,7 @@ import { MaybeSentError } from "./backend.ts";
 import { OPERATOR } from "./config.ts";
 import { ACTION_CONFIG, PROPOSAL_LIMIT, actionBlocks } from "./actions.ts";
 import { chatProposalCard } from "./actionsview.ts";
+import { sessionDispatchPanel } from "./sessiondispatch.ts";
 
 export interface ChatPanel {
   mount(slot: HTMLElement): void;
@@ -332,6 +333,7 @@ const message = (e: unknown) => e instanceof Error ? e.message : String(e);
 export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | undefined {
   const config = "config" in options ? options.config : CHAT_CONFIG;
   if (!config) return undefined;
+  if (config.dispatch) return sessionDispatchPanel(gh, config.dispatch);
   const socketFactory = options.socketFactory ?? ((url: string) => new WebSocket(url));
   const t = { ...CHAT_TIMING, ...options.timing };
   let cleanup = () => {};

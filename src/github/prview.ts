@@ -4,6 +4,7 @@
 // text nodes only.
 
 import { h, kids, link, scrollTo } from "../dom.ts";
+import { dispatchChatButton } from "./chatitem.ts";
 import type { Renderer } from "../markdown.ts";
 import type { IssueRef } from "./board.ts";
 import { BOARD_URL, BOT_LOGIN, FORGE_ORG } from "./config.ts";
@@ -555,6 +556,7 @@ class Pane implements PrPane {
         verdict ? h("span", { class: `state v-${d.verdict.state}` }, d.verdict.url ? link(d.verdict.url, verdict) : verdict) : null,
       ),
       h("h2", {}, d.title),
+      dispatchChatButton(d.url, d.title),
       linkRow(d, entry),
       ...d.warnings.map((w) => h("p", { class: "warn" }, w)),
       entry?.item?.why ? h("section", {}, h("h3", {}, "Why (board)"), h("div", { class: "md" }, render(entry.item.why))) : null,

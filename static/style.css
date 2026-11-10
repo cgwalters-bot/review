@@ -537,6 +537,9 @@ details.sec[open] > summary { border-bottom: 1px solid var(--line); }
 .chat-run { font: 12px var(--mono); overflow-wrap: anywhere; }
 .chat-body, .chat-form { display: grid; gap: 6px; min-height: 0; }
 .chat-panel textarea { box-sizing: border-box; width: 100%; min-width: 0; }
+.chat-dispatch-form { display: grid; gap: 8px; justify-items: start; }
+.chat-dispatch-form label { display: grid; gap: 4px; width: 100%; }
+.chat-dispatch-form input { box-sizing: border-box; width: 100%; min-width: 0; }
 .chat-log { max-height: 50vh; overflow: auto; overflow-wrap: anywhere; }
 .chat-log:empty { display: none; }
 .chat-log p, .chat-log pre { white-space: pre-wrap; overflow-wrap: anywhere; }
