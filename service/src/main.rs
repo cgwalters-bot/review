@@ -1,6 +1,8 @@
 //! control-app: builds the control app's state from GitHub queries on
-//! a timer and serves it, read-only, with the app. See service/README.md.
+//! a timer and serves it with the app, plus opt-in ACP attachments.
+//! See service/README.md.
 
+mod acp;
 mod board;
 mod forgejo;
 mod github;
@@ -35,6 +37,7 @@ seconds and serve it read-only: /api/state, /api/repos/OWNER/REPO,
   --static DIR             the built app to serve (default dist)
   --interval SECONDS       refresh period, 30 to 3600 (default 60)
   --board-config PATH      opt in to one bounded board-forge preview per refresh
+  --acp-config PATH        opt in to configured session WebSocket attachments
 
 The GitHub token, which needs only read access, comes from one of:
 
@@ -95,6 +98,7 @@ struct Args {
     interval: Duration,
     token: TokenConfig,
     board_config: Option<PathBuf>,
+    acp_config: Option<PathBuf>,
     forgejo: Option<forgejo::Config>,
     kubernetes: Option<kubernetes::Config>,
 }
@@ -110,6 +114,7 @@ fn parse_args(
     let mut interval = DEFAULT_INTERVAL_SECS;
     let mut token_file = token_file_env.filter(|f| !f.is_empty());
     let mut board_config = None;
+    let mut acp_config = None;
     let (mut forgejo_url, mut forgejo_token_file, mut forgejo_reviewer) = (None, None, None);
     let (mut forgejo_orgs, mut forgejo_labels) = (Vec::new(), Vec::new());
     let mut kubernetes_namespaces = Vec::new();
@@ -130,6 +135,7 @@ fn parse_args(
             "--allow-host" => allowed_hosts.push(value),
             "--static" => static_dir = value.into(),
             "--board-config" => board_config = Some(value.into()),
+            "--acp-config" => acp_config = Some(value.into()),
             "--interval" => {
                 interval = value
                     .parse()
@@ -206,6 +212,7 @@ fn parse_args(
         interval: Duration::from_secs(interval),
         token,
         board_config,
+        acp_config,
         forgejo,
         kubernetes,
     }))
@@ -341,6 +348,10 @@ async fn main() -> Result<()> {
         print!("{USAGE}");
         return Ok(());
     };
+    let acp = match args.acp_config {
+        Some(path) => Some(acp::Bridge::load(&path).await?),
+        None => None,
+    };
     let token = Arc::new(token_source(args.token)?);
     let board = match args.board_config {
         Some(path) => Some(board::Reader::new(&path, token.clone()).await?),
@@ -399,7 +410,7 @@ async fn main() -> Result<()> {
     println!("control-app: serving http://{}", args.listen);
     axum::serve(
         listener,
-        server::router(rx, Some(args.static_dir), args.allowed_hosts),
+        server::router_with_acp(rx, Some(args.static_dir), args.allowed_hosts, acp),
     )
     .with_graceful_shutdown(async move {
         if let Err(e) = shutdown.await {
@@ -435,6 +446,14 @@ mod tests {
         assert_eq!(a.token, TokenConfig::Gh);
         assert!(a.allowed_hosts.is_empty());
         assert!(a.board_config.is_none(), "board reads are off by default");
+        assert!(a.acp_config.is_none(), "ACP attachments are off by default");
+        assert_eq!(
+            parse(&["--acp-config=sessions.json"])
+                .unwrap()
+                .unwrap()
+                .acp_config,
+            Some(PathBuf::from("sessions.json"))
+        );
         assert_eq!(
             parse(&["--board-config=board.json"])
                 .unwrap()
