@@ -1,5 +1,5 @@
 //! The HTTP side: the state's read endpoints, its updates over SSE, and
-//! the built app's static files. It has no route that writes.
+//! the built app's static files, plus optional configured ACP attachments.
 
 use std::convert::Infallible;
 use std::net::IpAddr;
@@ -33,7 +33,17 @@ const KEEPALIVE: Duration = Duration::from_secs(20);
 
 /// `allowed_hosts` are the host names, besides localhost and IP
 /// addresses, that requests may name in their Host header.
+#[cfg(test)]
 pub fn router(state: Shared, static_dir: Option<PathBuf>, allowed_hosts: Vec<String>) -> Router {
+    router_with_acp(state, static_dir, allowed_hosts, None)
+}
+
+pub fn router_with_acp(
+    state: Shared,
+    static_dir: Option<PathBuf>,
+    allowed_hosts: Vec<String>,
+    acp: Option<Arc<crate::acp::Bridge>>,
+) -> Router {
     let api = Router::new()
         .route("/healthz", get(health))
         .route("/api/state", get(whole))
@@ -41,6 +51,10 @@ pub fn router(state: Shared, static_dir: Option<PathBuf>, allowed_hosts: Vec<Str
         .route("/api/repos/{owner}/{repo}", get(repo))
         .route("/api/events", get(events))
         .with_state(state);
+    let api = match acp {
+        Some(bridge) => api.merge(bridge.router()),
+        None => api,
+    };
     let app = match static_dir {
         Some(dir) => api.fallback_service(ServeDir::new(dir)),
         None => api,

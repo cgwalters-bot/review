@@ -43,8 +43,9 @@ It serves:
 - `GET /healthz`: JSON with `status: "ok"` and `version`, without touching GitHub;
 - everything else from the built app (`--static`, default `dist`).
 
-It has no route that writes, and its GitHub, Forgejo and Kubernetes clients send only GETs. It logs
-to stdout and exits cleanly on SIGTERM.
+Its GitHub, Forgejo and Kubernetes clients send only GETs. The optional ACP
+route below can prompt a running agent; it does not use these forge tokens.
+It logs to stdout and exits cleanly on SIGTERM.
 
 The full-state JSON keeps `schema: "review-service/v1"` for existing clients.
 The additive `schemaAliases: ["control-app/v1"]` is the recommended migration
@@ -73,6 +74,79 @@ proxy. It refuses requests whose `Host` is a domain name other than
 `localhost` or an `--allow-host` name, so a web page can't read the state
 by pointing its own name at the service's address (DNS rebinding). Behind
 a proxy, give the name the proxy forwards in `Host`.
+
+## ACP session bridge (review#315 slice 2)
+
+The concrete threats are a foreign web page prompting the operator's agent,
+and a browser choosing an arbitrary internal destination or learning a run's
+attach secret. One optional, service-owned configuration supplies the exact
+browser origin and the only session destinations the bridge can reach.
+**Off by default**, `--acp-config /run/control-app/acp.json` enables
+`GET /api/acp/SESSION` as a WebSocket route. For example, the config file is:
+
+```json
+{
+  "origin": "https://control.example",
+  "sessions": {
+    "run-42": {
+      "url": "wss://gateway.example/sessions/run-42",
+      "token_file": "/run/secrets/attach-run-42"
+    }
+  }
+}
+```
+
+The browser opens that same-origin route with the configured ID, not a URL or
+credential. The service reads the secret file for each attachment and sends
+`Authorization: Bearer SECRET` only to the configured listener. It sends no
+browser cookies, authorization, Origin or proxy-identity headers upstream and
+does not follow redirects. Errors are generic; neither config, listener
+addresses, upstream response bodies nor secrets appear in HTTP/state/SSE
+responses or logs. ACP text messages pass through unchanged, not interpreted
+as authorization for forge writes. Binary messages end the connection; ping
+and pong are local to each transport, and upstream close reasons are not relayed.
+
+**Keep this behind the existing operator-only authenticating proxy or ACL.**
+Origin is a browser cross-site defense, not user authentication: any non-browser
+client able to reach the service can forge it. The proxy must protect this route
+as well as the app and support WebSocket upgrades. Only an exact, single Origin
+is admitted (HTTPS, or HTTP for loopback development); missing, duplicate and
+foreign origins are refused before dialing. Existing Host admission still applies.
+
+This targets agentic-job#3319's bearer-authenticated `session.bind` contract at
+`283b1fd37b8ac2b5ad70121c5c02a0e0679d4f74`, not the older Tailscale-login-header
+listener. A runner/gateway must provision the matching per-run secret out of
+band. A hosted tailnet route or self-hosted gateway must preserve this bearer
+contract; the bridge does not discover addresses or scrape workflow logs.
+`wss` verifies certificates with public roots. Use `ws` only on a trusted or
+encrypted network path: bearer authentication alone does not encrypt the secret.
+
+The config is read once at startup, at most 64 KiB, with 1–16 sessions. IDs use
+1–64 ASCII letters/digits, `_` or `-`; token paths are absolute. URLs are `ws`
+or `wss`, without embedded credentials, queries or fragments. Secret files are
+bounded and must contain 32–1024 visible ASCII bytes (surrounding whitespace is
+trimmed). Restart to add/remove sessions; replacing a secret affects the next
+connection, not an attached one. Removing config does not revoke an existing
+connection until shutdown/restart.
+
+The bridge admits at most eight pending/active attachments and one per configured
+session, returning 429 rather than queuing. Secret read and upstream handshake
+together get ten seconds; each write gets ten seconds. Each text/frame is at
+most 1 MiB, with no application queue, five minutes idle and one hour absolute
+lifetime. Either disconnect/error drops both sockets; there is no automatic
+retry, reconnect or replay. Shutdown may wait for an attachment's bounded
+lifetime. A close may end the agentic-job session, depending on its listener
+version; do not assume reconnect is supported by #3319.
+
+`fixtures/acp.json` is a **synthetic protocol replay**, derived from that pinned
+listener's initialize/new/prompt/update/cancel wire shapes, not a live capture.
+The service tests replay it over real loopback WebSockets and check server-only
+bearer authentication, rotation, origin/Host admission, disabled/unknown routes,
+capacity, upstream refusal sanitization, disconnects, message limits and timeouts.
+No live agent, workflow dispatch, UI/chat pane or deployment enablement is part
+of this slice; the first-slice acceptance of exchanging a message with a real
+hosted run remains open. There is no deployment config in this repository, and
+the caller's repository/file and real route/secret provisioning were not supplied.
 
 ## Board decision preview (tracker#1456 phase 1)
 
