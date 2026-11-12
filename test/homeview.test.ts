@@ -17,12 +17,13 @@ function tracked(n: number, over: Partial<Item> = {}): Item {
 }
 
 describe("Needs you and published Status", () => {
-  it("mounts Act now's decisions first, then Focus, active summary, inbox, opt-in people and published status", () => {
+  it("mounts Act now's decisions first, then activity, Focus, active summary, inbox, opt-in people and published status", () => {
     const home = homeSkeleton(hooks);
     assert.equal(home.el.firstElementChild, home.slots.actNow.parentElement);
-    assert.equal(home.slots.actNow.parentElement!.nextElementSibling, home.slots.focus);
+    assert.equal(home.slots.actNow.parentElement!.nextElementSibling, home.slots.activity);
+    assert.equal(home.slots.activity.nextElementSibling, home.slots.focus);
     assert.equal(home.slots.focus.nextElementSibling, home.slots.active);
-    assert.deepEqual([...home.el.children].map((el) => el.getAttribute("data-view")), ["inbox", "inbox", "inbox", "inbox", "inbox", "inbox", "status", "status", "status", null]);
+    assert.deepEqual([...home.el.children].map((el) => el.getAttribute("data-view")), ["inbox", "inbox", "inbox", "inbox", "inbox", "inbox", "inbox", "status", "status", "status", null]);
     assert.equal(home.sections.needs.details.nextElementSibling, home.slots.today);
     assert.equal(home.slots.active.nextElementSibling, home.sections.needs.details);
     assert.equal(home.slots.actNow.hidden, true, "off without a producer publication");
