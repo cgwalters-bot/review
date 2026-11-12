@@ -6,6 +6,32 @@ import { scriptedFetch } from "./helpers.ts";
 
 const token = async () => "t0ken";
 
+describe("read-only browser policy", () => {
+  it("allows REST and GraphQL reads, but refuses writes before fetch or cache invalidation", async () => {
+    const { fetchImpl, calls } = scriptedFetch(() => ({ body: { data: { viewer: { login: "operator" } } } }));
+    const gh = new GitHub(token, fetchImpl);
+    gh.readOnly = true;
+    await gh.get("/user");
+    await gh.send("GET", "/user");
+    await gh.graphql("query { viewer { login } }");
+    const generation = gh.cache.generation;
+    for (const [method, path, body] of [
+      ["POST", "/repos/o/r/actions/workflows/job.yml/dispatches", { ref: "main" }],
+      ["PATCH", "/repos/o/r/issues/1", { state: "closed" }],
+      ["DELETE", "/notifications/threads/1", undefined],
+      ["POST", "/graphql", { query: "mutation { addComment { clientMutationId } }" }],
+      ["POST", "/graphql", { query: "query { viewer { login } } mutation Other { addComment { clientMutationId } }" }],
+    ] as const) {
+      await assert.rejects(gh.send(method, path, body), (e: unknown) => e instanceof GitHubError && e.status === 403 && /Nothing was sent/.test(e.message));
+    }
+    assert.equal(calls.length, 3);
+    assert.equal(gh.cache.generation, generation);
+    gh.readOnly = false;
+    await gh.send("POST", "/repos/o/r/actions/workflows/job.yml/dispatches", { ref: "main" });
+    assert.equal(calls.length, 4);
+  });
+});
+
 describe("nextLink", () => {
   const cases: [string | null, string | undefined][] = [
     [null, undefined],

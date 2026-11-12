@@ -98,6 +98,10 @@ test("Needs you and Status render without errors", async ({ page }) => {
   await page.locator(".signin button[type=submit]").click();
   await expect(page.locator(".published")).toBeVisible();
   await expect(page.locator(".published")).not.toHaveText(/^Reading/);
+  // No service is configured: publications, their ages and live run lists
+  // must load using only GitHub (serve refuses every other origin).
+  await expect(page.locator("#writes")).toHaveText("Read-only · Enable writes");
+  await expect(page.locator("body")).not.toContainText("server unavailable");
   if (!LIVE_TOKEN) {
     const run = page.getByRole("button", { name: "Run a pass now", exact: true });
     await expect(run).toBeDisabled();
@@ -157,6 +161,61 @@ test("Needs you and Status render without errors", async ({ page }) => {
   await screenshot(page, "status");
 
   expect(problems).toEqual([]);
+});
+
+test("expired browser token returns to sign-in and forgets it", async ({ page }) => {
+  test.skip(!!LIVE_TOKEN, "offline authentication regression");
+  problems = await serve(page);
+  // A real HTTP 401 logs a browser console error; it is expected here only.
+  await page.route(`${API}/user`, (route) => route.fulfill({ status: 401, json: { message: "Bad credentials" } }));
+  await page.goto("#inbox");
+  await page.locator(".signin input[type=password]").fill(FIXTURE_TOKEN);
+  await page.locator(".signin button[type=submit]").click();
+  await expect(page.locator(".signin .warn")).toContainText("expired or was revoked");
+  await expect(page.locator("#writes")).toBeHidden();
+  expect(await page.evaluate(() => [sessionStorage.getItem("review.token"), localStorage.getItem("review.token")])).toEqual([null, null]);
+  expect(problems.filter((p) => !p.includes("401"))).toEqual([]);
+});
+
+test("writes require session opt-in and reload returns to read-only", async ({ page }) => {
+  test.skip(!!LIVE_TOKEN, "offline write policy regression");
+  problems = await serve(page);
+  await page.route(`${API}/repos/cgwalters-forge/tracker`, (route) => route.fulfill({ json: { default_branch: "main", permissions: { push: true } } }));
+  await page.goto("#inbox");
+  await page.locator(".signin input[type=password]").fill(FIXTURE_TOKEN);
+  await page.locator(".signin button[type=submit]").click();
+  await expect(page.locator(".published")).toBeVisible();
+  await page.getByRole("button", { name: "Check pass availability", exact: true }).click();
+  const run = page.getByRole("button", { name: "Run a pass now", exact: true });
+  await expect(run).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await run.click();
+  await expect(page.locator(".run-pass-control [role=status]")).toContainText("Read-only session");
+  // serve would record any attempted dispatch as a refused write.
+  expect(problems).toEqual([]);
+  await page.getByRole("button", { name: "More", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.locator("#writes").click();
+  await expect(page.locator("#writes")).toHaveText("Read-only · Enable writes");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#writes").click();
+  await expect(page.locator("#writes")).toHaveText("Writes enabled · Make read-only");
+  await screenshot(page, "write-policy");
+  await page.getByRole("button", { name: "More", exact: true }).click();
+  let dispatches = 0;
+  await page.route(`${API}/repos/cgwalters-forge/tracker/actions/workflows/poll.yml/dispatches`, (route) => {
+    dispatches++;
+    return route.fulfill({ status: 422, json: { message: "Workflow refused the dispatch" } });
+  });
+  await page.getByRole("button", { name: "Check pass availability", exact: true }).click();
+  await expect(run).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await run.click();
+  await expect(page.locator(".run-pass-control [role=status]")).toContainText("Workflow refused the dispatch");
+  expect(dispatches).toBe(1);
+  await page.reload();
+  await expect(page.locator("#writes")).toHaveText("Read-only · Enable writes");
+  expect(problems.filter((p) => !p.includes("422"))).toEqual([]);
 });
 
 test("Act now's decisions come first, with labelled needs-human issues read-only", async ({ page }) => {

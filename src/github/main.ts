@@ -1824,6 +1824,7 @@ async function start(source: TokenSource): Promise<void> {
     passes: {},
   };
   state.gh.onUnauthorized = () => void rejected(state);
+  state.gh.readOnly = true;
   byId("meta").textContent = "Checking the token…";
   // This token was used here before: show what it saw last time, as the
   // login it had then, while GitHub confirms it.
@@ -1845,9 +1846,18 @@ async function start(source: TokenSource): Promise<void> {
   if (state.login && !state.loginError && session.store) await session.cache.attach(session.store, state.login, session.tokenHash);
   const lacking = missingScopes(state.gh.scopes, CLASSIC_SCOPES);
   if (lacking.length) {
-    state.tokenWarning = `This token lacks the ${lacking.map((n) => n.any.join(" or ")).join(", ")} scope${lacking.length > 1 ? "s" : ""}; some reads or answers will fail.`;
+    state.tokenWarning = `This token lacks the ${lacking.map((n) => n.any.join(" or ")).join(", ")} scope${lacking.length > 1 ? "s" : ""}; some reads will fail.`;
   }
   byId("signout").hidden = false;
+  const writes = byId("writes");
+  writes.hidden = false;
+  writes.textContent = "Read-only · Enable writes";
+  writes.onclick = () => {
+    if (state.closed) return;
+    if (state.gh.readOnly && !window.confirm("Enable GitHub writes for this page session? Actions use this token's permissions and still require their own checks. Reloading returns to read-only.")) return;
+    state.gh.readOnly = !state.gh.readOnly;
+    writes.textContent = state.gh.readOnly ? "Read-only · Enable writes" : "Writes enabled · Make read-only";
+  };
   byId("views").hidden = false;
   const copy = document.getElementById("copy-state");
   if (copy) {
@@ -2011,9 +2021,10 @@ function signInView(reason: SignInReason): HTMLElement {
       h(
         "p",
         {},
-        "A classic token with a short expiry reads everything the queue shows, upstream repositories included. It needs:",
+        "Start with a short-lived read-only fine-grained token for the repositories you want to read: Issues, Pull requests, Actions, Contents and Commit statuses: read. Private publications need access to their repository. The app starts read-only even if your token can write. Enable writes in the More menu only when you intend to act; reloading turns them off. A classic token uses these scopes:",
       ),
       scopeList(),
+      h("p", {}, "Classic tokens can read public repositories without a repository scope; private repositories require repo. For writes, comments and reviews need public_repo (or repo for private repositories), and workflow dispatch needs repo. Fine-grained tokens need the relevant Issues, Pull requests or Actions write permission on the target repository. Enabling writes does not grant permissions to your token; use Sign out to replace it if an action reports missing access."),
       h(
         "p",
         {},
@@ -2039,6 +2050,7 @@ function signInView(reason: SignInReason): HTMLElement {
 function showSignIn(reason: SignInReason): void {
   byId("meta").textContent = "";
   byId("signout").hidden = true;
+  byId("writes").hidden = true;
   byId("views").hidden = true;
   for (const id of ["state-link", "copy-state"]) {
     const control = document.getElementById(id);

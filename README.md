@@ -14,6 +14,29 @@ See [docs/design.md](docs/design.md) for the backend design and
 [docs/prior-prototype.md](docs/prior-prototype.md) for the earlier prototype.
 The Forgejo client remains separate.
 
+### Serverless browser authentication (#320, first slice)
+
+Pages needs no persistent service or Kubernetes: the browser reads the private
+holds and pass view publication, publication ages and Actions run lists directly
+from GitHub with a pasted token. Start with a short-lived fine-grained token with
+read access to the relevant repositories, including the publication repository.
+The sign-in help lists read permissions and the additional permissions for actions.
+
+The concrete threat is an accidental write with a pasted token that already has
+write permission. Every browser session therefore starts read-only, including
+sessions restored from storage. **More → Read-only · Enable writes** asks for
+confirmation and enables existing actions only until reload or sign-out. The same
+control can turn writes off again. One GitHub-client check refuses REST writes
+and GraphQL mutations locally before fetch or cache invalidation; existing
+operator, scope, publication and live-head checks still apply. This is a guard
+against accidental actions, not against modified site code or a compromised browser.
+CLI callers keep their existing write policy. No deployment option is added.
+
+Offline browser regressions reject every non-GitHub origin, render published
+state without a service, forget an expired token, and show a refused dispatch
+without retrying it. This slice does not add OAuth device flow, preview/triage/fix
+dispatch, published `changes`, an attach gateway or a persistent-service adapter.
+
 See the [operator-gap assessment against Paperclip](docs/operator-gap-assessment.md)
 for the 3 November snapshot, existing-work exclusions and ranked additional gaps.
 

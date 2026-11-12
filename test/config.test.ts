@@ -85,12 +85,12 @@ describe("config: storage and tokens", () => {
     for (const k of keys) assert.match(k, /^review\./);
   });
 
-  it("asks a classic token for a scope per need", () => {
+  it("asks a classic token only for read scopes at sign-in", () => {
     for (const s of config.CLASSIC_SCOPES) {
       assert.ok(s.any.length > 0 && s.why);
     }
     const all = config.CLASSIC_SCOPES.flatMap((s) => [...s.any]);
-    assert.ok(all.includes("read:project") && all.includes("public_repo"));
+    assert.deepEqual(all, ["read:project", "project"]);
   });
 
   // The file is published with the app ("Public names only"): a token
