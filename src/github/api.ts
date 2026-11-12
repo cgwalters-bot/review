@@ -24,6 +24,14 @@ export class GitHubError extends Error {
   }
 }
 
+/** A local refusal, not an attempted request or a missing GitHub permission. */
+export class ReadOnlyError extends GitHubError {
+  override name = "ReadOnlyError";
+  constructor() {
+    super(403, "Read-only session: enable writes in the More menu, then confirm the action again. Nothing was sent.");
+  }
+}
+
 /** GitHub refused a request for a rate limit, or one was still in force: nothing is sent before `retryAt`. */
 export class RateLimited extends GitHubError {
   override name = "RateLimited";
@@ -145,6 +153,8 @@ export class GitHub {
   readonly cache: ResponseCache;
   /** Called on any 401: the token was revoked or expired. */
   onUnauthorized: (() => void) | undefined;
+  /** Browser sessions start read-only; CLI callers retain their existing policy. */
+  readOnly = false;
   /** Answer GETs from the cache only, never the network (see cacheOnly). */
   #cacheOnly = false;
   #oldest: number | undefined;
@@ -395,7 +405,10 @@ export class GitHub {
     const url = this.#url(path);
     // A GraphQL query is a read: invalidating would also stop GETs sharing a request.
     const query = url === `${API_ROOT}/graphql` ? (body as { query?: unknown } | undefined)?.query : undefined;
-    const read = method === "GET" || (typeof query === "string" && /^\s*query\b/.test(query));
+    const read = method === "GET" || (method === "POST" && typeof query === "string" && /^\s*query\b/.test(query) && !/\bmutation\b/.test(query));
+    // A pasted token may already have write scopes. Refuse before invalidating
+    // cache or sending anything; 403 also tells action receipts it was not sent.
+    if (this.readOnly && !read) throw new ReadOnlyError();
     const stale = read ? undefined : staleAfterWrite(url);
     // A write may land even if its response is lost, so invalidate first.
     if (stale) this.cache.invalidate(stale);

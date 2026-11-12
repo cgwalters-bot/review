@@ -255,6 +255,9 @@ async function boot(t: TestContext, holds: Holds) {
     },
   };
   await until(() => !!doc.querySelector(".published") && !app.note().startsWith("Reading"), "the published list");
+  // These action/receipt replays deliberately opt in; browser policy tests
+  // separately cover the read-only default and confirmation cancellation.
+  doc.querySelector<HTMLButtonElement>("#writes")!.click();
   await settle();
   return app;
 }

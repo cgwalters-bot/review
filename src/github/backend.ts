@@ -4,7 +4,7 @@
 // them with a scripted fetch.
 
 import { type Answer, formatAnswer, formatComment, parseQuestion } from "../answer.ts";
-import { type GitHub, GitHubError } from "./api.ts";
+import { type GitHub, GitHubError, ReadOnlyError } from "./api.ts";
 import {
   failedJobs,
   parseAskBody,
@@ -329,7 +329,10 @@ export async function answerHold(gh: GitHub, item: string, text: string, shown: 
   }
   let posted: Posted;
   try { posted = await comment(gh, ref, body); }
-  catch (e) { throw new MaybeSentError(`Comment failed or uncertain: ${String(e)}. Check GitHub; do not repost.`); }
+  catch (e) {
+    if (e instanceof ReadOnlyError) throw e;
+    throw new MaybeSentError(`Comment failed or uncertain: ${String(e)}. Check GitHub; do not repost.`);
+  }
   if (release) {
     try {
       same(await readAnswerTarget(gh, item));

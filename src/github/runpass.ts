@@ -2,7 +2,7 @@
 // it lists agents, not poll.yml. Fresh Actions reads stop duplicate applying
 // passes; the workflow's concurrency group remains the final race guard.
 import { h } from "../dom.ts";
-import { GitHub, GitHubError } from "./api.ts";
+import { GitHub, GitHubError, ReadOnlyError } from "./api.ts";
 import { OPERATOR, TRACKER_REPO } from "./config.ts";
 import { isObject } from "./heartbeat.ts";
 import type { PassView } from "./passview.ts";
@@ -146,8 +146,9 @@ export function runPassControl(gh: GitHub, facts: () => PassFacts, state: PassCo
       if (id !== undefined) state.runId = id;
       state.sent = true; state.message = state.runId ? "Applying pass requested." : "Applying pass accepted; GitHub returned no run ID. Check workflow runs for the receipt.";
     } catch (e) {
+      if (e instanceof ReadOnlyError) attempted = false;
       state.sent = attempted;
-      const denied = e instanceof GitHubError && [403, 404].includes(e.status);
+      const denied = !(e instanceof ReadOnlyError) && e instanceof GitHubError && [403, 404].includes(e.status);
       state.message = `${denied ? "Actions read/write permission required. " : ""}${attempted ? "Dispatch outcome may be uncertain. Inspect workflow runs before trying again; no retry was sent. " : "Pass not dispatched. "}${String(e)}`;
     } finally { state.busy = false; state.changed?.(); }
   };

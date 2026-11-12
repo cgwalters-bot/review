@@ -189,11 +189,10 @@ export const CAPTURE_DRAFT_KEY = "review.capture.draft";
 export const TOKEN_KEY = "review.token";
 
 /**
- * What a classic token needs, by scope; each entry is met by any one of
+ * What a classic token needs for reads, by scope; each entry is met by any one of
  * its scopes. Shown on the sign-in page, and checked against the
  * X-OAuth-Scopes header once signed in.
  */
 export const CLASSIC_SCOPES = [
-  { any: ["public_repo", "repo"], why: "read PRs and post comments and reviews as you (repo only if you want private repositories too)" },
   { any: ["read:project", "project"], why: "read the Workstream board" },
 ] as const satisfies readonly { any: readonly string[]; why: string }[];

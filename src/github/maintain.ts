@@ -2,7 +2,7 @@
 // them in its needs-you list (holds.ts), approved as the operator one at a
 // time at the head the digest assessed.
 
-import type { GitHub } from "./api.ts";
+import { type GitHub, ReadOnlyError } from "./api.ts";
 import { refText, type PrRef } from "./reviewdrafts.ts";
 
 export interface ApproveItem { pr: PrRef; head: string; reason: string; approved?: boolean }
@@ -39,6 +39,7 @@ export async function approveHead(gh: GitHub, it: ApproveItem, check?: () => Pro
     try {
       return (await gh.send<{ html_url: string }>("POST", `${path}/reviews`, { event: "APPROVE", commit_id: it.head })).html_url ?? `https://github.com/${refText(it.pr).replace("#", "/pull/")}`;
     } catch (e) {
+      if (e instanceof ReadOnlyError) throw e;
       const uncertain = new Error(`Approval failed or uncertain: ${String(e)}; check GitHub, do not retry`);
       uncertain.name = "MaybeSentError";
       throw uncertain;
