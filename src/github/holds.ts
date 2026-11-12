@@ -181,7 +181,7 @@ export interface InboxContext {
   observedAt?: string;
   sources: Record<string, string>;
   omitted: number;
-  items: { source: string; item?: string; kind: string; reason: string; since?: string; observedAt?: string }[];
+  items: { source: string; item?: string; itemUnreadable?: boolean; kind: string; reason: string; since?: string; observedAt?: string }[];
   limits: Record<string, Record<string, string | number>>;
 }
 
@@ -366,7 +366,7 @@ function parseContext(raw: unknown): InboxContext | undefined {
     const item = str(f.item, ITEM_RE);
     const since = time(f.since);
     const observedAt = time(f.observed_at);
-    return [{ source: f.source as string, kind: text(f.kind)!, reason: text(f.reason)!, ...(item ? { item } : {}), ...(since ? { since } : {}), ...(observedAt ? { observedAt } : {}) }];
+    return [{ source: f.source as string, kind: text(f.kind)!, reason: text(f.reason)!, ...(item ? { item } : f.item != null ? { itemUnreadable: true } : {}), ...(since ? { since } : {}), ...(observedAt ? { observedAt } : {}) }];
   });
   // Display values only: never retain a publisher URL or turn context into controls.
   const limits = Object.fromEntries((isObject(raw.limits) ? Object.entries(raw.limits).slice(0, 100) : []).flatMap(([name, value]) => {

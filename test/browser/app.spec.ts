@@ -277,6 +277,13 @@ test("Act now's decisions come first, with labelled needs-human issues read-only
   expect(top).toBeLessThan((await focus.boundingBox())!.y);
   expect(top).toBeLessThan(page.viewportSize()!.height / 2);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const activity = page.getByRole("region", { name: "Published activity", exact: true });
+  await expect(activity).toBeVisible();
+  await expect(activity).toContainText("Pass failure");
+  await expect(activity).toContainText("global fact; not a run receipt");
+  expect(await actNow.evaluate((el) => el.parentElement!.nextElementSibling!.querySelector(".published-activity") !== null)).toBe(true);
+  expect(await activity.locator(".activity-row").evaluateAll((rows) => rows.every((r) => r.querySelector("a[href^='https://github.com/']")))).toBe(true);
+  await activity.screenshot({ path: `${SCREENSHOT_DIR}/activity-${test.info().project.name}.png` });
   await screenshot(page, "decisions");
   await page.screenshot({ path: `${SCREENSHOT_DIR}/decisions-top-${test.info().project.name}.png` });
   expect(problems).toEqual([]);

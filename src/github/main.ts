@@ -88,6 +88,7 @@ import { runPassControl, type PassControl } from "./runpass.ts";
 import { itemDispatchControl, type ItemDispatchState } from "./itemdispatch.ts";
 import { cancelRun, redispatch, retryRun } from "./agentruns.ts";
 import { type PassesRead, readPasses, schedulerPassView } from "./passesview.ts";
+import { activityView } from "./activityview.ts";
 import { stale } from "./passes.ts";
 import { ago } from "../time.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
@@ -923,6 +924,7 @@ function paintActive(state: State): void {
   const missing = pass === undefined && at ? `Pass view not in the pass's snapshot, written ${ago(at, Date.now())}${stale(at, Date.now()) ? ": the pass may have stopped publishing it." : " (off or older producer)."}` : pass;
   state.home.slots.active.replaceChildren(activePassView(missing, Date.now(), passUnavailable, actions, runPassControl(state.gh, facts, state.passControl ??= {}), live));
   state.home.slots.passes.replaceChildren(schedulerPassView(state.passes, pass, Date.now(), passUnavailable));
+  state.home.slots.activity.replaceChildren(activityView(state.published, state.passes, Date.now(), passUnavailable));
   if (state.active?.repositories) state.repositories = state.active.repositories;
   const work = state.active?.passPublicationError ? undefined : state.active?.holds;
   state.home.slots.today.replaceChildren(todayView(work?.today, Date.now(), passUnavailable));

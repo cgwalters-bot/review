@@ -28,8 +28,8 @@ export function readPasses(prev: PassesRead, active: Active): PassesRead {
   return { data: p };
 }
 
-const itemHref = (item: string): string => `https://github.com/${item.replace("#", "/issues/")}`;
-const runHref = (r: RunRef): string => `https://github.com/${r.repository}/actions/runs/${r.id}${r.attempt ? `/attempts/${r.attempt}` : ""}`;
+export const itemHref = (item: string): string => `https://github.com/${item.replace("#", "/issues/")}`;
+export const runHref = (r: RunRef): string => `https://github.com/${r.repository}/actions/runs/${r.id}${r.attempt ? `/attempts/${r.attempt}` : ""}`;
 const runText = (r: RunRef): string => `run ${r.id}${r.attempt && r.attempt > 1 ? ` (attempt ${r.attempt})` : ""}`;
 
 export function countdown(iso: string, now: number): string {

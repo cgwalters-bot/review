@@ -111,6 +111,10 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
       return [{ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\`\`\`json\n${JSON.stringify(snapshot)}\n\`\`\`` }];
     }
     const list = needsYou(data, at);
+    list.context = { observed_at: at, sources: { holds: "complete", runs: "partial" }, omitted: 2, limits: {}, items: [
+      { source: "hold", item: DECISION, kind: "observed-hold", reason: "Promotion posture awaits an answer", observed_at: at },
+      { source: "step", kind: "capacity", reason: "Global dispatch limit observed", observed_at: at },
+    ] };
     const dispatchable_work = fixture("dispatchable-work.json");
     const today = fixture("today.json");
     today.day = at.slice(0, 10);
@@ -118,7 +122,10 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
     today.cost.day = new Date(Date.parse(`${today.day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
     const epic_focus = { ...fixture("epic-focus.json"), observed_at: at };
     const holds = JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: publishedTestHolds(list), needs_you: list, pass_view, dispatchable_work, today, epic_focus });
-    return compressedHolds(`<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${holds}\n\`\`\`\n`, at, FIXTURE_PART_CHARS);
+    const passes = fixture("passes.json");
+    passes.published_at = at;
+    return [...compressedHolds(`<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${holds}\n\`\`\`\n`, at, FIXTURE_PART_CHARS),
+      { user: { login: "cgwalters-bot" }, body: `<!-- agent-board-passes v1 -->\n\n\`\`\`json\n${JSON.stringify(passes)}\n\`\`\`` }];
   }
   if (pathname === "/repos/cgwalters-forge/tracker/actions/workflows/poll.yml/runs") return { total_count: 0, workflow_runs: [] };
   // One chat session run whose agent job is on the tailnet; the browser test answers its socket.
