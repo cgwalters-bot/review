@@ -233,6 +233,25 @@ test("writes require session opt-in and reload returns to read-only", async ({ p
   expect(problems.filter((p) => !p.includes("422"))).toEqual([]);
 });
 
+test("an open item offers the operator a read-only-guarded agent dispatch", async ({ page }) => {
+  test.skip(!!LIVE_TOKEN, "offline item fixture");
+  problems = await serve(page);
+  const issue = { __typename: "Issue", id: "I_5", title: "Fix the flaky poll", body: "The poll times out about once a day.", url: "https://github.com/cgwalters-forge/tracker/issues/5", state: "OPEN", projectItems: { nodes: [], pageInfo: { hasNextPage: false } } };
+  await page.route(`${API}/graphql`, (route) => route.request().postData()?.includes("issue(number:$number)")
+    ? route.fulfill({ json: { data: { repository: { issue } } } }) : route.fallback());
+  await page.goto("#issue/cgwalters-forge/tracker/5");
+  await page.locator(".signin input[type=password]").fill(FIXTURE_TOKEN);
+  await page.locator(".signin button[type=submit]").click();
+  const form = page.locator("form.item-dispatch");
+  await expect(form).toBeVisible();
+  await form.getByLabel("Brief").fill("Find why the poll times out.");
+  page.once("dialog", (dialog) => dialog.accept());
+  await form.getByRole("button", { name: "Dispatch" }).click();
+  await expect(form.getByRole("status")).toContainText("Read-only session");
+  await screenshot(page, "item-dispatch");
+  expect(problems).toEqual([]);
+});
+
 test("Act now's decisions come first, with labelled needs-human issues read-only", async ({ page }) => {
   test.skip(!!LIVE_TOKEN, "the decisions fixture is synthetic");
   problems = await serve(page, "decisions");

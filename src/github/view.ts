@@ -576,6 +576,8 @@ export interface ItemViewData {
   hooks?: ContextHooks;
   /** Label each nested ask's state, as the queue does. */
   labelOf?: (e: Entry) => RowLabel | undefined;
+  /** The operator's form to start an agent on the item (see itemdispatch.ts). */
+  dispatch?: HTMLElement | undefined;
 }
 
 const STATE_NOTE: Record<NonNullable<AnswerState>, string> = {
@@ -711,6 +713,7 @@ export function itemView(item: Item, data: ItemViewData, render: Renderer, handl
     data.action.kind !== "asks" && data.asks?.length ? asksView(data.asks, data.labelOf) : null,
     state ? h("p", { class: "note" }, STATE_NOTE[state]) : null,
     ...actionView(item, data, handlers),
+    data.dispatch ?? null,
     item.body.trim() ? h("section", {}, h("h3", {}, bodyHeading), h("div", { class: "md" }, render(item.body))) : null,
     h("div", { class: CONTEXT_CLASS }, contextView(item, context, render, data.hooks)),
   );

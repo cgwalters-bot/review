@@ -24,7 +24,9 @@ const proposalComment = (n: number) => ({ id: `IC_${n}`, databaseId: n, updatedA
   body: `\`\`\`agent-board-action\n${JSON.stringify({ schema: "agent-board/operator-action/v1", title: `Decision ${n}`, why: `Reason ${n}`, actions: [{ type: "add_label", repo: "cgwalters-forge/tracker", number: 1013, label: `choice-${n}` }] })}\n\`\`\`` });
 
 /** What the holds comment read answers next: a status, the comments, and whether an unchanged one is a 304. */
-interface Holds { status: number; comments: unknown[]; etag: string; gate?: Promise<void>; approvals?: Record<number, string[]>; fail?: number; labels?: string[]; reviewError?: number; writeGate?: Promise<void>; document?: string; merge?: "merged" | "enqueued" | "moved" | "denied" }
+interface Holds { status: number; comments: unknown[]; etag: string; gate?: Promise<void>; approvals?: Record<number, string[]>; fail?: number; labels?: string[]; reviewError?: number; writeGate?: Promise<void>; document?: string; merge?: "merged" | "enqueued" | "moved" | "denied";
+  /** GitHub answers comment writes 401, as for a token that expired mid-session. */
+  expired?: boolean }
 
 let runs = 0;
 
@@ -167,6 +169,7 @@ async function boot(t: TestContext, holds: Holds) {
         return sent === holds.etag ? json(null, 304, { ETag: holds.etag }) : json(holds.comments, 200, { ETag: holds.etag });
       }
       if (url.pathname === "/user") return json({ login: "cgwalters" });
+      if (holds.expired && method === "POST" && /\/issues\/\d+\/comments$/.test(url.pathname)) return json({ message: "Bad credentials" }, 401);
       if (url.pathname.endsWith("/merge") && method === "PUT") {
         assert.equal(JSON.parse(String(init?.body)).sha, "a".repeat(40));
         return holds.merge === "denied" ? json({ message: "Policy refused" }, 403) : json({ merged: true });
@@ -208,6 +211,7 @@ async function boot(t: TestContext, holds: Holds) {
             headRefOid: (holds.merge === "moved" ? "b" : "a").repeat(40), mergeStateStatus: "CLEAN", viewerCanUpdate: true,
             isMergeQueueEnabled: holds.merge === "enqueued", mergeQueueEntry: null },
         } } });
+        if (query.includes("issue(number:$number)")) return json({ data: { repository: { issue: { __typename: "Issue", id: "I_5", title: "Issue 5", body: "", url: "https://github.com/cgwalters-forge/tracker/issues/5", state: "OPEN", projectItems: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
         if (query.includes("issueOrPullRequest")) return json({ data: { repository: { issueOrPullRequest: { comments: { nodes: [] } } } } });
         if (query.includes("comments(first")) return json({ data: { repository: { issue: { state: "OPEN", comments: { nodes: [1, 2].map(proposalComment), pageInfo: { hasNextPage: false } } } } } });
         return json({ data: {} });
@@ -903,5 +907,33 @@ describe("Needs you from the pass's published list", () => {
     await settle();
     assert.equal(app.doc.querySelector('[data-key="cgwalters-forge/tracker#7"]'), null);
     app.window.close();
+  });
+});
+
+describe("serverless", () => {
+  it("draws Needs you and Status without a pass view, saying how old the snapshot is and nothing about a server", async (t) => {
+    const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0 - 3 * 60 * MINUTE, [rawAsk(1)]) };
+    const app = await boot(t, holds);
+    try {
+      assert.deepEqual(app.keys(), ["cgwalters-forge/tracker#1"]);
+      app.window.location.hash = "#status";
+      await app.until(() => /Pass view not in the pass's snapshot/.test(app.doc.querySelector("#view")!.textContent!), "Status");
+      assert.match(app.doc.querySelector("#view")!.textContent!, /written 3h ago: the pass may have stopped publishing it/);
+      assert.doesNotMatch(app.doc.body.textContent!, /server unavailable|service unavailable/i);
+    } finally { await app.close(); }
+  });
+
+  it("signs out and asks for a new token when GitHub refuses it during a dispatch", async (t) => {
+    const holds: Holds = { status: 200, etag: '"a"', comments: listed(T0, [rawAsk(1)]), expired: true };
+    const app = await boot(t, holds);
+    try {
+      app.window.location.hash = "#issue/cgwalters-forge/tracker/5";
+      await app.until(() => !!app.doc.querySelector("form.item-dispatch"), "the dispatch form");
+      app.doc.querySelector<HTMLTextAreaElement>("form.item-dispatch textarea")!.value = "Look into it";
+      app.doc.querySelector("form.item-dispatch")!.dispatchEvent(new app.window.Event("submit", { cancelable: true }));
+      await app.until(() => !!app.doc.querySelector(".signin"), "the sign-in form");
+      assert.deepEqual(app.reads.writes, ["POST /repos/cgwalters-forge/tracker/issues/5/comments"]);
+      assert.match(app.doc.querySelector(".signin")!.textContent!, /GitHub rejected the saved token: it has expired or was revoked\. Paste a new one\./);
+    } finally { app.window.close(); }
   });
 });
