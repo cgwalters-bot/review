@@ -223,6 +223,14 @@ replaces the relay client and the loopback-only development mode above;
 the tailnet host, the `cgwalters-review` App and the relay (§3) remain
 the target, and would replace only `src/github/auth.ts`.
 
+Since 2026-11-12 (tracker#1456, review#320) this is the serverless default:
+the Pages app needs no service. It reads the pass's publications and the
+Actions run lists from GitHub, and acts through GitHub as the operator:
+writes, `workflow_dispatch`, and job plans that the hosted pass dispatches.
+The supported sign-in is a pasted fine-grained token, read-only unless an
+action needs more. The OAuth device flow stays off: its endpoints send no
+CORS headers (§2), so a static page can't use it without a relay.
+
 - **The token** stays in the browser: sessionStorage by default, or
   localStorage if you tick "remember". It is sent only to
   `api.github.com`: the client refuses any other URL, and the CSP's

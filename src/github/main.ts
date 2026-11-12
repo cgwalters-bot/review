@@ -85,6 +85,7 @@ import type { BoardPublication } from "./repositoryboard.ts";
 import { actionButton, activePassView, type AgentActions, type PassView, retainPassView } from "./passview.ts";
 import { cancelLiveRun, LIVE_POLL_MS, liveAgentsView, loadLiveRuns, type LiveRuns } from "./liveruns.ts";
 import { runPassControl, type PassControl } from "./runpass.ts";
+import { itemDispatchControl, type ItemDispatchState } from "./itemdispatch.ts";
 import { cancelRun, redispatch, retryRun } from "./agentruns.ts";
 import { type PassesRead, readPasses, schedulerPassView } from "./passesview.ts";
 import { stale } from "./passes.ts";
@@ -203,6 +204,8 @@ interface State {
   liveRuns?: LiveRuns;
   liveRunning?: boolean;
   passControl?: PassControl;
+  /** Each item's dispatch form, by refKey, so a re-render keeps its plan and polling. */
+  itemDispatch?: Map<string, ItemDispatchState>;
   passes: PassesRead;
   repositories?: ReportBlock[];
   repositoryWork?: Pick<BoardPublication, "work" | "at">;
@@ -1099,10 +1102,14 @@ function renderRoute(state: State): void {
     acted(state, { key: `item:${item.nodeId}`, title: item.title, hash, from });
     return url;
   };
+  const dispatchKey = item.ref && item.state === "open" && state.login === OPERATOR ? refKey(item.ref) : undefined;
+  const dispatch = dispatchKey
+    ? itemDispatchControl(state.gh, dispatchKey, () => state.passView, (state.itemDispatch ??= new Map()).get(dispatchKey) ?? state.itemDispatch.set(dispatchKey, {}).get(dispatchKey)!)
+    : undefined;
   showMain(
     itemView(
       item,
-      { action, context: ctx, state: answerState(item, state.sent, answered), asks, hooks: contextHooks(state, item), labelOf: labelOf(state) },
+      { action, context: ctx, state: answerState(item, state.sent, answered), asks, hooks: contextHooks(state, item), labelOf: labelOf(state), dispatch },
       render,
       {
         send: async (answer) => {
@@ -1762,6 +1769,7 @@ type SignInReason = "none" | "rejected";
 function rejected(state: State): Promise<void> {
   if (!state.rejecting) {
     state.closed = true;
+    for (const d of state.itemDispatch?.values() ?? []) d.stopped = true;
     if (state.chat?.attached()) keptChat = state.chat;
     else state.chat?.dispose();
     viewClosed = true;

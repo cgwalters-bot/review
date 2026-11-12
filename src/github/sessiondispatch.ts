@@ -8,6 +8,15 @@ import type { ChatPanel } from "./chat.ts";
 
 const MAX_STATUS_CHECKS = 24;
 
+/**
+ * Connects the drawer to a running session's run, resolving to whether it
+ * did. The gateway design (agentic-job#3249) plugs in here; until then
+ * nothing can attach, and the drawer only says it is waiting.
+ */
+export type AttachSession = (runId: number) => Promise<boolean>;
+
+export const NO_ATTACH: AttachSession = async () => false;
+
 export function dispatchInputs(config: SessionDispatchConfig, repository: string, item: string): Record<string, string> {
   if (!validChatRepository(repository)) throw new Error("Choose a repository as OWNER/NAME.");
   if (item && !/^[1-9]\d{0,9}$/.test(item)) throw new Error("Issue or PR must be a positive number.");
@@ -36,7 +45,7 @@ export async function startRepositorySession(gh: GitHub, config: SessionDispatch
   return typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? id : undefined;
 }
 
-export function sessionDispatchPanel(gh: GitHub, config: SessionDispatchConfig, pollMs = 5_000): ChatPanel {
+export function sessionDispatchPanel(gh: GitHub, config: SessionDispatchConfig, pollMs = 5_000, attach: AttachSession = NO_ATTACH): ChatPanel {
   let open = (_item?: ChatItem) => {};
   let cleanup = () => {};
   let disposed = false;
@@ -65,8 +74,11 @@ export function sessionDispatchPanel(gh: GitHub, config: SessionDispatchConfig, 
         try {
           const run = await gh.send<{ status: string; conclusion: string | null }>("GET", `/repos/${config.repo}/actions/runs/${runId}`);
           if (disposed) return;
-          status.textContent = `Run ${runId}: ${run.status}${run.conclusion ? ` · ${run.conclusion}` : ""}. Chat connection is not available yet.`;
-          if (run.status === "completed") return;
+          const running = run.status === "in_progress";
+          const attached = running && await attach(runId);
+          if (disposed) return;
+          status.textContent = `Run ${runId}: ${run.status}${run.conclusion ? ` · ${run.conclusion}` : ""}. ${attached ? "Attached." : running ? "Waiting for attach." : "Chat connection is not available yet."}`;
+          if (run.status === "completed" || attached) return;
         } catch {
           if (disposed) return;
           status.textContent = "Run status unavailable; inspect the linked run. No dispatch retry was sent.";

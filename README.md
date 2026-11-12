@@ -14,13 +14,18 @@ See [docs/design.md](docs/design.md) for the backend design and
 [docs/prior-prototype.md](docs/prior-prototype.md) for the earlier prototype.
 The Forgejo client remains separate.
 
-### Serverless browser authentication (#320, first slice)
+### Serverless by default (#320)
 
-Pages needs no persistent service or Kubernetes: the browser reads the private
+The Pages app is the default deployment and needs no service, persistent or
+otherwise, and no Kubernetes: the browser reads the private
 holds and pass view publication, publication ages and Actions run lists directly
 from GitHub with a pasted token. Start with a short-lived fine-grained token with
 read access to the relevant repositories, including the publication repository.
 The sign-in help lists read permissions and the additional permissions for actions.
+Pasting a fine-grained token, read-only unless an action needs more, is the
+supported sign-in. The OAuth device flow stays off: GitHub's device-code and
+token endpoints don't allow CORS, so a static page can't use them without a
+relay (see "Static-site feasibility" in [docs/design.md](docs/design.md)).
 
 The concrete threat is an accidental write with a pasted token that already has
 write permission. Every browser session therefore starts read-only, including
@@ -34,8 +39,21 @@ CLI callers keep their existing write policy. No deployment option is added.
 
 Offline browser regressions reject every non-GitHub origin, render published
 state without a service, forget an expired token, and show a refused dispatch
-without retrying it. This slice does not add OAuth device flow, preview/triage/fix
-dispatch, published `changes`, an attach gateway or a persistent-service adapter.
+without retrying it.
+
+Signed in as the operator, an open item's view has **Start an agent**: pick
+triage, research, implement or fix and write a brief, and it posts a
+[job plan](https://github.com/cgwalters-forge/agent-board/blob/main/docs/job-plans.md)
+on the item, as the control-plane CLI's dispatch does; the next hosted pass
+dispatches it. It asks first, and refuses another viewer, a closed item, one
+the pass view lists running, or a plan agent-board wouldn't accept. It then
+links the plan and checks the item's comments, a bounded number of times, for
+the pass's dispatch record naming the run. A started chat session shows
+"Waiting for attach" while its run is in progress; attaching is a hook that
+does nothing until the gateway design (agentic-job#3249) lands.
+
+Not yet: published `changes` (agent-board#897) and reading live data from an
+optional persistent service (tracker#1456).
 
 See the [operator-gap assessment against Paperclip](docs/operator-gap-assessment.md)
 for the 3 November snapshot, existing-work exclusions and ranked additional gaps.

@@ -127,6 +127,28 @@ it("prefills item context, confirms, shows the starting run and checks that ID",
   p.dispose();
 });
 
+it("waits for attach while the run is in progress, until an attach hook connects", async () => {
+  const waiting = await panel({ runStatus: "in_progress" });
+  waiting.submit(); await settle();
+  assert.match(waiting.slot.textContent!, /Run 123: in_progress\. Waiting for attach\./);
+  assert.doesNotMatch(waiting.slot.textContent!, /Chat connection is not available yet/);
+  waiting.p.dispose();
+
+  const win = installDom();
+  win.confirm = () => true;
+  const { gh, calls } = api({ runStatus: "in_progress" });
+  const attached: number[] = [];
+  const p = sessionDispatchPanel(gh, config, 1, async (id) => { attached.push(id); return true; });
+  const slot = win.document.createElement("div");
+  p.mount(slot); p.open({ ref: "public/target#42", title: "Item" });
+  slot.querySelector("form")!.dispatchEvent(new win.Event("submit", { cancelable: true }));
+  await settle();
+  assert.match(slot.textContent!, /Attached\./);
+  assert.deepEqual(attached, [123]);
+  assert.equal(calls.filter((c) => c.url.endsWith("/actions/runs/123")).length, 1, "no more checks once attached");
+  p.dispose();
+});
+
 it("does not guess a run on 204 or retry an uncertain dispatch after reopening", async () => {
   for (const status of [204, 500]) {
     const { p, slot, calls, submit } = await panel({ status });
