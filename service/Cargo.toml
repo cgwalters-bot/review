@@ -16,6 +16,7 @@ board-forge = { git = "https://github.com/cgwalters-forge/agent-board", rev = "7
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 humantime = "2"
+httpdate = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }

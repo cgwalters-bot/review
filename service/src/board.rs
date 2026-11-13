@@ -3,6 +3,7 @@
 
 use std::cell::Cell;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -24,12 +25,94 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const MAX_CONFIG: u64 = 1024 * 1024;
 
+const BACKOFF: Duration = Duration::from_secs(30);
+const MAX_BACKOFF: Duration = Duration::from_secs(900);
+const MAX_RETRY: Duration = Duration::from_secs(3600);
+
+#[derive(Default)]
+struct Pacing {
+    failures: u32,
+    until: Option<tokio::time::Instant>,
+    last_success: Option<tokio::time::Instant>,
+    limit: Option<LimitEvidence>,
+    requests: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LimitEvidence {
+    retry_after_seconds: Option<u64>,
+    reset_at_unix: Option<i64>,
+}
+
+/// Publication-time ages, not source-validation clocks or execution receipts.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshStatus {
+    last_success_age_seconds: Option<u64>,
+    retry_in_seconds: u64,
+    consecutive_failures: u32,
+    rate_limit: Option<LimitEvidence>,
+    requests: usize,
+}
+
+impl Pacing {
+    fn waiting(&self) -> bool {
+        self.until
+            .is_some_and(|until| until > tokio::time::Instant::now())
+    }
+
+    fn limited(&mut self, evidence: LimitEvidence, wait: Duration) {
+        let until = tokio::time::Instant::now() + wait.clamp(BACKOFF, MAX_RETRY);
+        self.until = Some(self.until.map_or(until, |old| old.max(until)));
+        self.limit = Some(evidence);
+    }
+
+    fn finished(&mut self, success: bool, requests: usize) {
+        self.requests = requests;
+        if success && !self.waiting() {
+            self.last_success = Some(tokio::time::Instant::now());
+            self.failures = 0;
+            self.until = None;
+            self.limit = None;
+        } else {
+            self.failures = self.failures.saturating_add(1);
+            let wait = BACKOFF.saturating_mul(1 << self.failures.saturating_sub(1).min(5));
+            let until = tokio::time::Instant::now() + wait.min(MAX_BACKOFF);
+            self.until = Some(self.until.map_or(until, |old| old.max(until)));
+        }
+    }
+}
+
+// Dropping a preview (including aborting the refresher) cancels its current
+// async request and closes admission to all later blocking-library reads.
+#[derive(Default)]
+struct Work {
+    cancelled: AtomicBool,
+    limited: AtomicBool,
+    request: Mutex<Option<tokio::task::AbortHandle>>,
+}
+
+struct CancelOnDrop(Arc<Work>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        let mut request = self.0.request.lock().unwrap();
+        self.0.cancelled.store(true, Ordering::SeqCst);
+        if let Some(request) = request.take() {
+            request.abort();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Reader {
     config: Arc<String>,
     token: Arc<TokenSource>,
     http: reqwest::Client,
     private: Vec<String>,
+    pacing: Arc<Mutex<Pacing>>,
+    active: Arc<tokio::sync::Semaphore>,
     #[cfg(test)]
     api_root: Option<String>,
 }
@@ -62,45 +145,101 @@ impl Reader {
                 .timeout(REQUEST_TIMEOUT)
                 .build()?,
             private,
+            pacing: Default::default(),
+            active: Arc::new(tokio::sync::Semaphore::new(1)),
             #[cfg(test)]
             api_root: None,
         })
     }
 
     pub async fn refresh(&self, prev: Option<&Section<Value>>, at: &str) -> Section<Value> {
+        // Coalesce concurrent wakes rather than queuing another expensive pass.
+        // The blocking worker owns the permit even if its caller is cancelled.
+        let Ok(permit) = self.active.clone().try_acquire_owned() else {
+            return deferred(prev, "board preview already running");
+        };
+        if self.pacing.lock().unwrap().waiting() {
+            return deferred(prev, "board preview backing off");
+        }
+        let work = Arc::new(Work::default());
+        let _cancel = CancelOnDrop(work.clone());
+        let worker = work.clone();
         let reader = self.clone();
         let at_owned = at.to_owned();
         let runtime = tokio::runtime::Handle::current();
         // The exported API includes synchronous transports and non-Send futures.
         // Keep its entire computation off the HTTP runtime's worker threads.
         let result = tokio::task::spawn_blocking(move || -> Result<Value> {
-            let config = pass::Config::parse(&reader.config)?;
+            let _permit = permit;
             let transport = Direct {
                 reader,
                 runtime: runtime.clone(),
                 deadline: Instant::now() + PASS_TIMEOUT,
                 requests: Cell::new(0),
                 secrets: Arc::new(Mutex::new(Vec::new())),
+                work: worker,
             };
-            let snapshot = runtime.block_on(decision::preview(
-                &transport,
-                &transport,
-                &config,
-                // Explicit cache seam: fresh disposable state, until #794
-                // exports its reusable cache. Never reconstruct writer state.
-                Default::default(),
-                Default::default(),
-                OffsetDateTime::parse(&at_owned, &Rfc3339)?,
-            ))?;
-            let mut value = serde_json::to_value(snapshot)?;
-            let mut private = transport.reader.private.clone();
-            private.extend(transport.secrets.lock().unwrap().iter().cloned());
-            redact(&mut value, &private);
-            Ok(value)
+            let result = (|| -> Result<Value> {
+                let config = pass::Config::parse(&transport.reader.config)?;
+                let snapshot = runtime.block_on(decision::preview(
+                    &transport,
+                    &transport,
+                    &config,
+                    // Explicit cache seam: fresh disposable state, until #794
+                    // exports its reusable cache. Never reconstruct writer state.
+                    Default::default(),
+                    Default::default(),
+                    OffsetDateTime::parse(&at_owned, &Rfc3339)?,
+                ))?;
+                let mut value = serde_json::to_value(snapshot)?;
+                let mut private = transport.reader.private.clone();
+                private.extend(transport.secrets.lock().unwrap().iter().cloned());
+                redact(&mut value, &private);
+                Ok(value)
+            })();
+            if !transport.work.cancelled.load(Ordering::SeqCst) {
+                let success = result.as_ref().is_ok_and(|s| s["failures"] == 0);
+                transport
+                    .reader
+                    .pacing
+                    .lock()
+                    .unwrap()
+                    .finished(success, transport.requests.get());
+            }
+            result
         })
         .await;
         let result = result.ok().and_then(Result::ok);
-        observed(result, prev, at)
+        if work.limited.load(Ordering::SeqCst) {
+            deferred(prev, "board preview rate limited")
+        } else {
+            observed(result, prev, at)
+        }
+    }
+
+    pub fn status(&self) -> RefreshStatus {
+        let pacing = self.pacing.lock().unwrap();
+        let now = tokio::time::Instant::now();
+        RefreshStatus {
+            last_success_age_seconds: pacing
+                .last_success
+                .map(|at| now.duration_since(at).as_secs()),
+            retry_in_seconds: pacing.until.map_or(0, |at| {
+                let left = at.saturating_duration_since(now);
+                left.as_secs() + u64::from(left.subsec_nanos() > 0)
+            }),
+            consecutive_failures: pacing.failures,
+            rate_limit: pacing.limit.clone(),
+            requests: pacing.requests,
+        }
+    }
+}
+
+fn deferred(prev: Option<&Section<Value>>, reason: &str) -> Section<Value> {
+    Section {
+        complete: false,
+        error: Some(reason.into()),
+        ..prev.cloned().unwrap_or_default()
     }
 }
 
@@ -131,6 +270,7 @@ struct Direct {
     deadline: Instant,
     requests: Cell<usize>,
     secrets: Arc<Mutex<Vec<String>>>,
+    work: Arc<Work>,
 }
 
 impl Direct {
@@ -161,10 +301,18 @@ impl Direct {
         };
         let timeout = REQUEST_TIMEOUT.min(self.deadline.saturating_duration_since(Instant::now()));
         let reader = self.reader.clone();
+        let pacing = self.reader.pacing.clone();
+        let work = self.work.clone();
         let secrets = self.secrets.clone();
         let validator = validator.map(|(k, v)| (k.to_owned(), v.to_owned()));
         let (tx, rx) = mpsc::sync_channel(1);
-        self.runtime.spawn(async move {
+        // Serialize task registration with cancellation; no late detached spawn.
+        let mut active = self.work.request.lock().unwrap();
+        ensure!(
+            !self.work.cancelled.load(Ordering::SeqCst),
+            "preview cancelled"
+        );
+        let task = self.runtime.spawn(async move {
             let result = tokio::time::timeout(timeout, async {
                 let token = reader
                     .token
@@ -172,6 +320,7 @@ impl Direct {
                     .await
                     .map_err(|_| anyhow::anyhow!("forge token unavailable"))?;
                 secrets.lock().unwrap().push(token.clone());
+                let is_query = query.is_some();
                 let mut req = match query {
                     Some(query) => reader.http.post(url).json(&query),
                     None => reader.http.get(url),
@@ -213,6 +362,16 @@ impl Direct {
                             .get("x-ratelimit-remaining")
                             .is_some_and(|v| v == "0")
                             || response.headers().contains_key("retry-after")));
+                let evidence = limit_evidence(response.headers(), std::time::SystemTime::now());
+                let exhausted = response
+                    .headers()
+                    .get("x-ratelimit-remaining")
+                    .is_some_and(|v| v == "0");
+                if limited || exhausted {
+                    work.limited.store(true, Ordering::SeqCst);
+                    let wait = retry_wait(&evidence, OffsetDateTime::now_utc().unix_timestamp());
+                    pacing.lock().unwrap().limited(evidence.clone(), wait);
+                }
                 let mut body = Vec::new();
                 while let Some(chunk) = response
                     .chunk()
@@ -231,7 +390,16 @@ impl Direct {
                     .as_str()
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                if limited || (out.status == 403 && message.contains("rate limit")) {
+                if limited
+                    || (out.status == 403 && message.contains("rate limit"))
+                    || (is_query && query_limited(&out.body))
+                {
+                    if !limited && !exhausted {
+                        work.limited.store(true, Ordering::SeqCst);
+                        let wait =
+                            retry_wait(&evidence, OffsetDateTime::now_utc().unix_timestamp());
+                        pacing.lock().unwrap().limited(evidence, wait);
+                    }
                     return Err(
                         board_forge::github::RateLimited("forge rate limited".into()).into(),
                     );
@@ -242,11 +410,22 @@ impl Direct {
             .unwrap_or_else(|_| Err(anyhow::anyhow!("forge read timed out")));
             let _ = tx.send(result);
         });
-        rx.recv_timeout(timeout + Duration::from_secs(1))
-            .context("forge read timed out")?
+        *active = Some(task.abort_handle());
+        drop(active);
+        let result = rx.recv_timeout(timeout + Duration::from_secs(1));
+        // Also cancel if the synchronous waiter times out before the async task.
+        task.abort();
+        result.context("forge read timed out")?
     }
 
     fn admit(&self) -> Result<()> {
+        ensure!(
+            !self.work.cancelled.load(Ordering::SeqCst),
+            "preview cancelled"
+        );
+        if self.reader.pacing.lock().unwrap().waiting() {
+            return Err(board_forge::github::RateLimited("forge cooling down".into()).into());
+        }
         ensure!(
             self.requests.get() < MAX_REQUESTS && Instant::now() < self.deadline,
             "board read bound exhausted"
@@ -288,15 +467,6 @@ impl Transport for Direct {
             Some(json!({"query": query, "variables": variables})),
             None,
         )?)?;
-        if response.body["errors"].as_array().is_some_and(|errors| {
-            errors.iter().any(|e| {
-                ["RATE_LIMITED", "RATE_LIMIT"].contains(&e["type"].as_str().unwrap_or_default())
-                    || e["code"] == "graphql_rate_limit"
-                    || e["extensions"]["code"] == "RATE_LIMITED"
-            })
-        }) {
-            return Err(board_forge::github::RateLimited("forge query rate limited".into()).into());
-        }
         ensure!(
             response.status == 200 && response.body.get("errors").is_none(),
             "forge query unavailable"
@@ -307,6 +477,43 @@ impl Transport for Direct {
             .cloned()
             .context("forge query has no data")
     }
+}
+
+fn query_limited(body: &Value) -> bool {
+    body["errors"].as_array().is_some_and(|errors| {
+        errors.iter().any(|e| {
+            ["RATE_LIMITED", "RATE_LIMIT"].contains(&e["type"].as_str().unwrap_or_default())
+                || e["code"] == "graphql_rate_limit"
+                || e["extensions"]["code"] == "RATE_LIMITED"
+        })
+    })
+}
+
+fn limit_evidence(
+    headers: &reqwest::header::HeaderMap,
+    now: std::time::SystemTime,
+) -> LimitEvidence {
+    let text = |key| headers.get(key).and_then(|v| v.to_str().ok());
+    let retry_after_seconds = text("retry-after").and_then(|s| {
+        s.parse::<u64>().ok().or_else(|| {
+            httpdate::parse_http_date(s).ok().map(|at| {
+                let wait = at.duration_since(now).unwrap_or_default();
+                wait.as_secs() + u64::from(wait.subsec_nanos() > 0)
+            })
+        })
+    });
+    LimitEvidence {
+        retry_after_seconds,
+        reset_at_unix: text("x-ratelimit-reset").and_then(|s| s.parse().ok()),
+    }
+}
+
+fn retry_wait(evidence: &LimitEvidence, now: i64) -> Duration {
+    let reset = evidence
+        .reset_at_unix
+        .map_or(0, |at| at.saturating_sub(now).max(0) as u64);
+    Duration::from_secs(reset.max(evidence.retry_after_seconds.unwrap_or(0)))
+        .clamp(BACKOFF, MAX_RETRY)
 }
 
 fn read_response(response: RestResponse) -> Result<RestResponse> {
@@ -411,6 +618,290 @@ mod tests {
 
     const PRODUCER_REPLAY: &str = "../test/fixtures/service-decision-producer.json";
 
+    #[tokio::test(start_paused = true)]
+    async fn pacing_preserves_evidence_caps_backoff_and_recovers_without_freshening_sources() {
+        let reader = reader(None, TokenSource::Fixed("fixture".into()));
+        let previous = observed(
+            Some(json!({"complete":true,"failures":0,"validated_at":AT})),
+            None,
+            AT,
+        );
+        reader.pacing.lock().unwrap().finished(true, 7);
+        for (n, wait) in [30, 60, 120, 240, 480, 900, 900].into_iter().enumerate() {
+            reader.pacing.lock().unwrap().finished(false, 1);
+            assert_eq!(reader.status().retry_in_seconds, wait);
+            assert_eq!(reader.status().consecutive_failures, n as u32 + 1);
+            for _ in 0..10 {
+                let skipped = reader
+                    .refresh(Some(&previous), "2026-11-09T14:00:00Z")
+                    .await;
+                assert_eq!(skipped.items, previous.items);
+                assert_eq!(skipped.read_at, previous.read_at);
+                assert!(!skipped.complete);
+            }
+            tokio::time::advance(Duration::from_secs(wait)).await;
+        }
+        let age = reader.status().last_success_age_seconds.unwrap();
+        assert!(age > 900);
+        reader.pacing.lock().unwrap().limited(
+            LimitEvidence {
+                retry_after_seconds: Some(u64::MAX),
+                reset_at_unix: Some(i64::MAX),
+            },
+            MAX_RETRY,
+        );
+        assert_eq!(reader.status().retry_in_seconds, 3600);
+        tokio::time::advance(MAX_RETRY).await;
+        reader.pacing.lock().unwrap().finished(true, 7);
+        let status = reader.status();
+        assert_eq!(status.last_success_age_seconds, Some(0));
+        assert_eq!(status.consecutive_failures, 0);
+        assert!(status.rate_limit.is_none());
+        assert_eq!(previous.items[0]["validated_at"], AT);
+        assert!(
+            self::reader(None, TokenSource::Fixed("fixture".into()))
+                .status()
+                .last_success_age_seconds
+                .is_none(),
+            "restart has no invented success clock"
+        );
+    }
+
+    #[test]
+    fn parses_bounded_retry_hints_without_retaining_upstream_prose() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", "120".parse().unwrap());
+        headers.insert("x-ratelimit-reset", "1800000300".parse().unwrap());
+        let evidence = limit_evidence(&headers, now);
+        assert_eq!(retry_wait(&evidence, 1_800_000_000).as_secs(), 300);
+        headers.insert(
+            "retry-after",
+            httpdate::fmt_http_date(now + Duration::from_secs(600))
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(limit_evidence(&headers, now).retry_after_seconds, Some(600));
+        headers.insert("retry-after", "private upstream prose".parse().unwrap());
+        headers.insert("x-ratelimit-reset", "invalid".parse().unwrap());
+        let evidence = limit_evidence(&headers, now);
+        assert_eq!(retry_wait(&evidence, 0), BACKOFF);
+        assert_eq!(
+            serde_json::to_value(evidence).unwrap(),
+            json!({"retryAfterSeconds":null,"resetAtUnix":null})
+        );
+    }
+
+    #[tokio::test]
+    async fn throttling_stops_sends_across_ticks_and_repeated_limits_back_off() {
+        use axum::http::StatusCode;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn({
+            let calls = calls.clone();
+            async move {
+                axum::serve(
+                    listener,
+                    Router::new().fallback(any(move || {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        async {
+                            (
+                                StatusCode::TOO_MANY_REQUESTS,
+                                [("retry-after", "120"), ("x-ratelimit-reset", "123")],
+                                "private refusal",
+                            )
+                        }
+                    })),
+                )
+                .await
+                .unwrap();
+            }
+        });
+        let reader = reader(Some(root), TokenSource::Fixed("fixture".into()));
+        let previous = observed(
+            Some(json!({"complete":true,"failures":0,"validated_at":AT})),
+            None,
+            AT,
+        );
+        for failures in 1..=4 {
+            // Clock-policy behavior is tested above with paused time. Here only
+            // expire admission to exercise real HTTP responses without waiting.
+            reader.pacing.lock().unwrap().until = None;
+            let result = reader.refresh(Some(&previous), AT).await;
+            assert_eq!(result.items, previous.items);
+            assert_eq!(result.read_at, previous.read_at);
+            assert!(!result.complete);
+            let status = reader.status();
+            assert_eq!(status.consecutive_failures, failures);
+            assert_eq!(status.requests, 1);
+            assert_eq!(status.rate_limit.unwrap().retry_after_seconds, Some(120));
+            assert!(status.retry_in_seconds >= 119);
+            for _ in 0..10 {
+                reader.refresh(Some(&result), AT).await;
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), failures as usize);
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn concurrent_wakes_coalesce_and_cancellation_stops_detached_requests() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn({
+            let (entered, release, calls) = (entered.clone(), release.clone(), calls.clone());
+            async move {
+                axum::serve(
+                    listener,
+                    Router::new().fallback(any(move || {
+                        let (entered, release, calls) =
+                            (entered.clone(), release.clone(), calls.clone());
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            entered.notify_one();
+                            release.notified().await;
+                            Json(json!({"data":{}}))
+                        }
+                    })),
+                )
+                .await
+                .unwrap();
+            }
+        });
+        let reader = reader(Some(root), TokenSource::Fixed("fixture".into()));
+        let task = tokio::spawn({
+            let reader = reader.clone();
+            async move { reader.refresh(None, AT).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
+        for _ in 0..10 {
+            let skipped = reader.refresh(None, AT).await;
+            assert_eq!(
+                skipped.error.as_deref(),
+                Some("board preview already running")
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        // The blocking worker exits and returns its permit without waiting for
+        // the slow response or leaving a request task detached from cancellation.
+        let permit = tokio::time::timeout(
+            Duration::from_secs(2),
+            reader.active.clone().acquire_owned(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        release.notify_one();
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.status().last_success_age_seconds, None);
+        drop(permit);
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn graphql_hints_survive_ticks_and_natural_expiry_recovers_success_clock() {
+        use axum::response::IntoResponse;
+        // Keep virtual time under explicit control while the blocking library
+        // waits for real loopback I/O; auto-advance would expire request timers.
+        let clock_guard = tokio::spawn(async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+        for remaining in ["0", "50"] {
+            let throttle = Arc::new(AtomicBool::new(false));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let fake_state = Fake::default();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let root = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn({
+                let (throttle, calls) = (throttle.clone(), calls.clone());
+                async move {
+                    axum::serve(
+                        listener,
+                        Router::new().fallback(any(
+                            move |uri: axum::extract::OriginalUri,
+                                  headers: HeaderMap,
+                                  body: String| {
+                                let (throttle, calls, fake_state) =
+                                    (throttle.clone(), calls.clone(), fake_state.clone());
+                                async move {
+                                    calls.fetch_add(1, Ordering::SeqCst);
+                                    if throttle.load(Ordering::SeqCst) {
+                                        (
+                                            [
+                                                ("retry-after", "600"),
+                                                ("x-ratelimit-reset", "123"),
+                                                ("x-ratelimit-remaining", remaining),
+                                            ],
+                                            Json(json!({"errors":[{"type":"RATE_LIMITED"}]})),
+                                        )
+                                            .into_response()
+                                    } else {
+                                        fake(State(fake_state), uri, headers, body)
+                                            .await
+                                            .into_response()
+                                    }
+                                }
+                            },
+                        )),
+                    )
+                    .await
+                    .unwrap();
+                }
+            });
+            let mut reader = reader(Some(root), TokenSource::Fixed("fixture".into()));
+            // A published-usage-only fixture avoids the deliberately unavailable
+            // broker, allowing an actual failure-free library preview.
+            let mut config: Value = serde_json::from_str(&reader.config).unwrap();
+            config["usage"].as_object_mut().unwrap().remove("url");
+            reader.config = Arc::new(config.to_string());
+            let first = reader.refresh(None, AT).await;
+            assert_eq!(first.items[0]["failures"], 0, "{first:?}");
+            assert_eq!(reader.status().last_success_age_seconds, Some(0));
+            let cold = calls.load(Ordering::SeqCst);
+            throttle.store(true, Ordering::SeqCst);
+            let limited = reader.refresh(Some(&first), AT).await;
+            assert_eq!(calls.load(Ordering::SeqCst), cold + 1);
+            assert_eq!(reader.status().retry_in_seconds, 600);
+            let evidence = reader.status().rate_limit.unwrap();
+            assert_eq!(evidence.retry_after_seconds, Some(600));
+            assert_eq!(evidence.reset_at_unix, Some(123));
+            for _ in 0..10 {
+                let skipped = reader.refresh(Some(&limited), AT).await;
+                assert_eq!(skipped.items, first.items);
+                assert_eq!(skipped.read_at, first.read_at);
+                assert!(!skipped.complete);
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), cold + 1);
+            tokio::time::advance(Duration::from_secs(599)).await;
+            reader.refresh(Some(&limited), AT).await;
+            assert_eq!(calls.load(Ordering::SeqCst), cold + 1);
+            assert_eq!(reader.status().last_success_age_seconds, Some(599));
+            tokio::time::advance(Duration::from_secs(1)).await;
+            throttle.store(false, Ordering::SeqCst);
+            let recovered = reader.refresh(Some(&limited), AT).await;
+            assert_eq!(recovered.items, first.items);
+            assert_eq!(calls.load(Ordering::SeqCst), 2 * cold + 1);
+            let status = reader.status();
+            assert_eq!(status.last_success_age_seconds, Some(0));
+            assert_eq!(status.consecutive_failures, 0);
+            assert_eq!(status.retry_in_seconds, 0);
+            assert!(status.rate_limit.is_none());
+            server.abort();
+        }
+        clock_guard.abort();
+    }
+
     fn config() -> String {
         json!({"operator":"operator", "bot":"robot", "dispatchRepo":"example/runner",
             "dispatchWorkflow":"dispatch.yml", "dispatchRef":"main",
@@ -433,6 +924,8 @@ mod tests {
                 .build()
                 .unwrap(),
             private: Vec::new(),
+            pacing: Default::default(),
+            active: Arc::new(tokio::sync::Semaphore::new(1)),
             api_root: root,
         }
     }
@@ -444,6 +937,7 @@ mod tests {
             deadline: Instant::now() + PASS_TIMEOUT,
             requests: Cell::new(0),
             secrets: Arc::new(Mutex::new(Vec::new())),
+            work: Default::default(),
         }
     }
 
@@ -569,6 +1063,7 @@ mod tests {
         std::fs::write(&file, "fixture-one").unwrap();
         let reader = reader(Some(root), TokenSource::File(file.clone()));
         let first = reader.refresh(None, AT).await;
+        let cold_sends = fake.calls.load(Ordering::SeqCst);
         assert_eq!(first.items.len(), 1, "{first:?}");
         assert_eq!(first.items[0]["schema"], decision::SCHEMA);
         assert_eq!(first.items[0]["observed_at"], AT);
@@ -580,12 +1075,19 @@ mod tests {
             })
         );
         std::fs::write(&file, "fixture-two").unwrap();
+        reader.pacing.lock().unwrap().until = None;
         let lost = reader.refresh(None, AT).await;
         assert_eq!(
             first.items, lost.items,
             "losing disposable state changes no authority"
         );
+        reader.pacing.lock().unwrap().until = None;
         let repeated = reader.refresh(Some(&first), AT).await;
+        let repeated_sends = fake.calls.load(Ordering::SeqCst) - 2 * cold_sends;
+        eprintln!(
+            "synthetic direct preview: cold={cold_sends} sends, repeated={repeated_sends} sends; charged requests not measured"
+        );
+        assert_eq!(repeated_sends, cold_sends);
         assert_eq!(
             repeated.items, first.items,
             "a prior published view is not a response cache"
@@ -598,12 +1100,14 @@ mod tests {
                 .any(|t| t == "Bearer fixture-two")
         );
         fake.partial.store(true, Ordering::SeqCst);
+        reader.pacing.lock().unwrap().until = None;
         let partial = reader.refresh(Some(&first), "2026-11-09T12:01:00Z").await;
         assert!(!partial.complete);
         assert_eq!(partial.read_at.as_deref(), Some("2026-11-09T12:01:00Z"));
         assert!(partial.error.is_some());
         assert!(partial.items[0]["failures"].as_u64().unwrap() > 0);
         fake.partial.store(false, Ordering::SeqCst);
+        *reader.pacing.lock().unwrap() = Pacing::default();
         *fake.usage.lock().unwrap() = Some(json!({"schema":"bot-usage/v1", "updated_at":AT,
             "pools":{"test":{"observed_at":AT,"used_percent":10,"allowed_percent":50,"hold":false}}}));
         let stale_usage = reader.refresh(None, "2026-11-09T14:00:00Z").await;
@@ -695,6 +1199,7 @@ mod tests {
                 TokenSource::Fixed("fixture".into()),
             ));
             for status in [404, 410] {
+                *client.reader.pacing.lock().unwrap() = Pacing::default();
                 let url = format!("https://api.github.com/{status}");
                 assert!(
                     client
@@ -703,8 +1208,10 @@ mod tests {
                         .unwrap()
                         .is::<board_forge::github::NotFound>()
                 );
+                *client.reader.pacing.lock().unwrap() = Pacing::default();
                 assert_eq!(client.send("GET", &url, &Value::Null).unwrap().0, status);
             }
+            *client.reader.pacing.lock().unwrap() = Pacing::default();
             assert!(
                 client
                     .get("https://api.github.com/401", None)
@@ -713,6 +1220,7 @@ mod tests {
                     .is::<board_forge::github::AuthenticationRequired>()
             );
             for status in [403, 429] {
+                *client.reader.pacing.lock().unwrap() = Pacing::default();
                 assert!(
                     client
                         .get(&format!("https://api.github.com/{status}"), None)
@@ -726,6 +1234,7 @@ mod tests {
                 json!({"type":"RATE_LIMIT"}),
                 json!({"code":"graphql_rate_limit"}),
             ] {
+                *client.reader.pacing.lock().unwrap() = Pacing::default();
                 assert!(
                     Transport::graphql(&client, "query { x }", error)
                         .unwrap_err()
@@ -790,13 +1299,17 @@ mod tests {
         let mut buffer = String::new();
         assert_eq!(next_state(&mut events, &mut buffer).await.0, "0");
         let mut expected: Vec<Value> = Vec::new();
-        for generation in 1..=3 {
+        for generation in 1..=5 {
+            if generation != 4 {
+                reader.pacing.lock().unwrap().until = None;
+            }
             fake.partial.store(generation == 2, Ordering::SeqCst);
             let mut source = reader.clone();
             if generation == 3 {
                 source.config = Arc::new("{}".into());
             }
             let prev = tx.borrow().clone();
+            let sends_before = fake.calls.load(Ordering::SeqCst);
             let clocks = AtomicUsize::new(0);
             let state = crate::refresh_generation(
                 &Recorded::fixture(),
@@ -817,6 +1330,12 @@ mod tests {
             .await;
             let value = serde_json::to_value(&state).unwrap();
             assert_eq!(value["generation"], generation);
+            assert_eq!(
+                value["decision"]["items"][0]["confirmed_effects"],
+                json!({
+                    "comments_created":0,"comments_edited":0,"starts":{},"starts_by_pool":{}
+                })
+            );
             assert_eq!(value["decision"]["items"][0]["observed_at"], AT);
             assert_eq!(
                 value["decision"]["items"][0]["provenance"]["usage"],
@@ -863,6 +1382,20 @@ mod tests {
                     expected[1]["decision"]["readAt"]
                 );
                 assert_eq!(value["decision"]["complete"], false);
+            }
+            if generation == 4 {
+                assert_eq!(fake.calls.load(Ordering::SeqCst), sends_before);
+                assert_eq!(value["decision"]["items"], expected[2]["decision"]["items"]);
+                assert_eq!(
+                    value["decision"]["readAt"],
+                    expected[2]["decision"]["readAt"]
+                );
+                assert_eq!(value["decision"]["error"], "board preview backing off");
+                assert!(value["decisionRefresh"]["retryInSeconds"].as_u64().unwrap() > 0);
+            }
+            if generation == 5 {
+                assert!(fake.calls.load(Ordering::SeqCst) > sends_before);
+                assert_ne!(value["decision"]["error"], "board preview backing off");
             }
             tx.send_replace(Arc::new(state));
             let (id, event) = next_state(&mut events, &mut buffer).await;

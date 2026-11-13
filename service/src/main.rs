@@ -277,6 +277,7 @@ async fn refresh_generation<S: github::Source, F: github::Source, K: github::Sou
     next.kubernetes = kubernetes_section;
     if let Some(board) = board {
         next.decision = Some(board.refresh(prev.decision.as_ref(), &clock()).await);
+        next.decision_refresh = Some(board.status());
     }
     next.refreshed_at = Some(clock());
     next
@@ -291,10 +292,7 @@ async fn refresher(
     tx: watch::Sender<Arc<State>>,
     interval: Duration,
 ) {
-    let mut ticks = tokio::time::interval(interval);
-    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        ticks.tick().await;
+    periodic(interval, || async {
         let prev = tx.borrow().clone();
         let forgejo_ref = forgejo.as_ref().map(|(c, config)| (c, config));
         let kubernetes_ref = kubernetes.as_ref().map(|(c, config)| (c, config));
@@ -327,6 +325,16 @@ async fn refresher(
             }
         }
         tx.send_replace(Arc::new(next));
+    })
+    .await;
+}
+
+/// One serialized loop, initially ready, then spaced from completion. Dropping
+/// it drops the active refresh; slow passes never accumulate catch-up work.
+async fn periodic<F: Future<Output = ()>>(interval: Duration, mut refresh: impl FnMut() -> F) {
+    loop {
+        refresh().await;
+        tokio::time::sleep(interval).await;
     }
 }
 
@@ -421,6 +429,9 @@ async fn main() -> Result<()> {
         // Dropping the state's sender ends the event streams, which would
         // otherwise hold the graceful shutdown open.
         refresher.abort();
+        // Await the abort so the preview's cancellation guard has run before
+        // graceful HTTP/SSE shutdown proceeds.
+        let _ = refresher.await;
     })
     .await
     .context("serving")
@@ -429,6 +440,48 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_ticks_are_serialized_without_catchup_and_shutdown_drops_work() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let starts = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        struct Active(Arc<AtomicUsize>);
+        impl Drop for Active {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let task = tokio::spawn({
+            let starts = starts.clone();
+            let active = active.clone();
+            async move {
+                periodic(Duration::from_secs(30), || async {
+                    assert_eq!(active.fetch_add(1, Ordering::SeqCst), 0);
+                    let _active = Active(active.clone());
+                    starts.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(100)).await;
+                })
+                .await;
+            }
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        tokio::time::advance(Duration::from_secs(100)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        tokio::time::advance(Duration::from_secs(29)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        tokio::time::advance(Duration::from_secs(1000)).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
+    }
 
     fn parse_env(args: &[&str], env: Option<&str>) -> Result<Option<Args>> {
         parse_args(args.iter().map(|s| s.to_string()), env.map(str::to_owned))
