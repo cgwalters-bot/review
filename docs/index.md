@@ -2,6 +2,11 @@
 
 > This text is LLM generated.
 
+Read this documentation [on the website](https://cgwalters-forge.github.io/review/docs/)
+or open the [Pages app](https://cgwalters-forge.github.io/review/).
+`npm run build` renders `docs/*.md` into `dist/docs/` alongside the app;
+the existing Pages workflow publishes both. Repository-source links open on GitHub.
+
 The control app is a small interface for work proposed by
 [cgwalters-bot](https://github.com/cgwalters-bot) and by people: questions,
 approvals, review drafts and operator actions, with a head-checked PR review
