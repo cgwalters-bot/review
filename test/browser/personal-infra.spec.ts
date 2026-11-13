@@ -4,6 +4,7 @@ import { readFileSync, mkdirSync } from "node:fs";
 const fixture = (name: string) => JSON.parse(readFileSync(`service/fixtures/${name}-state.json`, "utf8"));
 
 test("personal infrastructure is hosted-only and configured-only", async ({ page }) => {
+  await page.route("**/api/acp", (route) => route.fulfill({ json: [] }));
   await page.clock.install();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -16,6 +17,7 @@ test("personal infrastructure is hosted-only and configured-only", async ({ page
   });
   await page.goto("/");
   await expect(page.locator(".signin")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Configured chat", exact: true })).toHaveCount(0);
   if (!process.env.BROWSER_HOSTED) {
     await expect(page.locator('script[src="personal-infra.js"]')).toHaveCount(0);
     expect(reads).toBe(0);

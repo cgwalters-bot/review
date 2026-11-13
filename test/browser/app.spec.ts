@@ -29,9 +29,51 @@ const LIVE_TOKEN = process.env.REVIEW_LIVE_TOKEN;
 const DATA = (process.env.BROWSER_DATA ?? "group") as FixtureData;
 if (!FIXTURE_DATA.includes(DATA)) throw new Error(`BROWSER_DATA=${DATA}: not one of ${FIXTURE_DATA.join(", ")}`);
 
+test("configured chat attaches to an existing conversation and ends without retry", async ({ page }) => {
+  test.skip(!process.env.BROWSER_HOSTED || !!LIVE_TOKEN, "hosted fixture only");
+  problems = await serve(page);
+  await page.route("**/api/v1/state", (route) => route.fulfill({ json: { schema: "review-service/v1" } }));
+  await page.route("**/api/acp", (route) => route.fulfill({ json: [{ id: "fixture-one", label: "Provider A" }, { id: "fixture-two", label: "Provider B" }] }));
+  let requests: string[] = [];
+  let end = () => {};
+  let clients = 0;
+  await page.routeWebSocket("**/api/acp/*", (socket) => {
+    expect(socket.url()).toContain("/api/acp/fixture-two");
+    if (++clients > 1) { socket.close(); return; }
+    end = () => socket.close();
+    socket.onMessage((wire) => {
+      const m = JSON.parse(String(wire)); requests.push(m.method);
+      if (m.id) socket.send(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: m.method === "initialize" ? { protocolVersion: 1 } : { sessionId: "session" } }));
+    });
+  });
+  await page.goto("#inbox");
+  await page.getByRole("button", { name: "Configured chat", exact: true }).click();
+  expect(requests).toEqual([]);
+  await page.getByRole("combobox", { name: "Provider", exact: true }).selectOption("fixture-two");
+  const pane = page.getByRole("region", { name: "Session chat" });
+  await expect(pane.locator(".chat-state")).toHaveText("connected");
+  await expect(pane.getByRole("button", { name: "New session", exact: true })).toHaveCount(0);
+  await expect(pane.locator(".chat-status")).toContainText("existing conversation");
+  expect(requests.filter((m) => m === "session/new")).toHaveLength(1);
+  end();
+  await expect(pane.locator(".chat-status")).toContainText("Session ended");
+  await expect(pane.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+  await expect(pane.locator(".chat-status")).toContainText("session server restarted");
+  await expect(pane.getByRole("button", { name: "Start fresh", exact: true })).toHaveCount(0);
+  await expect(pane.getByRole("button", { name: "Attach", exact: true })).toBeHidden();
+  await pane.getByRole("combobox", { name: "Provider", exact: true }).selectOption("");
+  await pane.getByRole("combobox", { name: "Provider", exact: true }).selectOption("fixture-two");
+  await expect(pane.getByRole("button", { name: "Attach", exact: true })).toBeHidden();
+  expect(clients).toBe(1);
+  await screenshot(page, "configured-chat-ended");
+  expect(problems).toEqual([]);
+});
+
 /** Answers or passes the app's requests, and collects what went wrong. */
 async function serve(page: Page, data: FixtureData = DATA): Promise<string[]> {
   const problems: string[] = [];
+  await page.route("**/api/acp", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/v1/state", (route) => route.fulfill({ json: { schema: "review-service/v1" } }));
   page.on("console", (m) => { if (m.type() === "error") problems.push(`console: ${m.text()}`); });
   page.on("pageerror", (e) => problems.push(`uncaught: ${e.message}`));
   // Anything but the app and the API, which the CSP forbids anyway.

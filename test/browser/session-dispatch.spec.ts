@@ -2,6 +2,8 @@ import { test, expect } from "@playwright/test";
 import { build } from "esbuild";
 
 test("repository Chat confirms a dispatch and shows its returned starting run", async ({ page }) => {
+  await page.route("**/api/acp", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/v1/state", (route) => route.fulfill({ json: { schema: "review-service/v1" } }));
   const problems: string[] = [];
   page.on("pageerror", (e) => problems.push(e.message));
   page.on("console", (m) => { if (m.type() === "error") problems.push(m.text()); });

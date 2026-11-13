@@ -38,6 +38,8 @@ struct Config {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Target {
+    #[serde(default)]
+    label: Option<String>,
     url: String,
     token_file: PathBuf,
     #[serde(skip, default = "session_slot")]
@@ -95,6 +97,16 @@ impl Bridge {
             "ACP config needs 1 to 16 sessions"
         );
         for (id, target) in &config.sessions {
+            // Bound public display metadata; never serialize the target itself.
+            ensure!(
+                target
+                    .label
+                    .as_ref()
+                    .is_none_or(|label| !label.trim().is_empty()
+                        && label.len() <= 64
+                        && !label.chars().any(char::is_control)),
+                "ACP label must be 1 to 64 bytes without control characters"
+            );
             ensure!(
                 !id.is_empty()
                     && id.len() <= 64
@@ -125,9 +137,29 @@ impl Bridge {
 
     pub fn router(self: Arc<Self>) -> Router {
         Router::new()
+            // Browsers omit Origin on same-origin GET; POST discovery keeps the
+            // bridge's exact-Origin rule without trusting Referer/Fetch Metadata.
+            .route("/api/acp", get(list).post(list))
             .route("/api/acp/{session}", get(attach))
             .with_state(self)
     }
+}
+
+fn admitted(bridge: &Bridge, headers: &HeaderMap) -> bool {
+    let mut origins = headers.get_all("origin").iter();
+    matches!((origins.next(), origins.next()), (Some(origin), None) if origin.as_bytes() == bridge.config.origin.as_bytes())
+}
+
+async fn list(State(bridge): State<Arc<Bridge>>, headers: HeaderMap) -> Response {
+    if !admitted(&bridge, &headers) {
+        return (StatusCode::FORBIDDEN, "ACP origin refused").into_response();
+    }
+    let mut sessions: Vec<_> = bridge.config.sessions.iter().collect();
+    sessions.sort_by_key(|(id, _)| *id);
+    let public: Vec<_> = sessions.into_iter().map(|(id, target)| {
+        serde_json::json!({"id": id, "label": target.label.as_ref().unwrap_or(id)})
+    }).collect();
+    ([("cache-control", "no-store")], axum::Json(public)).into_response()
 }
 
 async fn attach(
@@ -136,9 +168,7 @@ async fn attach(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let mut origins = headers.get_all("origin").iter();
-    if !matches!((origins.next(), origins.next()), (Some(origin), None) if origin.as_bytes() == bridge.config.origin.as_bytes())
-    {
+    if !admitted(&bridge, &headers) {
         return (StatusCode::FORBIDDEN, "ACP origin refused").into_response();
     }
     let Some(target) = bridge.config.sessions.get(&session) else {
@@ -526,6 +556,42 @@ mod tests {
                 .to_string(),
             "invalid ACP config JSON"
         );
+    }
+
+    #[tokio::test]
+    async fn listing_is_public_metadata_only_and_origin_gated() {
+        let mut value = config("wss://private.example/secret", Path::new("/private/token"));
+        value["sessions"]["other"] = value["sessions"]["run-42"].clone();
+        value["sessions"]["other"]["label"] = json!("Provider");
+        let url = serve(Some(bridge(&value)))
+            .await
+            .replace("ws://", "http://")
+            .replace("/run-42", "");
+        let client = reqwest::Client::new();
+        for origin in [None, Some("https://foreign.example")] {
+            let mut req = client.get(&url);
+            if let Some(origin) = origin {
+                req = req.header("origin", origin);
+            }
+            assert_eq!(req.send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        }
+        let response = client
+            .get(&url)
+            .header("origin", ORIGIN)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.unwrap(),
+            json!([
+                {"id":"other", "label":"Provider"}, {"id":"run-42", "label":"run-42"}
+            ])
+        );
+        for label in ["".to_string(), "x".repeat(65), "bad\nlabel".to_string()] {
+            value["sessions"]["other"]["label"] = json!(label);
+            assert!(Bridge::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+        }
     }
 
     #[tokio::test]

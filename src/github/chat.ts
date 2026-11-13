@@ -31,6 +31,8 @@ export interface ChatPanel {
 }
 
 export interface ChatOptions {
+  /** Service-owned destinations; only the hosted entry point discovers these. */
+  sessions?: readonly { id: string; label: string }[];
   /** The repository's configuration (CHAT_CONFIG when absent); undefined disables chat. */
   config?: ChatConfig | undefined;
   socketFactory?: (url: string) => WebSocket;
@@ -329,9 +331,11 @@ const STATE_TEXT: Record<ChatState, string> = {
 };
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e);
+const CONFIGURED_ENDED = "Session ended. A new conversation needs the session server restarted; no transcript replay is available.";
 
 export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | undefined {
-  const config = "config" in options ? options.config : CHAT_CONFIG;
+  const sessions = options.sessions;
+  const config: ChatConfig | undefined = sessions ? { tailnetDomain: "", sources: [] } : "config" in options ? options.config : CHAT_CONFIG;
   if (!config) return undefined;
   if (config.dispatch) return sessionDispatchPanel(gh, config.dispatch);
   const socketFactory = options.socketFactory ?? ((url: string) => new WebSocket(url));
@@ -349,6 +353,11 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     const badge = h("span", { class: "chat-state" });
     const sourceSelect = h("select", { "aria-label": "Session workflow" }, ...config.sources.map((s, i) => h("option", { value: String(i) }, `${s.repo} ${s.workflow}`)));
     sourceSelect.hidden = config.sources.length < 2;
+    const provider = h("select", { "aria-label": "Provider" }, h("option", { value: "" }, "Choose provider"),
+      ...(sessions ?? []).map((s) => h("option", { value: s.id }, s.label)));
+    provider.hidden = !sessions?.length;
+    // TODO(cgwalters-forge/agentic-job#3616): offer fresh conversations only
+    // after the listener defines and advertises a capability for them.
     const start = h("button", { type: "button", class: "small primary" }, "Start session");
     const check = h("button", { type: "button", class: "small" }, "Check");
     const full = h("button", { type: "button", class: "small", "aria-pressed": "false" }, "Full screen");
@@ -377,6 +386,9 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     let dispatched: { at: number; source: ChatSource; id?: number; published?: boolean } | undefined;
     /** Runs whose session this tab ended or saw end: never attach to them again. */
     const finished = new Set<number>();
+    /** The pinned configured listener admits only one client, even after close. */
+    const consumed = new Set<string>();
+    let selectedProvider = "";
     let client: AcpClient | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let deadline = 0;
@@ -422,6 +434,13 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       existing.disabled = end.disabled = working;
       check.disabled = working || armed || !!client;
       sourceSelect.disabled = armed || !!client;
+      if (sessions) {
+        start.textContent = "Attach";
+        start.hidden = consumed.has(provider.value);
+        start.disabled = !provider.value || consumed.has(provider.value) || armed || !!client;
+        check.hidden = sourceSelect.hidden = existing.hidden = end.hidden = true;
+        provider.disabled = armed || !!client;
+      }
       disconnect.hidden = state !== "connected";
       send.disabled = state !== "connected" || busy;
       cancel.disabled = state !== "connected" || !(busy || refused);
@@ -550,6 +569,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     const endRun = (text: string) => {
       if (run) finished.add(run.id);
       armed = false; dispatched = undefined; clearTimeout(timer);
+      if (sessions) log.append(h("p", { class: "note" }, "Session ended"));
       go("ended", text);
     };
 
@@ -601,6 +621,7 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
 
     const retry = (gen: number, why: string) => {
       if (gen !== generation || disposed) return;
+      if (sessions) { endRun(CONFIGURED_ENDED); return; }
       if (Date.now() > deadline) {
         armed = false;
         go("waiting", `Couldn't attach: ${why}. Check your tailnet login, then Attach to try again.`);
@@ -623,13 +644,21 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
     };
 
     const connect = (gen: number) => {
-      const endpoint = run?.endpoint;
+      const url = sessions && provider.value ? new URL(`/api/acp/${encodeURIComponent(provider.value)}`, doc.location.href) : undefined;
+      if (url) url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      const endpoint = url?.href ?? run?.endpoint;
       if (!endpoint || client || disposed) return;
-      clearLog(); refused = false;
+      if (sessions) {
+        // No replay exists: retain ended conversations, clearly separated.
+        endMessage(); tools.clear();
+        log.append(h("p", { class: "note" }, `Provider: ${sessions.find((s) => s.id === provider.value)?.label ?? provider.value}`));
+      } else clearLog();
+      refused = false;
       let opened = false;
       let attached = false;
       let why = "connection failed";
       let socket: WebSocket;
+      if (sessions) consumed.add(provider.value);
       try { socket = socketFactory(endpoint); }
       catch (e) { retry(gen, message(e)); return; }
       const opening = setTimeout(() => { why = "timed out"; socket.close(); }, t.openTimeoutMs);
@@ -638,7 +667,8 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
         if (client === self) { client = undefined; endMessage(); }
         busy = false;
         if (disposed) return;
-        if (attached) endRun("Disconnected. The session run ends when its client leaves; Start again for a new one.");
+        if (sessions) endRun(CONFIGURED_ENDED);
+        else if (attached) endRun("Disconnected. The session run ends when its client leaves; Start again for a new one.");
         // Once the socket was open, the bridge saw this client: a run whose client
         // leaves ends, and a bridge already serving another client closes unanswered.
         // Either way connecting again can't help.
@@ -657,17 +687,21 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
           if (client !== self) return;
           if (disposed || gen !== generation) { socket.close(); return; }
           attached = true; dispatched = undefined;
-          go("connected", "Attached. Leaving this page or disconnecting ends the session run.");
+          go("connected", sessions ? "Attached to the server's existing conversation. Leaving or disconnecting ends the session." : "Attached. Leaving this page or disconnecting ends the session run.");
           input.focus();
         } catch (e) { why = message(e); socket.close(); }
       };
-      socket.onerror = () => { why = "connection refused or not allowed"; };
+      socket.onerror = () => { why = "connection refused or not allowed"; if (sessions) socket.close(); };
       controls();
     };
 
     start.onclick = async () => {
       if (armed || client || disposed) return;
       const gen = ++generation;
+      if (sessions) {
+        if (!provider.value || consumed.has(provider.value)) return;
+        armed = true; go("waiting", "Connecting to the session…"); connect(gen); return;
+      }
       armed = true; working = true;
       clearLog();
       go(state, "Looking for a live session run…");
@@ -697,6 +731,18 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
       } finally {
         if (gen === generation) { working = false; controls(); }
       }
+    };
+    provider.onchange = () => {
+      if (input.value && provider.value !== selectedProvider) {
+        provider.value = selectedProvider;
+        say("Clear or copy the unsent draft before changing providers.");
+        controls(); return;
+      }
+      selectedProvider = provider.value;
+      controls();
+      if (client || armed || !provider.value) return;
+      if (consumed.has(provider.value)) go("ended", CONFIGURED_ENDED);
+      else start.click();
     };
     check.onclick = () => void look();
     existing.onclick = () => {
@@ -806,8 +852,8 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
 
     pane.append(
       h("div", { class: "chat-head" }, title, badge, close),
-      h("div", { class: "chat-bar" }, sourceSelect, start, check, full, disconnect, existing, end),
-      h("p", { class: "note" }, "Uses your tailnet login, never your GitHub token. One client per session: leaving or disconnecting ends the run."),
+      h("div", { class: "chat-bar" }, provider, sourceSelect, start, check, full, disconnect, existing, end),
+      h("p", { class: "note" }, sessions ? "Uses the configured service bridge, never your GitHub token. No automatic reconnect or transcript replay." : "Uses your tailnet login, never your GitHub token. One client per session: leaving or disconnecting ends the run."),
       status, runLink, context, body,
     );
     /** The item, what its card asks (as read now, for an answer) and its public links. */
@@ -851,12 +897,12 @@ export function chatPanel(gh: GitHub, options: ChatOptions = {}): ChatPanel | un
         if (reread && item) void readAnswer(item);
         else if (reread) { answering = undefined; answerStatus.replaceChildren(); }
         showContext();
-        if (fresh) { run = undefined; void look(); }
+        if (fresh) { run = undefined; if (!sessions) void look(); }
       }
       start.focus();
     };
     const onItem = (event: Event) => open((event as CustomEvent<ChatItem | undefined>).detail ?? undefined);
-    doc.addEventListener(ITEM_CHAT_EVENT, onItem);
+    if (!sessions) doc.addEventListener(ITEM_CHAT_EVENT, onItem);
     doc.addEventListener("keydown", onKey, true);
     slot.replaceChildren(pane); slot.hidden = true; controls();
   } };
