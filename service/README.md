@@ -174,6 +174,53 @@ the caller's repository/file and real route/secret provisioning were not supplie
 
 ## Board decision preview (tracker#1456 phase 1)
 
+### App and CLI decision reads (#292)
+
+The concrete threats are accidentally exposing a private service's data in the
+public Pages app and presenting preview facts as permission to write. The
+client is off by default. Build the private, same-origin app explicitly with
+`npm run build -- --hosted --service-decisions` after configuring the board
+preview below. This inserts the app's opt-in marker; ordinary builds still use
+GitHub publications. Do not publish this hosted build to Pages. Keep all service
+routes behind the operator-only proxy/ACL described above.
+
+The app consumes `/api/events` full-state resyncs, including on reconnect; each
+event id must match its document generation. A disconnect marks retained facts
+unavailable; a quiet stream does not, since refreshes may be up to an hour
+apart, but the publication clock still goes stale. All decision panels use the
+same generation, never an older list joined with newer capacity/work. No GitHub
+holds, live-workflow or needs-human decision polling runs in this mode.
+Independent project status and explicit inspections still use the viewer's
+GitHub token when supplied. The service view is always read-only, token or not,
+because its write checks would rest on preview facts; no token is sent to the
+service. CLI act-command authorization is unchanged.
+
+`CONTROL_APP_SERVICE=https://control.example control-app needs-you` selects the
+same adapter for CLI `status`, `needs-you`, `act-now`, `repo` and `changes`. The
+URL is supplied by the caller, not compiled into the app. These commands send
+one credential-free GET to `/api/v1/state`, with no redirects, a 15-second timeout
+and a 2 MiB body bound. Schema validation reuses the publication readers and
+their inventory bounds. Service failure never silently switches to GitHub.
+Queue reads and act commands deliberately retain their independent GitHub path.
+
+The service decision contract supplies holds, needs-you, shortlist, work, WIP
+and pool evidence; missing candidate/usage readings remain unknown. It does not
+supply pass history or run receipts: these are explicitly unavailable, and
+`changes` reports that gap rather than comparing unrelated publications. Local
+epic filters remain, but the service's inbox and shortlist retain producer order.
+Partial source coverage and omitted counts remain visible. HTTP delivery never
+advances a publication/source clock or certifies an irreversible action.
+
+`test/fixtures/service-decision-producer.json` is the pinned producer's own
+`/api/v1/state` output from the Rust refresh/HTTP/SSE test, which fails when it
+drifts (`UPDATE_FIXTURES=1 cargo test` rewrites it); the TypeScript tests replay
+it through HTTP, UI and CLI. `test/fixtures/service-decision.json` is a
+hand-written projection of the same serialization (including nullable Work
+options) for the needs-you and shortlist cases that replay lacks. Browser replay
+drives full resyncs without a token and checks no GitHub requests, producer
+order, unavailable disconnects and desktop/phone rendering.
+No deployment or token permissions are changed here.
+
 Board reads are **off by default**. To try the integration locally, supply
 your own GitHub `agent-board.json`, in the format accepted by the pinned
 board-forge revision, and the same read-only token source as above:
@@ -246,7 +293,8 @@ reads and loss/restart produce the same evidence at the same clock, but
 **warm-cache acceptance remains open** pending #794's reusable API and
 fixtures. Losing this service's memory loses no authority or durable state;
 the legacy REST ETag cache is unchanged. This is not completion of #281 or
-the tracker#1456 epic, nor browser/CLI/chat migration.
+the tracker#1456 epic. Opt-in decision consumers are described above; full
+service browser integration remains #281.
 
 ## Forgejo source (review#310 a)
 

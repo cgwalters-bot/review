@@ -52,6 +52,7 @@ export function actNowRows(p: Published, now: number, completed: ReadonlyMap<str
     }
   }
   const decision = (r: ActNowRow) => (DECISION_KINDS.includes(r.ask.kind) ? 0 : 1);
+  if (list.producerOrder) return certified.slice(0, ACT_NOW_LIMIT);
   return rows.sort((a, b) => decision(a) - decision(b) || b.unblocks - a.unblocks ||
     (a.ask.priority ?? "P9").localeCompare(b.ask.priority ?? "P9") ||
     Date.parse(a.ask.waitingSince) - Date.parse(b.ask.waitingSince) || a.ask.key.localeCompare(b.ask.key)).slice(0, ACT_NOW_LIMIT);

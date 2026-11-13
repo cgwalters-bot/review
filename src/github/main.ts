@@ -91,6 +91,8 @@ import { type PassesRead, readPasses, schedulerPassView } from "./passesview.ts"
 import { activityView } from "./activityview.ts";
 import { stale } from "./passes.ts";
 import { ago } from "../time.ts";
+import { type ServiceDecision, serviceProblem, watchService } from "./service.ts";
+import { serviceDecisionView } from "./serviceview.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -117,8 +119,14 @@ import { agoLabel, answerForm, answerState, type BoardHref, clock, type ContextH
 import { ON_BOT_LABEL, REASON_LABEL } from "./waiting.ts";
 
 const render = createRenderer(window);
+// Only the explicit private hosted build inserts this marker. Pages stays static.
+const serviceMode = document.querySelector('meta[name="service-decisions"]')?.getAttribute("content") === "enabled";
 
 interface State {
+  service?: ServiceDecision;
+  serviceError?: string | undefined;
+  serviceOnly?: boolean;
+  stopService?: () => void;
   cardWrites?: Map<string, HTMLElement>;
   completedAsks?: Map<string, string>;
   /** The inbox's epic filter, for the viewer who chose it. */
@@ -323,6 +331,10 @@ function cachedSince(state: State): number | undefined {
  * who is signed in, the people and bot counts, and the rate budget.
  */
 function renderMeta(state: State): void {
+  if (serviceMode) {
+    byId("meta").textContent = `Service generation ${state.service?.generation ?? "unknown"} · ${state.serviceError ?? (state.service ? serviceProblem(state.service, Date.now()) ?? (state.service.complete ? "complete" : "partial") : "unavailable")} · read-only`;
+    return;
+  }
   const parts: Node[] = [];
   const part = (cls: string, ...children: (string | Node)[]) => parts.push(h("span", { class: `mp ${cls}` }, ...children));
   // From what waits now, not state.needs (the rows drawn), which stays behind while a redraw is deferred under a half-written answer.
@@ -429,7 +441,7 @@ function homeHooks(state: State): HomeHooks {
     },
     peopleToggled: (open) => {
       renderChrome(state);
-      if (open) void refreshPeople(state);
+      if (open && !state.serviceOnly) void refreshPeople(state);
     },
   };
 }
@@ -745,7 +757,7 @@ function paintInbox(state: State, force = false): void {
   const waits = (c: Card) => cardOutstanding(c, state.published.asks, state.completedAsks);
   const selection = epicSelection(cards, epics, epics ? choice : "all", waits);
   const filtered = !!selection?.hidden;
-  fillInbox(inbox.list, selection.ordered, inboxHooks(state), force, epics && choice !== "all" ? new Set(selection.selected.map((c) => c.key)) : undefined);
+  fillInbox(inbox.list, serviceMode ? cards : selection.ordered, inboxHooks(state), force, epics && choice !== "all" ? new Set(selection.selected.map((c) => c.key)) : undefined);
   const actNow = actNowRows(state.published, Date.now(), state.completedAsks);
   const gap = actNowGap(state.published, Date.now());
   // A read from an earlier gap is not shown as this one's.
@@ -760,7 +772,7 @@ function paintInbox(state: State, force = false): void {
   // each get one sentence whose parts add up to its total.
   const waiting = selection.selected.filter(waits).length;
   const detailed = cards.filter((c) => !("ask" in c && c.ask.detailMissing)).length;
-  inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, text),
+  inbox.pass.replaceChildren(h("p", { class: `note published${settled ? "" : " warn"}` }, serviceMode ? text.replace("checked on GitHub", "received from service") : text),
     h("p", { class: "note" }, `${known} decisions reported: ${listed} listed, ${unlisted} not listed. ${cards.length} rows (${detailed} with detail): ${waiting} waiting, ${selection.selected.length - waiting} done here, ${selection.hidden} hidden by the epic filter. Groups: ${list?.counts?.groups ?? "unknown"}, members: ${list?.counts?.members ?? "unknown"}.`));
   const contextOpen = inbox.filters.querySelector<HTMLDetailsElement>(".published-context")?.open;
   const context = publishedContext(list?.context);
@@ -922,8 +934,8 @@ function paintActive(state: State): void {
   // A snapshot without a pass view says how old it is: an old one is a pass not publishing, not a setting.
   const at = state.active?.holds?.at;
   const missing = pass === undefined && at ? `Pass view not in the pass's snapshot, written ${ago(at, Date.now())}${stale(at, Date.now()) ? ": the pass may have stopped publishing it." : " (off or older producer)."}` : pass;
-  state.home.slots.active.replaceChildren(activePassView(missing, Date.now(), passUnavailable, actions, runPassControl(state.gh, facts, state.passControl ??= {}), live));
-  state.home.slots.passes.replaceChildren(schedulerPassView(state.passes, pass, Date.now(), passUnavailable));
+  state.home.slots.active.replaceChildren(serviceMode ? serviceDecisionView(state.service, Date.now(), state.serviceError) : activePassView(missing, Date.now(), passUnavailable, actions, runPassControl(state.gh, facts, state.passControl ??= {}), live));
+  state.home.slots.passes.replaceChildren(serviceMode ? h("section", {}, h("h2", {}, "Scheduler passes"), h("p", { class: "note" }, "Pass history is not supplied by the service decision contract; unknown, not an empty history.")) : schedulerPassView(state.passes, pass, Date.now(), passUnavailable));
   state.home.slots.activity.replaceChildren(activityView(state.published, state.passes, Date.now(), passUnavailable));
   if (state.active?.repositories) state.repositories = state.active.repositories;
   const work = state.active?.passPublicationError ? undefined : state.active?.holds;
@@ -933,7 +945,7 @@ function paintActive(state: State): void {
   state.home.slots.repositories.replaceChildren(repositoriesView(state.repositories ?? [], Date.now(), unavailable, {
     ...state.repositoryWork, pass, unavailable: passUnavailable,
   }));
-  fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.active?.statusError, Date.now(), state.active?.board);
+  fillStatus(state.home, state.active?.status === undefined ? undefined : model.status, render, state.serviceOnly ? "Project status needs a viewer's GitHub token; it is not supplied by the service decision contract." : state.active?.statusError, Date.now(), state.active?.board);
   fillState(state.home, model);
 }
 
@@ -947,7 +959,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
   return new SourceLayer<ViewId>(
     [
       { name: "inbox", path: "the pass's published inbox", cadence: POLL_INTERVAL_MS, views: VIEWS },
-      { name: "status", path: "published project status", cadence: OPS_POLL_INTERVAL_MS, views: ["status"], read: async () => {
+      { name: "status", path: "published project status", cadence: OPS_POLL_INTERVAL_MS, views: ["status"], when: () => !get().serviceOnly, read: async () => {
         const state = get();
         const status = await readSource(state.sources, "status", () => loadProjectStatus(state.gh));
         if (state.closed) return false;
@@ -957,9 +969,9 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
         paintActive(state);
         return status !== undefined;
       } },
-      { name: "live", path: "the agent workflows' unfinished runs (Actions API)", cadence: LIVE_POLL_MS, views: ["inbox"], read: () => refreshLive(get()) },
-      { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
-      { name: NEEDS_HUMAN_LABEL, path: `search: ${NEEDS_HUMAN_QUERY}`, cadence: POLL_INTERVAL_MS, views: ["inbox"], read: () => refreshNeedsHuman(get()), when: () => actNowGap(get().published, Date.now()) !== undefined },
+      { name: "live", path: "the agent workflows' unfinished runs (Actions API)", cadence: LIVE_POLL_MS, views: ["inbox"], when: () => !serviceMode, read: () => refreshLive(get()) },
+      { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !get().serviceOnly && !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
+      { name: NEEDS_HUMAN_LABEL, path: `search: ${NEEDS_HUMAN_QUERY}`, cadence: POLL_INTERVAL_MS, views: ["inbox"], read: () => refreshNeedsHuman(get()), when: () => !serviceMode && actNowGap(get().published, Date.now()) !== undefined },
     ],
     () => (get().closed ? undefined : visibleView(document, HOME_CLASS)),
   );
@@ -1003,6 +1015,10 @@ function readPublished(prev: Published, active: Active): Published {
  * shows first. False if not all of it was read (see SourceDef.read).
  */
 async function refreshActive(state: State): Promise<boolean> {
+  if (serviceMode) {
+    applyService(state);
+    return !state.serviceError && !!state.service;
+  }
   if (state.activeRunning) return false;
   state.activeRunning = true;
   try {
@@ -1033,6 +1049,22 @@ async function refreshActive(state: State): Promise<boolean> {
   } finally {
     state.activeRunning = false;
   }
+}
+
+/** Every panel consumes one generation, including on partial/full-resync reads. */
+function applyService(state: State): void {
+  const d = state.service;
+  const error = state.serviceError ?? (d ? serviceProblem(d, Date.now()) : "Service decision unavailable");
+  const active: Active = { at: Date.now(), warnings: [], sources: { holds: { state: error ? "unavailable" : "ok", checkedAt: Date.now(), ...(error ? { error } : {}) } }, ...(d ? { holds: d.holds } : {}) };
+  state.active = active;
+  // Do not retain one generation's needs-you list beside another's work/pools.
+  state.published = firstPublished(d?.holds, error ? undefined : Date.now());
+  if (error) state.published = { ...state.published, unavailable: true, error };
+  state.passes = {};
+  state.passView = undefined;
+  delete state.repositoryWork;
+  paintActive(state);
+  paintNeeds(state);
 }
 
 /** The item `#item/<id>` opens: a board item, or a decision's issue that is not on the board. */
@@ -1783,11 +1815,12 @@ function rejected(state: State): Promise<void> {
   return state.rejecting;
 }
 
-async function start(source: TokenSource): Promise<void> {
+async function start(source: TokenSource, serviceOnly = false): Promise<void> {
   const session = await openCache(await source.get(), source.persistence === "local", () => IdbStore.open(), () => deleteCacheDatabase());
   // The view the page opens in, so the navigation marks it while loading.
   const opened = route();
   const state: State = {
+    serviceOnly,
     sources: {},
     layer: newLayer(() => state),
     view: (opened.route === "home" && opened.view) || DEFAULT_VIEW,
@@ -1841,7 +1874,7 @@ async function start(source: TokenSource): Promise<void> {
   if (session.knownLogin) state.login = session.knownLogin;
   const cached = Promise.resolve();
   try {
-    state.login = await viewer(state.gh);
+    if (!serviceOnly) state.login = await viewer(state.gh);
   } catch (e) {
     if (e instanceof GitHubError && e.status === 401) {
       await cached;
@@ -1860,7 +1893,8 @@ async function start(source: TokenSource): Promise<void> {
   }
   byId("signout").hidden = false;
   const writes = byId("writes");
-  writes.hidden = false;
+  // Service previews never vouch for a write, even beside a viewer's token.
+  writes.hidden = serviceMode;
   writes.textContent = "Read-only · Enable writes";
   writes.onclick = () => {
     if (state.closed) return;
@@ -1883,6 +1917,7 @@ async function start(source: TokenSource): Promise<void> {
   if (state.login === OPERATOR) showCapture(state);
   byId("signout").onclick = () => {
     state.closed = true;
+    state.stopService?.();
     state.chat?.dispose();
     state.poller.close();
     clearInterval(state.metaTicker);
@@ -1927,6 +1962,14 @@ async function start(source: TokenSource): Promise<void> {
     }
   }, META_TICK_MS);
   await cached;
+  if (serviceMode) state.stopService = watchService((decision, error) => {
+    if (state.closed) return;
+    if (decision) state.service = decision;
+    state.serviceError = error;
+    state.loaded = true;
+    applyService(state);
+    if (!state.home?.el.isConnected) renderRoute(state);
+  });
   if (state.loaded) renderChrome(state);
   else renderRoute(state);
   state.poller.now();
@@ -2116,6 +2159,7 @@ async function main(): Promise<void> {
   }
   const saved = savedToken();
   if (saved) await start(saved);
+  else if (serviceMode) await start({ get: async () => "", signOut: async () => {}, persistence: "session" }, true);
   else showSignIn("none");
 }
 

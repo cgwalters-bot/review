@@ -409,6 +409,8 @@ mod tests {
 
     const AT: &str = "2026-11-09T12:00:00Z";
 
+    const PRODUCER_REPLAY: &str = "../test/fixtures/service-decision-producer.json";
+
     fn config() -> String {
         json!({"operator":"operator", "bot":"robot", "dispatchRepo":"example/runner",
             "dispatchWorkflow":"dispatch.yml", "dispatchRef":"main",
@@ -821,6 +823,20 @@ mod tests {
                 "observed"
             );
             if generation == 1 {
+                // The TypeScript clients replay this exact producer output.
+                let replay = json!({"schema": value["schema"], "generation": value["generation"],
+                    "decision": value["decision"]});
+                let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(PRODUCER_REPLAY);
+                if std::env::var_os("UPDATE_FIXTURES").is_some() {
+                    std::fs::write(&path, serde_json::to_string_pretty(&replay).unwrap() + "\n")
+                        .unwrap();
+                }
+                let committed: Value =
+                    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+                assert_eq!(
+                    committed, replay,
+                    "{PRODUCER_REPLAY} is stale; rerun with UPDATE_FIXTURES=1"
+                );
                 assert!(
                     !value["decision"]["items"][0]["holds"]
                         .as_array()

@@ -45,6 +45,7 @@ const PRIORITY_RE = /^P[0-9]$/;
 
 /** One hold, as published: every key is there, null where there is no value. */
 export interface Hold {
+  carried?: boolean;
   /** OWNER/REPO#N; null for a hold of every new run (wip, pools). */
   item: string | null;
   url: string | null;
@@ -142,6 +143,8 @@ export interface Request {
 
 /** The pass's ranked list of what waits on the operator. */
 export interface NeedsYou {
+  /** Service passes own ordering; local filters must not rank their decisions. */
+  producerOrder?: boolean;
   /** Hold decisions superseded by this snapshot's operator-hold inventory. */
   excludedHolds?: number;
   /** Optional producer-certified actionable rows, grouped by detailed ask key. Absent means off. */
@@ -253,7 +256,7 @@ function parseHold(raw: unknown): Hold | undefined {
   if (typeof epic !== "boolean" || typeof operator !== "boolean" || !str(kind, KIND_RE) || !isText(reason)) return undefined;
   // The link is the item's issue on github.com, or there is none: nothing else goes in an href.
   if (url !== (isText(item) ? `https://github.com/${item.replace("#", "/issues/")}` : null)) return undefined;
-  return { item, url, epic, kind, reason, operator, priority, question } as Hold;
+  return { item, url, epic, kind, reason, operator, priority, question, ...(raw.carried === true ? { carried: true } : {}) } as Hold;
 }
 
 const NEEDS_YOU_SCHEMA = "agent-board/needs-you/v2";
@@ -614,6 +617,6 @@ export async function loadPassPublications(gh: GitHub) {
 export function holdAsks(h: Holds): Ask[] {
   return h.holds.flatMap((x) => {
     const [, repository = "", number] = (x.operator && x.item && ITEM_RE.exec(x.item)) || [];
-    return repository ? [{ key: x.item!.toLowerCase(), item: x.item!, source: "holds", kind: x.kind, priority: x.priority, waitingSince: h.at, ask: x.question ?? x.reason, recommendation: null, action: { type: "issue", repository, number: Number(number) }, carried: false }] : [];
+    return repository ? [{ key: x.item!.toLowerCase(), item: x.item!, source: "holds", kind: x.kind, priority: x.priority, waitingSince: h.at, ask: x.question ?? x.reason, recommendation: null, action: { type: "issue", repository, number: Number(number) }, carried: x.carried === true }] : [];
   });
 }

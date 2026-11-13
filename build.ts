@@ -17,6 +17,8 @@ import { buildDocumentation } from "./build-docs.ts";
 const OUT_DIR = "dist";
 // Only the private service build may contact same-origin infrastructure APIs.
 const hosted = process.argv.includes("--hosted");
+const serviceDecisions = process.argv.includes("--service-decisions");
+if (serviceDecisions && !hosted) throw new Error("--service-decisions requires --hosted (private same-origin service)");
 const CLIS = { "dist-cli/review-queue.js": "src/cli/main.ts", "dist-cli/control-app.js": "src/cli/controlplanemain.ts" };
 const STATIC_FILES = ["index.html", "style.css"];
 const DEV_HOST = "127.0.0.1";
@@ -48,6 +50,10 @@ if (hosted) {
   await writeFile(`${OUT_DIR}/index.html`, html
     .replace("connect-src https://api.github.com", "connect-src 'self' https://api.github.com")
     .replace('</head>', '<script type="module" src="personal-infra.js"></script>\n</head>'));
+}
+if (serviceDecisions) {
+  const html = await readFile(`${OUT_DIR}/index.html`, "utf8");
+  await writeFile(`${OUT_DIR}/index.html`, html.replace("</head>", '<meta name="service-decisions" content="enabled">\n</head>'));
 }
 
 if (process.argv.includes("--serve")) {
