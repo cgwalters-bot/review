@@ -1267,6 +1267,7 @@ dependencies = [
  "axum",
  "board-forge",
  "futures-util",
+ "httpdate",
  "humantime",
  "regex",
  "reqwest",

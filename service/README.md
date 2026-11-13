@@ -6,7 +6,8 @@ A persistent service that builds the control app's state from GitHub
 queries rather than from JSON the pass stores in comments, and serves it
 read-only with the control app. This is the first slice of review#281.
 
-Every `--interval` seconds (default 60, 30 to 3600) it reads:
+Initially, then `--interval` seconds after each refresh finishes (default 60,
+30 to 3600), it reads:
 
 - **runs**: unfinished Actions runs of every tracker workflow (passes and
   the jobs they dispatch) and of the devspace `agent.yml`;
@@ -244,6 +245,30 @@ Exhaustion is incomplete evidence, not a successful empty board. These
 bounds apply to the added preview, not the existing runs/PR/waiting reads.
 There are no retries or overlapping refreshes.
 
+Successive ticks must not keep spending a throttled forge's budget. The same
+refresher therefore keeps in-memory pacing across previews, without another
+loop or cache. Failed previews back off 30, 60, 120, 240, 480, then at most
+900 seconds, measured from completion. A rate-limit response (including
+GraphQL errors), or zero remaining requests, also closes request admission
+within that preview. Numeric reset and Retry-After evidence (seconds or HTTP
+date) survives skipped ticks. The greater hint is used, bounded to 30–3600
+seconds; a hint beyond one hour is capped, not a promise to wait indefinitely.
+Only parsed numbers are published, never upstream header/error prose. The
+longer of this cooldown and failure backoff wins. A failure-free preview
+resets pacing; missing coverage alone is not success or authority. Concurrent
+wakes coalesce without queuing work. Slow refreshes wait a whole interval
+after completion rather than spending a second budget on an overdue tick.
+
+Aborting a refresh must not leave its synchronous library worker issuing
+detached requests. Cancellation closes that worker's admission and aborts its
+active async request, including token acquisition. Its permit remains held
+until the blocking worker exits, so cancellation cannot enable an overlapping
+preview. SIGTERM aborts and awaits the refresher before closing SSE. Cancellation
+does not wait for a full preview: the active request has a ten-second timeout
+and the synchronous waiter an additional one-second allowance (eleven seconds
+maximum for request work); the worker cannot start subsequent requests. This
+is a preview-request bound, not a bound on the optional ACP shutdown lifetime.
+
 The threat stopped by the read-only transport is an accidental applying
 path writing a comment, changing labels, merging, rerunning or dispatching
 a job. It refuses all non-GET REST methods, GraphQL documents containing a
@@ -274,6 +299,16 @@ and credential formats, including older installation tokens; raw
 transport/config errors are not published or logged. Typed not-found,
 authentication and rate-limit failures retain board-forge's semantics,
 including its rate-limit breaker, without exposing upstream error bodies.
+
+Throttled, skipped and coalesced previews likewise retain the prior snapshot
+and its `readAt` with an explicit incomplete/error state. The additive
+`decisionRefresh` sibling reports `lastSuccessAgeSeconds` (null until a
+preview has no read failures), `retryInSeconds`, `consecutiveFailures`, the
+last parsed `rateLimit` evidence, and `requests` admitted in the last attempted
+preview. Ages/countdowns are sampled at publication, not on HTTP reads. A
+successful computation can still have incomplete coverage; this metadata
+never changes the snapshot's source clocks, completeness or confirmed effects.
+Restart discards pacing and success age, not authority or writer state.
 
 One watch-channel replacement publishes the legacy sections and decision
 together. The versioned HTTP endpoint does not run a preview: it returns
@@ -493,5 +528,14 @@ in `fixtures/kubernetes.json`, giving `fixtures/kubernetes-state.json`.
 The added preview tests use a local fake forge for cold/repeated/lost state,
 partial board reads, stale usage, missing broker evidence and token rotation,
 and check effect rejection, read bounds, redaction and HTTP/SSE generation
-parity. Warm-cache checks await agent-board#794. The hosted personal-infra
+parity, including failed, deferred and recovered generations. Paused-clock
+tests exercise slow ticks, completion spacing, repeated capped backoff,
+freshness and shutdown; scripted HTTP reads exercise repeated throttling,
+concurrent-wake coalescing and cancellation during a slow response. The empty
+synthetic direct-read fixture sends 10 requests cold and 10 per repeated
+preview when admitted, with no warm-cache savings. The throttle fixture sends
+one per admitted attempt and zero across ten skipped ticks; charged requests
+and live rate limits were not measured. Warm-cache checks await
+agent-board#794's reusable read-only preview API (merging #798 alone does not
+return reusable cache state from `decision::preview`). The hosted personal-infra
 panel reads the service; migration of the GitHub browser remains a follow-up.

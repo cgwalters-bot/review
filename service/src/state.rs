@@ -148,6 +148,8 @@ pub struct State {
     pub waiting: Section<Waiting>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decision: Option<Section<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_refresh: Option<crate::board::RefreshStatus>,
     /// What waits on the operator on a Forgejo instance, when one is configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forgejo: Option<Section<crate::forgejo::Item>>,
@@ -240,6 +242,7 @@ pub async fn refresh<S: Source>(src: &S, prev: &State, now: &str) -> State {
         prs: section(prs, &prev.prs, now),
         waiting: section(waiting, &prev.waiting, now),
         decision: prev.decision.clone(),
+        decision_refresh: prev.decision_refresh.clone(),
         forgejo: prev.forgejo.clone(),
         kubernetes: prev.kubernetes.clone(),
     }
