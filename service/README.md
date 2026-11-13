@@ -86,13 +86,15 @@ and a browser choosing an arbitrary internal destination or learning a run's
 attach secret. One optional, service-owned configuration supplies the exact
 browser origin and the only session destinations the bridge can reach.
 **Off by default**, `--acp-config /run/control-app/acp.json` enables
-`GET /api/acp/SESSION` as a WebSocket route. For example, the config file is:
+`GET /api/acp/SESSION` as a WebSocket route and `/api/acp` for discovery.
+For example, the config file is:
 
 ```json
 {
   "origin": "https://control.example",
   "sessions": {
     "run-42": {
+      "label": "Provider",
       "url": "wss://gateway.example/sessions/run-42",
       "token_file": "/run/secrets/attach-run-42"
     }
@@ -142,13 +144,31 @@ retry, reconnect or replay. Shutdown may wait for an attachment's bounded
 lifetime. A close may end the agentic-job session, depending on its listener
 version; do not assume reconnect is supported by #3319.
 
+`GET /api/acp` returns only `[{"id":"run-42","label":"Provider"}]`, never
+target URLs, token paths or secrets. Labels default to the ID and are nonblank,
+at most 64 UTF-8 bytes, without control characters. Discovery shares the bridge's
+Host and exact-Origin admission and must be protected by the same operator-only
+proxy/ACL. The service does not authenticate users itself, so that external gate
+must cover **all** `/api/acp` paths and methods. `POST /api/acp` is the identical
+read-only listing, used by the browser because same-origin GET omits Origin.
+Neither method dials an agent; responses are not cached.
+
+The hosted build discovers sessions once on load and shows **Configured chat**
+only for a nonempty listing. Choosing a provider attaches through the bridge;
+ACP `session/new` returns the run's existing session, not a fresh conversation.
+The pinned listener admits only one client. Disconnects/errors show **Session
+ended** and explain that a new conversation needs the session server restarted;
+the drawer offers neither a fresh-session control nor retry of that destination.
+The public Pages build
+does not discover configured sessions. No deployment enablement is included.
+
 `fixtures/acp.json` is a **synthetic protocol replay**, derived from that pinned
 listener's initialize/new/prompt/update/cancel wire shapes, not a live capture.
 The service tests replay it over real loopback WebSockets and check server-only
 bearer authentication, rotation, origin/Host admission, disabled/unknown routes,
 capacity, upstream refusal sanitization, disconnects, message limits and timeouts.
-No live agent, workflow dispatch, UI/chat pane or deployment enablement is part
-of this slice; the first-slice acceptance of exchanging a message with a real
+No live agent, workflow dispatch or deployment enablement is part
+of these tests; the first-slice acceptance of exchanging a message with a real
 hosted run remains open. There is no deployment config in this repository, and
 the caller's repository/file and real route/secret provisioning were not supplied.
 

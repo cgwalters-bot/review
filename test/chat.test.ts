@@ -79,6 +79,98 @@ class MockSocket extends MockServer {
   }
 }
 
+/** Pinned bridge: one client per destination; session/new always returns "session". */
+function configuredListener() {
+  const sockets: MockSocket[] = [];
+  const admitted = new Set<string>();
+  const socketFactory = (url: string) => {
+    const socket = new MockSocket(url, admitted.has(url) ? "drop" : "ok");
+    admitted.add(url); sockets.push(socket);
+    return socket as unknown as WebSocket;
+  };
+  return { sockets, socketFactory };
+}
+
+it("the configured listener reuses its session ID and refuses a second client", async () => {
+  const { sockets, socketFactory } = configuredListener();
+  const client = new AcpClient(socketFactory("wss://review.example/api/acp/one"), () => {}, () => {});
+  await client.attach();
+  const again = await client.request("session/new", { cwd: "/", mcpServers: [] });
+  assert.equal(again.sessionId, client.sessionId);
+  client.socket.close();
+  socketFactory("wss://review.example/api/acp/one");
+  await until("second client refused", () => sockets[1]!.closed);
+});
+
+it("configured providers attach only on choice without claiming a fresh conversation or retrying", async () => {
+  const { sockets, socketFactory } = configuredListener();
+  const gh = new GitHub(async () => { throw new Error("no GitHub access"); });
+  const panel = chatPanel(gh, { sessions: [{ id: "one", label: "Provider A" }, { id: "two", label: "Provider B" }],
+    socketFactory })!;
+  const slot = document.createElement("div"); document.body.append(slot);
+  panel.mount(slot); panel.open();
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  await tick();
+  assert.equal(sockets.length, 0);
+  const picker = slot.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!;
+  assert.match(picker.textContent!, /Provider A/);
+  picker.value = "two"; picker.dispatchEvent(new win.Event("change"));
+  await tick();
+  assert.equal(sockets[0]!.url, "wss://review.example/api/acp/two");
+  const button = (text: string) => [...slot.querySelectorAll("button")].find((b) => b.textContent === text)!;
+  assert.equal(button("New session"), undefined);
+  assert.equal(sockets[0]!.sent.filter((m) => m.method === "session/new").length, 1);
+  assert.match(slot.textContent!, /existing conversation/);
+  sockets[0]!.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Retain this transcript" } } } });
+  sockets[0]!.onerror?.(); await tick();
+  assert.match(slot.textContent!, /Session ended.*session server restarted/);
+  assert.match(slot.querySelector(".chat-log")!.textContent!, /Retain this transcript/);
+  assert.equal(slot.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, true);
+  assert.equal(sockets.length, 1, "no replay means no automatic reconnect");
+  assert.equal(button("Start fresh"), undefined);
+  assert.equal(button("Attach").hidden, true);
+  button("Attach").click(); await tick();
+  picker.value = ""; picker.dispatchEvent(new win.Event("change"));
+  picker.value = "two"; picker.dispatchEvent(new win.Event("change")); await tick();
+  assert.equal(sockets.length, 1, "reselecting a consumed listener must not retry it");
+  assert.match(slot.querySelector(".chat-log")!.textContent!, /Retain this transcript/);
+  const input = slot.querySelector<HTMLTextAreaElement>("textarea")!;
+  input.value = "Draft for Provider B";
+  picker.value = "one"; picker.dispatchEvent(new win.Event("change")); await tick();
+  assert.equal(picker.value, "two");
+  assert.equal(input.value, "Draft for Provider B");
+  assert.equal(sockets.length, 1);
+  assert.match(slot.querySelector(".chat-status")!.textContent!, /Clear or copy the unsent draft/);
+  input.value = "";
+  picker.value = "one"; picker.dispatchEvent(new win.Event("change")); await tick();
+  assert.equal(sockets.length, 2);
+  assert.match(slot.querySelector(".chat-log")!.textContent!, /Provider: Provider B.*Retain this transcript.*Session ended.*Provider: Provider A/);
+  sockets[1]!.close(); await tick();
+  assert.match(slot.textContent!, /Session ended.*session server restarted/);
+  assert.equal(button("Attach").hidden, true);
+  panel.dispose(); slot.remove();
+});
+
+it("a failed configured provider switch retains the ended transcript", async () => {
+  const sockets: MockSocket[] = [];
+  const panel = chatPanel(new GitHub(async () => { throw new Error("no GitHub access"); }), {
+    sessions: [{ id: "one", label: "Provider A" }, { id: "two", label: "Provider B" }],
+    socketFactory(url) { const socket = new MockSocket(url, sockets.length ? "fail" : "ok"); sockets.push(socket); return socket as unknown as WebSocket; },
+  })!;
+  const slot = document.createElement("div"); document.body.append(slot);
+  panel.mount(slot); panel.open();
+  const picker = slot.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!;
+  picker.value = "one"; picker.dispatchEvent(new win.Event("change"));
+  await until("attached", () => panel.attached());
+  sockets[0]!.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Keep A's text" } } } });
+  sockets[0]!.close();
+  picker.value = "two"; picker.dispatchEvent(new win.Event("change"));
+  await until("failed B", () => sockets[1]!.closed);
+  assert.match(slot.querySelector(".chat-log")!.textContent!, /Provider: Provider A.*Keep A's text.*Session ended.*Provider: Provider B.*Session ended/);
+  assert.match(slot.querySelector(".chat-status")!.textContent!, /Session ended/);
+  panel.dispose(); slot.remove();
+});
+
 interface Run { id: number; run_attempt: number; status: string; display_title: string; created_at: string; actor: { login: string } }
 const run = (status: string, id = RUN, run_attempt = 1): Run => ({ id, run_attempt, status, display_title: "Operator session (claude)", created_at: new Date().toISOString(), actor: { login: "cgwalters" } });
 
