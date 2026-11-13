@@ -28,6 +28,7 @@ import { enrich, LIVE_SOURCES, type LiveRun, type LiveRuns, loadLiveRuns } from 
 import { redactAddresses, stale } from "../github/passes.ts";
 import type { AgentRun, PassView } from "../github/passview.ts";
 import { startPass } from "../github/runpass.ts";
+import { readService, serviceProblem } from "../github/service.ts";
 import { type Io, readOnly, run as runQueue } from "./queue.ts";
 
 export const PROG = "control-app";
@@ -73,6 +74,9 @@ writes) or --yes (send them):
 RUN is a run's URL or ID. The token comes from $GH_TOKEN, else $GITHUB_TOKEN,
 else \`gh auth token --hostname github.com\`. The read commands send only GET
 requests.
+Set CONTROL_APP_SERVICE to a private service's HTTP(S) base URL to read its
+decision generation instead, without a GitHub token. Failures never fall back
+to GitHub decision reads. Queue and act commands retain their existing policy.
 `;
 
 class UsageError extends Error {
@@ -381,7 +385,7 @@ async function act(gh: GitHub, a: Act) {
 }
 
 /** Run the CLI; the exit status: 0, 1 on failure, 2 on a usage error. */
-export async function run(argv: readonly string[], io: Io): Promise<number> {
+export async function run(argv: readonly string[], io: Io & { serviceUrl?: string | undefined }): Promise<number> {
   const [command, ...args] = argv;
   if (command === "queue") return runQueue(args, io);
   if (command === "-h" || command === "--help") {
@@ -406,6 +410,18 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
       // A dry run's writes all get empty answers, so a link only a write returns (a filed issue's) is null.
       const body = opts.dryRun ? { dryRun: true, ...done, wouldSend: writes } : { dryRun: false, ...done, sent: writes.map(({ method, url }) => ({ method, url })) };
       io.stdout(`${JSON.stringify({ ...head, ...body }, null, 2)}\n`);
+      return 0;
+    }
+    if (io.serviceUrl) {
+      const d = await readService(io.serviceUrl, io.fetch, now);
+      const problem = serviceProblem(d, now);
+      const holds = d.holds;
+      const body = command === "status" ? { snapshotAt: holds.at, wip: holds.wip, candidates: d.candidates, pools: d.pools, holds: holds.holds, holdsOmitted: d.holdsOmitted, poolsOmitted: d.poolsOmitted, passes: null, live: null }
+        : command === "needs-you" ? { ...needsYou(holds, now), ...(problem ? { settled: false, unavailable: true, note: problem } : {}) }
+          : command === "act-now" ? (problem ? { rows: [], unavailable: problem } : actNow(holds, now))
+            : command === "repo" ? repo(holds, opts.repo!, now)
+              : { since: new Date(opts.since!).toISOString(), passes: null, asks: null, error: "Service decision contract does not supply pass history" };
+      io.stdout(`${JSON.stringify({ ...head, source: "service", generation: d.generation, complete: d.complete, unavailable: problem ?? null, ...body }, null, 2)}\n`);
       return 0;
     }
     const gh = new GitHub(io.token, readOnly(io.fetch));

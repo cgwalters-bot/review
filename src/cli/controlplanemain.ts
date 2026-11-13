@@ -12,6 +12,7 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
 process.exitCode = await run(process.argv.slice(2), {
   fetch: (input, init) => fetch(input, init),
   token: tokenFrom(process.env),
+  serviceUrl: process.env.CONTROL_APP_SERVICE,
   stdout: (s) => process.stdout.write(s),
   stderr: (s) => process.stderr.write(s),
   isTty: process.stdout.isTTY === true,

@@ -252,8 +252,8 @@ pub(crate) mod tests {
         .await;
         state.decision = Some(crate::state::Section {
             items: vec![
-                serde_json::json!({"schema": "agent-board/decision/v1", "complete": false,
-                "observed_at": "2026-11-07T12:00:00Z", "failures": 1}),
+                serde_json::from_str(include_str!("../../test/fixtures/service-decision.json"))
+                    .unwrap(),
             ],
             complete: false,
             read_at: Some("2026-11-07T12:00:00Z".into()),
@@ -269,7 +269,11 @@ pub(crate) mod tests {
         );
         assert_eq!(second["refreshedAt"], "2026-11-07T12:00:00Z");
         assert_eq!(second["generation"], 1);
-        assert_eq!(second["decision"]["items"][0]["failures"], 1);
+        assert_eq!(second["decision"]["items"][0]["failures"], 0);
+        assert_eq!(
+            second["decision"]["items"][0]["holds"][0]["item"],
+            "example/work#2"
+        );
 
         // Both a stale and a current last id resync with the whole state,
         // including the legacy schema and its equivalent alias.
