@@ -12,7 +12,7 @@ The sidebar plan is superseded by [tracker#976](https://github.com/cgwalters-for
 
 ## 1. Architecture and the Paperclip comparison
 
-**Observed here.** The [README](../README.md) describes the running GitHub v0.
+**Observed here.** The [documentation](index.md) describes the running GitHub v0.
 It also claims Forgejo support, but current `src/` and [build.ts](../build.ts)
 implement/build only the GitHub app.
 [main.ts](../src/github/main.ts), [homeview.ts](../src/github/homeview.ts) and

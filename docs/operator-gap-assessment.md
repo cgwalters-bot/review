@@ -127,7 +127,7 @@ company hierarchy editor; only typed decision context is useful (rank 1).
 
 **Return later or from a phone.** Review's From people fold handles human
 mentions/review requests and notification mark-read, with explicit token
-limitations ([README](../README.md#needs-you), [tests][people-tests]). It is
+limitations ([documentation](index.md#needs-you), [tests][people-tests]). It is
 not change tracking for bot decision cards. Paperclip's Inbox has per-item
 read/unread state and dismissals ([source][pc-inbox], [tests][pc-inbox-tests]);
 this does not establish OS push delivery or notification reliability.
