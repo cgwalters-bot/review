@@ -461,48 +461,41 @@ do not poll. Classic tokens need `notifications` or `repo`; fine-grained
 tokens do not support notification endpoints. Inaccessible notifications
 leave review-request search results visible with a warning.
 
-## Focus publication dependency (#298)
+## Focus (#298)
 
-The requested P0 epic **Focus** view is not implemented yet. The concrete
-failure to avoid is calling an unread child “nothing started”, or presenting
-a previewed start as a running job. Blocker states must come from the producer,
-not from browser interpretations of labels, hold prose or missing records.
+At the top of Needs you, **Focus** shows the pass's open project-Priority P0
+epics, ordered by published operator-blocked count descending, then oldest
+last change (unknown last), then item identity. Each card links its epic and
+children, shows its first-sentence goal and deduplicated done/total progress,
+observed runs on both the epic and its children, and typed blocker reasons.
+Children open in a disclosure to keep cards compact on phones; an opened
+inventory stays open across publication polls.
+Unlinked body tasks are explicitly labelled, not given invented item links.
 
-Source review on 2026-11-08 against agent-board
-[`71d8b4c`](https://github.com/cgwalters-forge/agent-board/tree/71d8b4c50db182251033282b49c619bf4354b48d)
-confirms that [#799](https://github.com/cgwalters-forge/agent-board/pull/799)
-adds `pass::decision::preview` and `agent-board/decision/v1` as a Rust library
-API, not a browser endpoint or a new forge publication. Its `work` is a bounded
-decision projection, explicitly not an issue census; `preview_starts` are not
-confirmed runs. The app's existing `needs_you.epics` supplies activity and epic
-references, not Priority, titles, goals, child membership or per-epic change
-times. Existing pass publications supply run references and some review waits,
-but cannot prove that an unlisted child has no work or blocker.
+The concrete failure to avoid is calling an unread child “nothing started”,
+or presenting a previewed start as a running job. The optional
+`agent-board/epic-focus/v1` extension is `epic_focus` in the existing private
+holds transport, shipped by [agent-board#814](https://github.com/cgwalters-forge/agent-board/pull/814)
+at `e48bf70ec44c6549bcf1d0328ebc6130c9391abe`. Its synthetic
+`fixtures/epic-focus.json` is copied verbatim to `test/fixtures/epic-focus.json`;
+the browser replay adds an epic-owned run alongside its child-owned run.
+Progress and blocker classifications are the producer's assessment, never
+inferred from browser labels, hold prose, missing records or preview starts.
 
-Required producer handoff in **cgwalters-forge/agent-board**: extend the existing
-pass/holds projection (`crates/board-forge/src/pass/holds.rs`,
-`crates/board-forge/src/pass/decision.rs` and the publication builder in
-`crates/board-forge/src/pass/usage.rs`) with a bounded, optional epic summary.
-It needs open epics selected by the project's **Priority P0** field, typed item
-references, title and first-sentence goal, and child/progress coverage from native
-sub-issues and body tasks without double-counting linked children. For each child,
-publish completion, confirmed running jobs with their actual run repositories
-and IDs, and explicit blocker facts: operator decision, upstream review, failing
-CI, pass hold reason or confirmed not-started. Preserve unknown states, source
-observation clocks, omissions and completeness. Include a per-epic last-change
-clock and operator-blocked count so the browser can order by that count, then
-oldest change, without deriving scheduler state. Keep this within the existing
-publication transport and size bounds; absence must remain off/unknown.
+Malformed extensions are refused whole without losing Needs you. Source
+coverage, unread/omitted epics, omitted children/runs and observation clocks
+remain visible. An observation over an hour old, a future clock or unavailable
+transport cannot assert current state. A null blocker without a listed run
+stays unknown. Source completeness does not imply the bounded inventory lists
+all children or runs. The producer's v1 has known coverage limits: it reads at
+most 100 body tasks, and run presence can suppress a child's simultaneous hold.
+Its review/CI classifications and not-started assessment are not independently
+verified here; runs do not establish absence of other blockers.
 
-Agree and publish the producer's wire schema and a synthetic serialization
-fixture before adding a consumer. The fixture must include one P0 epic with
-blocked, moving and done children, overlapping native/body tasks, and incomplete
-coverage. Then render compact linked cards near the top of Needs you, with
-freshness/unknown labels, and test every child/item and run link, ordering and
-phone layout. No browser option, poll, action or speculative parser is added
-here. This run cannot file the producer issue in another repository; the handoff
-above still needs filing there. #298 remains open pending that publication and
-the UI implementation.
+No new poll, discovery read, browser setting or write authority is added.
+Caller activation remains separate: tracker `.github/pass.json` needs a
+compatible producer pin and `holds.epicFocus: true` (off by default, requires
+`epics`); absence is explicitly unknown, not an empty queue.
 
 ## Today
 

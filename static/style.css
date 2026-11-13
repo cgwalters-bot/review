@@ -61,6 +61,14 @@
 .today-counts dt { color: var(--muted); text-transform: capitalize; font-size: var(--type-secondary); }
 .today-counts dd { margin: 0; font-size: var(--type-metric); font-weight: 600; font-variant-numeric: tabular-nums; }
 .today-cost { border-block-start: 1px solid var(--line); padding-block-start: 12px; }
+.focus-view { padding: 12px 16px; border-block-end: 1px solid var(--line); overflow-wrap: anywhere; }
+.focus-view h2, .focus-card h3, .focus-card h4, .focus-card p { margin-block: 6px; }
+.focus-card { margin-block: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.focus-card ul { padding-inline-start: 20px; margin-block: 6px; }
+.focus-card li + li { margin-block-start: 6px; }
+.focus-card summary { cursor: pointer; padding-block: 10px; font-weight: 600; }
+.focus-operator { color: var(--p1); }
+.focus-card a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 :root {
   color-scheme: light;
   --ground: #f3f5f8; --surface: #fff; --surface-2: #eef1f5; --ink: #172130; --muted: #5a6677; --line: #d8dee6;
