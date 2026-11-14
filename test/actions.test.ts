@@ -49,7 +49,7 @@ function mock(o = offer()) {
   const calls: { method: string; path: string; body: any }[] = [];
   const issues = new Map<string, Record<string, any>>();
   const issue = (path: string): Record<string, any> => {
-    if (!issues.has(path)) issues.set(path, { id: 101, node_id: "I_target", title: "<script>target</script>", state: "open", labels: [], parent_issue_url: null });
+    if (!issues.has(path)) issues.set(path, { id: 101, url: `https://api.github.com${path}`, node_id: "I_target", title: "<script>target</script>", state: "open", labels: [], parent_issue_url: null });
     return issues.get(path)!;
   };
   const pr: Record<string, any> = { title: "<script>target</script>", state: "open", merged: false, draft: false, head: { sha: head } };
@@ -64,6 +64,7 @@ function mock(o = offer()) {
   let intercept: (() => void) | undefined;
   const reasonReceipt = { value: { id: 30, issue_url: "https://api.github.com/repos/example/tasks/issues/1", body: "Superseded" } as unknown };
   const mergeReceipt = { value: { merged: true } as unknown };
+  const stateReceipt = { value: undefined as unknown };
   const projectReceipt = { value: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "item" } } } as unknown };
   const approvalReceipt = { value: { id: 31, state: "APPROVED", commit_id: head, pull_request_url: "https://api.github.com/repos/example/tasks/pulls/1" } as unknown };
   const gh = new GitHub(async () => "viewer-secret", async (url, init) => {
@@ -109,7 +110,7 @@ function mock(o = offer()) {
     if (m && !m[1]!.startsWith(`/repos/${c.tracker}/issues/9`)) {
       const i = issue(m[1]!);
       if (method === "POST" && m[2] === "/comments") return Response.json(reasonReceipt.value);
-      if (method === "PATCH" && !m[2]) i.state = body.state;
+      if (method === "PATCH" && !m[2]) { i.state = body.state; return Response.json(stateReceipt.value === undefined ? i : stateReceipt.value); }
       if (method === "POST" && m[2] === "/labels") i.labels.push({ name: body.labels[0] });
       if (method === "DELETE" && m[2]!.startsWith("/labels/")) i.labels = i.labels.filter((l: { name: string }) => l.name !== decodeURIComponent(m[2]!.slice(8)));
       if (method === "POST" && m[2] === "/sub_issues") issue(`/repos/example/tasks/issues/1`).parent_issue_url = `https://api.github.com${m[1]}`;
@@ -117,7 +118,7 @@ function mock(o = offer()) {
     }
     return Response.json({});
   });
-  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
+  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, stateReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
 }
 
 const writes = (m: ReturnType<typeof mock>) => m.calls.filter((v) => v.method !== "GET" && !(v.path === "/graphql" && !v.body.query.includes("mutation")));
@@ -488,6 +489,39 @@ it("does not close or continue a proposal without a confirmed reason comment", a
     await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /execution record/);
     assert.equal(writes(m).length, count, "reservation prevents reposting the reason");
   }
+});
+
+it("stops unconfirmed issue state writes and never replays them", async () => {
+  for (const action of [close, { ...base, type: "reopen_issue" } as Action]) {
+    const state = action.type === "close_issue" ? "closed" : "open";
+    const before = state === "closed" ? "open" : "closed";
+    const path = "/repos/example/tasks/issues/1";
+    const valid = { id: 101, url: `https://api.github.com${path}`, state };
+    for (const receipt of [null, {}, [], true, { ...valid, state: before }, { ...valid, state: null },
+      ...[null, "101", 0, 1.5, 102].map((id) => ({ ...valid, id })),
+      ...[null, 42, "https://api.github.com/repos/example/tasks/issues/2", "https://api.github.com/repos/other/tasks/issues/1"].map((url) => ({ ...valid, url })),
+      { ...valid, pull_request: {} }]) {
+      const o = offer([action, { ...base, type: "add_label", label: "done" }]);
+      const m = mock(o); m.issue(path).state = before; m.stateReceipt.value = receipt;
+      const shown = await plan(m.gh, c, o.proposal.actions);
+      const progress: string[] = [];
+      await assert.rejects(execute(m.gh, c, o, shown.expected, (_, result) => progress.push(result)), /Issue state update not confirmed/);
+      assert.deepEqual(progress, ["Failed or uncertain; stopped"]);
+      assert.deepEqual(targetWrites(m).map(({ method, path }) => [method, path]), [
+        ...(action.type === "close_issue" ? [["POST", `${path}/comments`]] : []), ["PATCH", path],
+      ]);
+      assert.match(writes(m).at(-1)!.body.body, /1\. failed or uncertain/);
+      const count = writes(m).length;
+      await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /execution record/);
+      assert.equal(writes(m).length, count);
+    }
+  }
+});
+
+it("continues after confirmed close and reopen acknowledgments", async () => {
+  const { m } = await run([close, { ...base, type: "reopen_issue" }, { ...base, type: "add_label", label: "done" }]);
+  assert.equal(m.issue("/repos/example/tasks/issues/1").state, "open");
+  assert.match(writes(m).at(-1)!.body.body, /1\. done\n2\. done\n3\. done/);
 });
 
 it("refuses replaced project targets before reservation and again before mutation", async () => {
