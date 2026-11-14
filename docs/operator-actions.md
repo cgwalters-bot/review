@@ -152,6 +152,11 @@ batch. Check targets manually and write a new proposal with fresh preconditions
 to recover. A lost receipt response may have created the receipt; a lost write
 response may have performed the action. The UI never automatically retries.
 
+Only a literal `merged: true` in a merge response confirms success. A missing,
+false or malformed result stops the batch as failed or uncertain; a truthy
+string or object is not confirmation. The reservation still prevents replay.
+Check GitHub before proposing another merge.
+
 Receipts count only from trusted writers with a trusted last editor. The first
 receipt wins after a bounded re-read, as in job-plan dispatch. GitHub comments
 are not an atomic lock: concurrent clients depend on GitHub showing earlier
