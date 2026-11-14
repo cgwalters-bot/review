@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { GitHub } from "../src/github/api.ts";
 import { mergeOrEnqueue } from "../src/github/merge.ts";
+import { MaybeSentError } from "../src/github/backend.ts";
 import { scriptedFetch } from "./helpers.ts";
 
 const HEAD = "a".repeat(40);
@@ -12,7 +13,7 @@ const ready = () => ({
   viewerCanUpdate: true, mergeStateStatus: "CLEAN", isMergeQueueEnabled: false, mergeQueueEntry: null,
 });
 
-function client(over = {}, login = "cgwalters", mutation: "ok" | "error" | "network" | "http" = "ok", repository = {}) {
+function client(over = {}, login = "cgwalters", mutation: "ok" | "error" | "network" | "http" = "ok", repository = {}, mergeResponse: unknown = { merged: mutation !== "error", message: "refused" }) {
   const f = scriptedFetch((method, url) => {
     const body = f.calls.at(-1)!.body;
     if (url.endsWith("/user")) return { body: { login } };
@@ -22,7 +23,7 @@ function client(over = {}, login = "cgwalters", mutation: "ok" | "error" | "netw
     if (mutation === "network") throw new Error("connection lost");
     if (mutation === "http") return { status: 403, body: { message: "Policy refused" } };
     if (url.endsWith("/graphql")) return { body: mutation === "error" ? { errors: [{ message: "head moved" }] } : { data: { enqueuePullRequest: { mergeQueueEntry: { id: "MQ_1" } } } } };
-    if (method === "PUT" && url.endsWith("/merge")) return { body: { merged: mutation !== "error", message: "refused" } };
+    if (method === "PUT" && url.endsWith("/merge")) return { body: mergeResponse };
     return undefined;
   });
   return { gh: new GitHub(async () => "t", f.fetchImpl), calls: f.calls };
@@ -45,6 +46,15 @@ describe("head-bound Merge / enqueue", () => {
     assert.match((calls.at(-1)!.body as { query: string }).query, /expectedHeadOid:\$head/);
     assert.equal(calls.some((c) => c.method === "PUT"), false);
   });
+
+  for (const response of [{}, [], "merged", { merged: "false" }, { merged: "true" }, { merged: 0 }, { merged: 1 }, { merged: null }]) {
+    it(`keeps an unconfirmed merge uncertain for ${JSON.stringify(response)}`, async () => {
+      const { gh, calls } = client({}, "cgwalters", "ok", {}, response);
+      await assert.rejects(mergeOrEnqueue(gh, ref, HEAD, () => {}), MaybeSentError);
+      assert.equal(calls.length, 3);
+      assert.equal(calls.filter((c) => c.method === "PUT").length, 1);
+    });
+  }
 
   for (const over of [{ headRefOid: "b".repeat(40) }, { state: "CLOSED" }, { isDraft: true }, { viewerCanUpdate: false },
     { mergeStateStatus: "UNKNOWN" }, { mergeStateStatus: "UNSTABLE" }, { mergeStateStatus: "DIRTY" }, { mergeStateStatus: "BLOCKED" }]) {
