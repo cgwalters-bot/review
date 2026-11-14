@@ -115,6 +115,31 @@ struct Work {
 
 struct CancelOnDrop(Arc<Work>);
 
+// A cancelled token future has not verified the current identity. In particular,
+// the outer request timeout must not turn a stalled token read into an ordinary
+// forge failure that preserves evidence from a possibly revoked credential.
+struct UnverifiedCredential<'a>(Option<&'a AtomicBool>);
+
+impl Drop for UnverifiedCredential<'_> {
+    fn drop(&mut self) {
+        if let Some(changed) = self.0 {
+            changed.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+async fn preview_token(
+    work: &Work,
+    read: impl std::future::Future<Output = Result<String>>,
+) -> Result<String> {
+    let mut guard = UnverifiedCredential(Some(&work.credential_changed));
+    let token = read
+        .await
+        .map_err(|_| anyhow::anyhow!("forge token unavailable"))?;
+    guard.0 = None;
+    Ok(token)
+}
+
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         let mut request = self.0.request.lock().unwrap();
@@ -351,12 +376,7 @@ impl Direct {
         );
         let task = self.runtime.spawn(async move {
             let result = tokio::time::timeout(timeout, async {
-                let token = reader.token.token().await.map_err(|_| {
-                    // An unreadable/revoked source cannot establish that
-                    // earlier evidence still belongs to this identity.
-                    work.credential_changed.store(true, Ordering::SeqCst);
-                    anyhow::anyhow!("forge token unavailable")
-                })?;
+                let token = preview_token(&work, reader.token.token()).await?;
                 {
                     let mut secrets = secrets.lock().unwrap();
                     // A single preview must not combine visibility scopes from
@@ -434,10 +454,7 @@ impl Direct {
                 // The last response has no subsequent request to detect a
                 // rotation. Recheck before accepting its evidence, within the
                 // same request timeout (including token acquisition).
-                let current = reader.token.token().await.map_err(|_| {
-                    work.credential_changed.store(true, Ordering::SeqCst);
-                    anyhow::anyhow!("forge token unavailable")
-                })?;
+                let current = preview_token(&work, reader.token.token()).await?;
                 if current != token {
                     work.credential_changed.store(true, Ordering::SeqCst);
                     bail!("preview credential changed");
@@ -1459,6 +1476,118 @@ mod tests {
             );
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn token_timeout_marks_identity_unverified_but_forge_timeout_does_not() {
+        for token_pending in [false, true] {
+            let work = Work::default();
+            let result = tokio::time::timeout(REQUEST_TIMEOUT, async {
+                preview_token(&work, async {
+                    if token_pending {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok("fixture".into())
+                })
+                .await
+                .unwrap();
+                std::future::pending::<()>().await;
+            })
+            .await;
+            assert!(result.is_err());
+            assert_eq!(
+                work.credential_changed.load(Ordering::SeqCst),
+                token_pending
+            );
+        }
+        let work = Work::default();
+        work.credential_changed.store(true, Ordering::SeqCst);
+        preview_token(&work, async { Ok("fixture".into()) })
+            .await
+            .unwrap();
+        assert!(work.credential_changed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn stalled_token_exchange_discards_previous_preview_and_recovers() {
+        use axum::{Router, routing::get};
+        use std::sync::atomic::AtomicUsize;
+
+        let fake = Fake::default();
+        let root = serve(fake.clone()).await;
+        let mut reader = reader(Some(root), TokenSource::Fixed("fixture".into()));
+        let mut config: Value = serde_json::from_str(&reader.config).unwrap();
+        config["usage"].as_object_mut().unwrap().remove("url");
+        reader.config = Arc::new(config.to_string());
+        let previous = reader.refresh(None, AT).await;
+        assert_eq!(previous.items.len(), 1);
+        assert_eq!(previous.items[0]["failures"], 0);
+        *reader.pacing.lock().unwrap() = Pacing::default();
+        let calls = fake.calls.load(Ordering::SeqCst);
+
+        let exchanges = Arc::new(AtomicUsize::new(0));
+        let count = exchanges.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/sts/exchange",
+                    get(move || {
+                        let count = count.clone();
+                        async move {
+                            count.fetch_add(1, Ordering::SeqCst);
+                            std::future::pending::<String>().await
+                        }
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let file =
+            std::env::temp_dir().join(format!("review-board-stalled-sts-{}", std::process::id()));
+        std::fs::write(&file, "fixture-oidc").unwrap();
+        reader.token = Arc::new(TokenSource::OctoSts(
+            crate::token::OctoSts::new(
+                &format!("http://{address}"),
+                "fixture".into(),
+                "fixture".into(),
+                file.clone(),
+            )
+            .unwrap(),
+        ));
+
+        // The request's ten-second deadline, not STS's thirty-second deadline,
+        // cancels acquisition. Bound the regression even if admission breaks.
+        let changed = tokio::time::timeout(
+            REQUEST_TIMEOUT + Duration::from_secs(5),
+            reader.refresh(Some(&previous), AT),
+        )
+        .await
+        .unwrap();
+        assert!(changed.items.is_empty(), "{changed:?}");
+        assert_eq!(changed.read_at, None);
+        assert!(!changed.complete);
+        assert_eq!(
+            changed.error.as_deref(),
+            Some("board preview credential changed")
+        );
+        assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.calls.load(Ordering::SeqCst), calls);
+        assert_eq!(reader.status().consecutive_failures, 1);
+
+        reader.token = Arc::new(TokenSource::Fixed("fixture-restored".into()));
+        let waiting = reader.refresh(Some(&changed), AT).await;
+        assert!(waiting.items.is_empty());
+        assert_eq!(fake.calls.load(Ordering::SeqCst), calls);
+        reader.pacing.lock().unwrap().until = None;
+        let recovered = reader.refresh(Some(&changed), AT).await;
+        assert_eq!(recovered.items, previous.items);
+        assert_eq!(reader.status().consecutive_failures, 0);
+        server.abort();
+        std::fs::remove_file(file).unwrap();
     }
 
     #[tokio::test]
