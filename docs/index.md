@@ -42,6 +42,11 @@ operator, scope, publication and live-head checks still apply. This is a guard
 against accidental actions, not against modified site code or a compromised browser.
 CLI callers keep their existing write policy. No deployment option is added.
 
+Answer-and-release requires a comment receipt linking to the same issue or PR
+before closing a question or removing `needs-human`. A missing, malformed or
+wrong-target receipt leaves the result uncertain: check GitHub, do not repost.
+The card retains that warning across refreshes and sends no release request.
+
 Offline browser regressions reject every non-GitHub origin, render published
 state without a service, forget an expired token, and show a refused dispatch
 without retrying it.
