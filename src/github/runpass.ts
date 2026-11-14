@@ -72,7 +72,9 @@ export async function checkPass(gh: GitHub): Promise<void> {
   const cutoff = Date.now() - RERUN_WINDOW;
   for (let page = 1; ; page++) {
     if (page > MAX_RECENT_PAGES) throw new Error(`More than ${MAX_RECENT_PAGES * RECENT_PAGE} ${WORKFLOW} runs in the rerun window; cannot exclude an active rerun.`);
-    const runs = runList(await gh.send<unknown>("GET", `${WORKFLOW_PATH}/runs?per_page=${RECENT_PAGE}&page=${page}`));
+    const data = await gh.send<unknown>("GET", `${WORKFLOW_PATH}/runs?per_page=${RECENT_PAGE}&page=${page}`);
+    const runs = runList(data);
+    if (runs.length < RECENT_PAGE && (page - 1) * RECENT_PAGE + runs.length < (data as { total_count: number }).total_count) throw new Error("Pass activity incomplete; cannot exclude an active rerun.");
     let older = false;
     for (const run of runs) {
       if (!isObject(run) || run.status !== "completed") throw active(isObject(run) && typeof run.status === "string" ? run.status : "unknown status");
