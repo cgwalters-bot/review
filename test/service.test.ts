@@ -132,33 +132,52 @@ describe("shared service decisions", () => {
   });
 
   for (const command of ["needs-you", "act-now"]) {
-    for (const sectionComplete of [false, true]) for (const decisionComplete of [false, true]) for (const listComplete of [false, true]) {
-      it(`CLI ${command} combines section=${sectionComplete}, decision=${decisionComplete}, list=${listComplete} coverage`, async () => {
-        const d = snapshot();
-        d.complete = decisionComplete;
-        (d.needs_you as Record<string, unknown>).complete = listComplete;
-        const replay = document(d);
-        replay.decision.complete = sectionComplete;
-        let out = "", err = "";
+    for (const outer of [false, true]) for (const decision of [false, true]) for (const list of [false, true]) for (const empty of [false, true]) {
+      it(`CLI ${command} preserves coverage: envelope=${outer}, decision=${decision}, list=${list}, empty=${empty}`, async () => {
+        const raw = snapshot();
+        const queue = raw.needs_you as Record<string, unknown>;
+        raw.complete = decision;
+        queue.complete = list;
+        if (empty) Object.assign(queue, { items: [], act_now: [], count: 0 });
+        const response = document(raw);
+        response.decision.complete = outer;
+        let out = "", err = "", calls = 0;
         const code = await run([command], {
           serviceUrl: "https://control.example", token: async () => { throw new Error("token forbidden"); },
-          fetch: async () => Response.json(replay), stdout: (s) => { out += s; }, stderr: (s) => { err += s; },
-          now: () => new Date(NOW), isTty: false,
+          fetch: async () => { calls++; return Response.json(response); },
+          stdout: (s) => { out += s; }, stderr: (s) => { err += s; }, now: () => new Date(NOW), isTty: false,
         });
         assert.equal(code, 0, err);
+        assert.equal(calls, 1);
         const body = JSON.parse(out);
-        assert.equal(body.complete, sectionComplete && decisionComplete && listComplete);
-        assert.equal(body.listComplete, listComplete);
+        assert.equal(body.complete, outer && decision && list);
+        assert.equal(body.listComplete, list);
         assert.equal(body.generation, 7);
-        const items = command === "needs-you" ? body.cards : body.rows;
-        assert.deepEqual(items.map((r: { key: string }) => r.key), ["example/work#2", "example/work#1"]);
-        if (command === "needs-you" && !(sectionComplete && decisionComplete)) {
-          assert.equal(body.settled, false);
-          assert.match(body.note, /incomplete/i);
+        if (command === "needs-you") {
+          assert.equal(body.settled, outer && decision && list);
+          if (!outer || !decision) assert.match(body.note, /Service decision is incomplete/);
         }
+        assert.deepEqual((body.cards ?? body.rows).map((r: { key: string }) => r.key), empty ? [] : ["example/work#2", "example/work#1"]);
       });
     }
   }
+
+  for (const command of ["needs-you", "act-now"]) for (const failure of ["stale", "failed"]) it(`CLI ${command} keeps ${failure} warnings ahead of partial coverage`, async () => {
+    const response = document();
+    if (failure === "stale") response.decision.readAt = "2026-11-12T12:00:00Z";
+    const raw = failure === "failed" ? { ...response, decision: { ...response.decision, error: "Preview read failed" } } : response;
+    let out = "";
+    assert.equal(await run([command], {
+      serviceUrl: "https://control.example", token: async () => { throw new Error("token forbidden"); },
+      fetch: async () => Response.json(raw), stdout: (s) => { out += s; }, stderr() {}, now: () => new Date(NOW), isTty: false,
+    }), 0);
+    const body = JSON.parse(out);
+    assert.equal(body.complete, false);
+    assert.ok(body.unavailable);
+    if (command === "needs-you") assert.equal(body.settled, false);
+    else assert.deepEqual(body.rows, []);
+    assert.match(body.note ?? body.unavailable, failure === "stale" ? /stale/ : /Preview read failed/);
+  });
 
   for (const command of [["needs-you"], ["act-now"], ["status"], ["repo", "example/work"], ["changes", "--since", "2026-11-12T00:00:00Z"]]) it(`CLI ${command[0]} reads the same generation without token or GitHub polling`, async () => {
     let out = "", err = "", calls = 0;
