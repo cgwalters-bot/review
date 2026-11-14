@@ -613,7 +613,10 @@ export async function submitReview(
     try {
       url = (await gh.send<{ html_url?: string }>("POST", `${pullPath(ref)}/reviews`, r)).html_url ?? url;
     } catch (e) {
-      const sent = i === 0 ? "nothing was sent" : `the comments on ${i} earlier commit${i > 1 ? "s" : ""} went out, the rest didn't`;
+      const prior = i ? `the comments on ${i} earlier commit${i > 1 ? "s" : ""} went out; ` : "";
+      const sent = e instanceof GitHubError && e.status >= 400 && e.status < 500
+        ? (i ? `${prior}the rest didn't` : "nothing was sent")
+        : `${prior}this review may have been sent; check GitHub before trying again`;
       throw new Error(`${e instanceof Error ? e.message : String(e)} (${sent})`);
     }
     onSent(i);
