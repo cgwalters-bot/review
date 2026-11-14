@@ -13,6 +13,7 @@ use board_forge::pass::{self, Broker, decision};
 use board_forge::poll::{Rest, RestResponse};
 use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::state::Section;
 use crate::token::TokenSource;
@@ -28,6 +29,20 @@ const MAX_CONFIG: u64 = 1024 * 1024;
 const BACKOFF: Duration = Duration::from_secs(30);
 const MAX_BACKOFF: Duration = Duration::from_secs(900);
 const MAX_RETRY: Duration = Duration::from_secs(3600);
+
+async fn read_config(input: impl AsyncRead + Unpin) -> Result<String> {
+    // Metadata is not a read bound: a file can grow after stat, and some
+    // filesystem inputs report zero length. Read one extra byte to reject,
+    // rather than parse a silently truncated configuration.
+    let mut bytes = Vec::new();
+    input
+        .take(MAX_CONFIG + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .context("reading board config")?;
+    ensure!(bytes.len() as u64 <= MAX_CONFIG, "board config too large");
+    String::from_utf8(bytes).context("board config is not UTF-8")
+}
 
 #[derive(Default)]
 struct Pacing {
@@ -120,14 +135,10 @@ pub struct Reader {
 
 impl Reader {
     pub async fn new(path: &Path, token: Arc<TokenSource>) -> Result<Self> {
-        ensure!(
-            tokio::fs::metadata(path).await?.len() <= MAX_CONFIG,
-            "board config too large"
-        );
-        let config = tokio::fs::read_to_string(path)
+        let file = tokio::fs::File::open(path)
             .await
-            .context("reading board config")?;
-        ensure!(config.len() as u64 <= MAX_CONFIG, "board config too large");
+            .context("opening board config")?;
+        let config = read_config(file).await?;
         // Configuration errors can quote prompts or broker addresses. Do not
         // print them, or pass them into a public section error.
         let parsed =
@@ -934,6 +945,38 @@ mod tests {
             "usage":{"repository":"example/ops", "issue":1},
             "pools":{"test": {"target":0.9, "burst":3}}, "planPools":["test"]})
         .to_string()
+    }
+
+    #[tokio::test]
+    async fn config_read_stops_at_limit_plus_one() {
+        let bytes = vec![b' '; 2 * MAX_CONFIG as usize];
+        let mut input = bytes.as_slice();
+        let error = read_config(&mut input).await.unwrap_err();
+        assert_eq!(error.to_string(), "board config too large");
+        assert_eq!(bytes.len() - input.len(), MAX_CONFIG as usize + 1);
+        assert!(read_config(&b"\xff"[..]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn config_file_size_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.json");
+        let token = Arc::new(TokenSource::Fixed("fixture".into()));
+        for size in [
+            MAX_CONFIG as usize - 1,
+            MAX_CONFIG as usize,
+            MAX_CONFIG as usize + 1,
+        ] {
+            let mut bytes = config().into_bytes();
+            bytes.resize(size, b' ');
+            tokio::fs::write(&path, bytes).await.unwrap();
+            let result = Reader::new(&path, token.clone()).await;
+            if size <= MAX_CONFIG as usize {
+                assert_eq!(result.unwrap().config.len(), size);
+            } else {
+                assert_eq!(result.err().unwrap().to_string(), "board config too large");
+            }
+        }
     }
 
     fn reader(root: Option<String>, token: TokenSource) -> Reader {
