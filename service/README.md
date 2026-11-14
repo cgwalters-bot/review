@@ -390,12 +390,16 @@ when there is no next request to reject the old credential's evidence. It is
 an observation boundary, not an atomic guarantee against rotation after the
 check; it adds no polling loop or network retry.
 
-An error reading the token source also invalidates the preview, including its
-prior decision evidence: a removed token file or failed STS renewal must not
+An error or timeout reading the token source also invalidates the preview,
+including its prior decision evidence: a removed token file or failed STS renewal must not
 leave old-identity facts in the decision publication. Both the pre-request read
 and post-response check use the same `board preview credential changed` path,
-without exposing the source error or path. Restoring the source permits a fresh
-preview after the existing cooldown; no further forge requests are admitted in
+without exposing the source error or path. Cancellation while either token read
+is pending also invalidates identity: a stalled STS exchange must not preserve
+old-identity facts just because the enclosing request deadline expires before
+the source returns an error. The existing ten-second request budget includes
+both token reads; there is no additional timeout or retry. Restoring the source
+permits a fresh preview after the existing cooldown; no further forge requests are admitted in
 the failed preview. Ordinary upstream failures still retain stale evidence.
 This adds no setting, retry, or write authority; previews remain opt-in.
 
