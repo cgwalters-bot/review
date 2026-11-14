@@ -462,14 +462,18 @@ impl Direct {
                     link: header("link"),
                     body: Value::Null,
                 };
+                let evidence = limit_evidence(response.headers(), std::time::SystemTime::now());
+                // A temporarily unavailable forge can ask us to wait even when
+                // its rate budget is nonzero. Stop this preview and later ticks
+                // through the same bounded cooldown, before reading its body.
                 let limited = out.status == 429
+                    || (out.status == 503 && evidence.retry_after_seconds.is_some())
                     || (out.status == 403
                         && (response
                             .headers()
                             .get("x-ratelimit-remaining")
                             .is_some_and(|v| v == "0")
                             || response.headers().contains_key("retry-after")));
-                let evidence = limit_evidence(response.headers(), std::time::SystemTime::now());
                 let exhausted = response
                     .headers()
                     .get("x-ratelimit-remaining")
@@ -953,7 +957,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn graphql_hints_survive_ticks_and_natural_expiry_recovers_read_pacing() {
+    async fn retry_hints_survive_ticks_and_natural_expiry_recovers_read_pacing() {
         use axum::response::IntoResponse;
         // Keep virtual time under explicit control while the blocking library
         // waits for real loopback I/O; auto-advance would expire request timers.
@@ -962,7 +966,11 @@ mod tests {
                 tokio::task::yield_now().await;
             }
         });
-        for remaining in ["0", "50"] {
+        for (status, refusal_body, remaining) in [
+            (200, r#"{"errors":[{"type":"RATE_LIMITED"}]}"#, "0"),
+            (200, r#"{"errors":[{"type":"RATE_LIMITED"}]}"#, "50"),
+            (503, "upstream temporarily unavailable", "50"),
+        ] {
             let throttle = Arc::new(AtomicBool::new(false));
             let calls = Arc::new(AtomicUsize::new(0));
             let fake_state = Fake::default();
@@ -983,12 +991,13 @@ mod tests {
                                     calls.fetch_add(1, Ordering::SeqCst);
                                     if throttle.load(Ordering::SeqCst) {
                                         (
+                                            axum::http::StatusCode::from_u16(status).unwrap(),
                                             [
                                                 ("retry-after", "600"),
                                                 ("x-ratelimit-reset", "123"),
                                                 ("x-ratelimit-remaining", remaining),
                                             ],
-                                            Json(json!({"errors":[{"type":"RATE_LIMITED"}]})),
+                                            refusal_body,
                                         )
                                             .into_response()
                                     } else {
