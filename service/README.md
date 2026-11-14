@@ -473,6 +473,15 @@ failure and can persist by configuration. This metadata never changes the
 snapshot's source clocks, completeness or confirmed effects.
 Restart discards pacing and success age, not authority or writer state.
 
+HTTP 503 with a valid `Retry-After` uses that same cooldown, even with a
+nonzero rate budget: continuing reads while the forge asks for recovery time
+would amplify an outage. Seconds and HTTP-date hints use the existing 30-second
+floor and one-hour ceiling. The hint is retained before reading the error body,
+so non-JSON refusals still stop further preview reads and later ticks. The
+existing `rateLimit` status field also carries this availability hint; it does
+not prove rate-budget exhaustion. A 503 without a parseable hint retains ordinary
+failure backoff. This adds no retry loop or setting; previews remain off by default.
+
 One watch-channel replacement publishes the legacy sections and decision
 together. The versioned HTTP endpoint does not run a preview: it returns
 that exact published generation. SSE's id and the document's `generation`
