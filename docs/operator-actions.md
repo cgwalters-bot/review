@@ -59,6 +59,15 @@ project field's current value. Actions run in order, so an action on a target
 an earlier action changed is checked against that earlier action's result.
 Any failed or unavailable check disables the batch.
 
+Project-field approvals also bind to the project, item and field IDs and the
+field's option IDs and names, all from the existing bounded project read. Removing
+and re-adding an item or recreating a field or option must not redirect an approval
+just because the displayed value stayed the same. These identities are checked
+before reservation and again before each write; option order alone is ignored.
+The preview still shows values, not internal IDs. Changing any option requires
+a fresh preview, even if it is not the option being set. No extra requests or
+configuration are needed; the existing proposal opt-in remains unchanged.
+
 `set_org_variable` and `apply_org_ruleset` are different: they overwrite org
 state that was the proposal's input, so they carry the prior state the
 proposer saw, and the action is stale unless live state still matches it.
