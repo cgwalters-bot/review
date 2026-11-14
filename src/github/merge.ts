@@ -33,6 +33,10 @@ interface MergeRepository {
 
 export interface MergeResult { state: "merged" | "enqueued"; url: string }
 
+function confirmedQueueEntry(entry: unknown): boolean {
+  return typeof entry === "object" && entry !== null && "id" in entry && typeof entry.id === "string" && entry.id.trim().length > 0;
+}
+
 /** Fresh, uncached preflight and policy check, then one SHA-bound write as the viewer. */
 export async function mergeOrEnqueue(gh: GitHub, ref: IssueRef, head: string, policy: () => void): Promise<MergeResult> {
   return asOperator(gh, async () => {
@@ -47,7 +51,10 @@ export async function mergeOrEnqueue(gh: GitHub, ref: IssueRef, head: string, po
     if (pr.headRefOid !== head) throw new Error("PR head moved; reload and confirm the new head.");
     if (pr.state !== "OPEN" || pr.isDraft || !pr.viewerCanUpdate || typeof pr.isMergeQueueEnabled !== "boolean") throw new Error("PR is not an open, non-draft PR you may merge.");
     policy();
-    if (pr.mergeQueueEntry) return { state: "enqueued", url: pr.url };
+    if (pr.mergeQueueEntry !== null) {
+      if (!confirmedQueueEntry(pr.mergeQueueEntry)) throw new Error("Cannot read current queue entry; nothing sent.");
+      return { state: "enqueued", url: pr.url };
+    }
     const queue = pr.isMergeQueueEnabled;
     // BLOCKED can mean the required queue itself. Queue admission enforces
     // current rules; never retry a refused enqueue as a direct merge.
@@ -57,7 +64,7 @@ export async function mergeOrEnqueue(gh: GitHub, ref: IssueRef, head: string, po
     try {
       if (queue) {
         const result = await gh.send<{ data?: { enqueuePullRequest?: { mergeQueueEntry?: { id: string } } }; errors?: unknown[] }>("POST", "/graphql", { query: ENQUEUE, variables: { id: pr.id, head } });
-        if (result.errors?.length || !result.data?.enqueuePullRequest?.mergeQueueEntry?.id) throw new MaybeSentError("Queue admission was not confirmed; inspect GitHub before retrying.");
+        if (result.errors?.length || !confirmedQueueEntry(result.data?.enqueuePullRequest?.mergeQueueEntry)) throw new MaybeSentError("Queue admission was not confirmed; inspect GitHub before retrying.");
         return { state: "enqueued", url: pr.url };
       }
       const result = await gh.send<{ merged: boolean; message: string }>("PUT", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/merge`, { sha: head, merge_method: method });

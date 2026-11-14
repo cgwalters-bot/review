@@ -297,6 +297,9 @@ Direct merge receipts require a boolean `merged` response: only `true` confirms
 success and only `false` confirms rejection. Missing or malformed results remain
 uncertain, since the write may already have taken effect; they are never retried
 automatically.
+Queue receipts likewise require a nonblank string entry ID. Malformed or missing
+entry evidence in the preflight stops before writing (only `null` means not queued);
+malformed admission evidence after the mutation stays uncertain, never successful.
 
 `test/fixtures/act-now-needs-you.json` is the whole producer fixture at
 `e6fedc8ac1c7dc83cb01fc997e073362bde96548`, imported without changing its data.
