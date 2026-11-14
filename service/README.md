@@ -438,6 +438,13 @@ Same-token failures still retain stale evidence. Detection happens on the next
 admitted token read, not during cooldown skips; this is not a revocation watcher.
 Restart loses this binding along with the in-memory publication and pacing.
 
+Credential invalidation also clears `decisionRefresh.lastSuccessAgeSeconds`:
+otherwise a revoked or unverified identity could still appear to have a recent
+successful preview after its decision evidence was discarded. Rotation, token
+source errors/timeouts and HTTP 401 all use this same path. Cooldown skips and
+partial recovery leave the age null; only a later complete, failure-free preview
+establishes a new success time. Ordinary forge failures retain the prior age.
+
 When enabled, `/api/v1/state`, `/api/state` and the `state` SSE payload
 include an additional `decision` section. Its `items` has zero entries
 before observation, then one `agent-board/decision/v1` snapshot. The

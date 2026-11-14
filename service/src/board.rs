@@ -289,7 +289,8 @@ impl Reader {
         };
         if work.credential_changed.load(Ordering::SeqCst) {
             // Prior evidence may belong to the old credential too. Do not carry
-            // it into a publication after observing an identity boundary.
+            // it or its success age into a publication after an identity boundary.
+            self.pacing.lock().unwrap().last_success = None;
             deferred(None, "board preview credential changed")
         } else if work.limited.load(Ordering::SeqCst) {
             deferred(prev, "board preview rate limited")
@@ -1436,6 +1437,9 @@ mod tests {
         let previous = reader.refresh(None, AT).await;
         assert_eq!(previous.items.len(), 1);
         *reader.pacing.lock().unwrap() = Pacing::default();
+        // The minimal fixture omits usage coverage. Model an earlier complete
+        // success so invalidation must clear its age, not just an already-null age.
+        reader.pacing.lock().unwrap().finished(true, true, 0);
         let before = fake.calls.load(Ordering::SeqCst);
         *fake.rotate_token.lock().unwrap() = Some(file);
 
@@ -1500,6 +1504,7 @@ mod tests {
         assert!(count > 0);
         *fake.rotate_at.lock().unwrap() = Some(2 * count);
         *fake.rotate_token.lock().unwrap() = Some(file);
+        reader.pacing.lock().unwrap().finished(true, true, 0);
 
         let changed = reader.refresh(Some(&previous), AT).await;
         assert_eq!(fake.calls.load(Ordering::SeqCst), 2 * count);
@@ -1512,6 +1517,7 @@ mod tests {
         );
         assert_eq!(reader.status().consecutive_failures, 1);
         reader.refresh(Some(&changed), AT).await;
+        assert_eq!(reader.status().last_success_age_seconds, None);
         assert_eq!(fake.calls.load(Ordering::SeqCst), 2 * count);
 
         reader.pacing.lock().unwrap().until = None;
@@ -1550,6 +1556,7 @@ mod tests {
             let count = fake.calls.load(Ordering::SeqCst);
             assert!(count > 1);
             *reader.pacing.lock().unwrap() = Pacing::default();
+            reader.pacing.lock().unwrap().finished(true, true, 0);
             let sends = match stage {
                 "before" => {
                     std::fs::remove_file(&file).unwrap();
@@ -1573,6 +1580,7 @@ mod tests {
             );
             assert_eq!(fake.calls.load(Ordering::SeqCst), count + sends);
             assert_eq!(reader.status().consecutive_failures, 1);
+            assert_eq!(reader.status().last_success_age_seconds, None);
 
             // Restoration does not bypass backoff or replay the discarded view.
             std::fs::write(&file, "fixture-restored").unwrap();
@@ -1583,6 +1591,7 @@ mod tests {
             let recovered = reader.refresh(Some(&changed), AT).await;
             assert_eq!(recovered.items, previous.items);
             assert_eq!(reader.status().consecutive_failures, 0);
+            assert_eq!(reader.status().last_success_age_seconds, None);
             assert!(
                 fake.auth
                     .lock()
@@ -1643,6 +1652,7 @@ mod tests {
         let calls = fake.calls.load(Ordering::SeqCst);
 
         let exchanges = Arc::new(AtomicUsize::new(0));
+        reader.pacing.lock().unwrap().finished(true, true, 0);
         let count = exchanges.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1696,6 +1706,7 @@ mod tests {
         assert_eq!(reader.status().consecutive_failures, 1);
 
         reader.token = Arc::new(TokenSource::Fixed("fixture-restored".into()));
+        assert_eq!(reader.status().last_success_age_seconds, None);
         let waiting = reader.refresh(Some(&changed), AT).await;
         assert!(waiting.items.is_empty());
         assert_eq!(fake.calls.load(Ordering::SeqCst), calls);
@@ -1722,6 +1733,7 @@ mod tests {
             assert!(count > 1);
             let sends = if stage == "first" { 1 } else { count };
             *fake.reject_at.lock().unwrap() = Some(count + sends);
+            reader.pacing.lock().unwrap().finished(true, true, 0);
 
             let rejected = reader.refresh(Some(&previous), AT).await;
             assert!(rejected.items.is_empty(), "{stage}: {rejected:?}");
@@ -1735,6 +1747,7 @@ mod tests {
             assert_eq!(reader.status().consecutive_failures, 1);
 
             // No retry burst or replay of facts after the forge rejects auth.
+            assert_eq!(reader.status().last_success_age_seconds, None);
             let waiting = reader.refresh(Some(&rejected), AT).await;
             assert!(waiting.items.is_empty());
             assert_eq!(fake.calls.load(Ordering::SeqCst), count + sends);
