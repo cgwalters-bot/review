@@ -42,6 +42,13 @@ their original read timestamps. This fixed bound adds no setting or caller
 change and does not enable the service in the static app. It bounds response
 bytes, not total process memory or the size of parsed JSON across all reads.
 
+The opt-in Octo STS token source also limits exchange responses to 64 KiB,
+including error bodies and streamed responses without `Content-Length`. A
+faulty exchange could otherwise exhaust memory before a bounded board preview
+starts its forge reads. Oversized answers fail before parsing or caching a token;
+a later exchange can recover normally. The existing exchange timeout still
+applies. This fixed bound adds no option and enables neither STS nor previews.
+
 Each section has `items`, `complete`, `readAt` and `error`. `complete` is
 false when a list was longer than the one page of 100 that is read, GitHub
 reported incomplete search results, the total count was unavailable, or
