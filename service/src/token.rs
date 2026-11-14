@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
+use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 
 pub const OCTO_STS_ROOT: &str = "https://octo-sts.dev";
@@ -23,6 +24,10 @@ const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 // Token acquisition is part of a preview's read budget too. A faulty STS
 // response must not exhaust memory before the bounded forge reads even start.
 const MAX_EXCHANGE_BODY: usize = 64 * 1024;
+
+// A mis-mounted or growing token file must not bypass the preview's memory
+// bounds. Count raw bytes, including whitespace, before decoding or trimming.
+const MAX_TOKEN_FILE: usize = 64 * 1024;
 
 pub enum TokenSource {
     /// A token read once at startup, from `gh auth token`.
@@ -55,11 +60,21 @@ impl TokenSource {
     }
 }
 
-/// A token file's trimmed contents, which must not be empty.
+/// A token file's bounded, trimmed UTF-8 contents, which must not be empty.
 async fn read_token(path: &PathBuf) -> Result<String> {
-    let t = tokio::fs::read_to_string(path)
+    let file = tokio::fs::File::open(path)
         .await
         .with_context(|| format!("reading the token from {}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take((MAX_TOKEN_FILE + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .with_context(|| format!("reading the token from {}", path.display()))?;
+    ensure!(
+        bytes.len() <= MAX_TOKEN_FILE,
+        "token file exceeds {MAX_TOKEN_FILE} bytes"
+    );
+    let t = String::from_utf8(bytes).context("token file is not UTF-8")?;
     let t = t.trim();
     if t.is_empty() {
         bail!("{} holds no token", path.display());
@@ -318,6 +333,67 @@ mod tests {
                 server.abort();
             }
         }
+    }
+
+    #[tokio::test]
+    async fn token_files_are_bounded_before_trimming_and_recover_after_rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        let source = TokenSource::File(file.clone());
+        let mut padded = b"fixture-token".to_vec();
+        padded.resize(MAX_TOKEN_FILE, b' ');
+        std::fs::write(&file, &padded).unwrap();
+        assert_eq!(source.token().await.unwrap(), "fixture-token");
+
+        padded.push(b' ');
+        std::fs::write(&file, &padded).unwrap();
+        let error = format!("{:#}", source.token().await.unwrap_err());
+        assert_eq!(error, "token file exceeds 65536 bytes");
+        assert!(!error.contains("fixture-token"));
+
+        // Multibyte input is counted in bytes, not characters.
+        std::fs::write(&file, "é".repeat(MAX_TOKEN_FILE / 2 + 1)).unwrap();
+        assert!(
+            source
+                .token()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds")
+        );
+        for invalid in [b" \n\t".as_slice(), &[0xff]] {
+            std::fs::write(&file, invalid).unwrap();
+            assert!(source.token().await.is_err());
+        }
+        std::fs::write(&file, " rotated-token\n").unwrap();
+        assert_eq!(source.token().await.unwrap(), "rotated-token");
+    }
+
+    #[tokio::test]
+    async fn oversized_oidc_file_prevents_exchange_and_recovers() {
+        let exchanges = Arc::new(AtomicUsize::new(0));
+        let root = fake_sts(exchanges.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        let mut sts = OctoSts::new(
+            &root,
+            "cgwalters-forge".into(),
+            "control-plane".into(),
+            file.clone(),
+        )
+        .unwrap();
+        sts.refresh_after = Duration::ZERO;
+        std::fs::write(&file, "oidc-1").unwrap();
+        assert_eq!(sts.token().await.unwrap(), "installation-1");
+
+        std::fs::write(&file, vec![b'x'; MAX_TOKEN_FILE + 1]).unwrap();
+        let error = format!("{:#}", sts.token().await.unwrap_err());
+        assert!(error.ends_with("token file exceeds 65536 bytes"), "{error}");
+        assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+
+        std::fs::write(&file, "oidc-2").unwrap();
+        assert_eq!(sts.token().await.unwrap(), "installation-2");
+        assert_eq!(exchanges.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

@@ -49,6 +49,16 @@ starts its forge reads. Oversized answers fail before parsing or caching a token
 a later exchange can recover normally. The existing exchange timeout still
 applies. This fixed bound adds no option and enables neither STS nor previews.
 
+GitHub token files and Octo STS service-account token files are limited to
+64 KiB of raw UTF-8 bytes, including whitespace. A mis-mounted or growing file
+could otherwise exhaust memory before the bounded network reads. Reads stop at
+the limit plus one byte and reject oversized input before trimming or using it;
+they do not rely on file metadata remaining unchanged. A failed STS refresh
+does not fall back to its expired cached token or send an exchange request with
+the rejected input. Replacing the file with a valid token allows the next read
+to recover. This is a byte bound, not a timeout for filesystem operations; it
+adds no option and leaves previews and STS opt-in.
+
 Each section has `items`, `complete`, `readAt` and `error`. `complete` is
 false when a list was longer than the one page of 100 that is read, GitHub
 reported incomplete search results, the total count was unavailable, or
