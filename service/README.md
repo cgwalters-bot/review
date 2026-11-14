@@ -224,6 +224,15 @@ the caller's repository/file and real route/secret provisioning were not supplie
 
 ## Board decision preview (tracker#1456 phase 1)
 
+An Octo STS redirect could forward the service-account bearer to another path on
+the same origin, or substitute a token from a different exchange endpoint. The
+shared token source therefore refuses redirects (including same-origin ones),
+without contacting the target or caching a token from the redirect response.
+The error reports only the HTTP status, not the redirect location or body. A later
+direct exchange can recover normally. This applies to both preview modes and the
+optional service; STS remains opt-in with its existing exchange timeout and body
+limit, with no new setting or deployment change.
+
 A growing or special config file can report a misleading size and exhaust memory
 before a preview's request limits apply. Both preview modes read at most 1 MiB
 plus one detection byte of board configuration, rejecting oversized input before

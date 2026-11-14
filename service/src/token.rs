@@ -127,6 +127,9 @@ impl OctoSts {
     ) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(EXCHANGE_TIMEOUT)
+            // Even same-origin redirects must not forward the OIDC bearer to
+            // another path or let that path supply the installation token.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .context("building the HTTP client")?;
         Ok(Self {
@@ -172,6 +175,11 @@ impl OctoSts {
             .send()
             .await?;
         let status = resp.status();
+        ensure!(
+            !status.is_redirection(),
+            "HTTP {}: Octo STS redirects are not allowed",
+            status.as_u16()
+        );
         let mut body = Vec::new();
         while let Some(chunk) = resp.chunk().await.context("reading the answer")? {
             ensure!(
@@ -315,6 +323,76 @@ mod tests {
         let err = format!("{:#}", expiring.token().await.unwrap_err());
         assert!(err.ends_with("holds no token"), "{err}");
         std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn octo_sts_refuses_redirects_without_contacting_the_target() {
+        for status in [301, 302, 303, 307, 308] {
+            for same_origin in [true, false] {
+                let targets = Arc::new(AtomicUsize::new(0));
+                let seen = targets.clone();
+                let target = Router::new().route(
+                    "/redirect-target",
+                    get(move || {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                        async { axum::Json(json!({"token": "redirected-token"})) }
+                    }),
+                );
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let target_url =
+                    format!("http://{}/redirect-target", listener.local_addr().unwrap());
+                let other_target = target.clone();
+                let other_server =
+                    tokio::spawn(async move { axum::serve(listener, other_target).await.unwrap() });
+                let calls = Arc::new(AtomicUsize::new(0));
+                let seen = calls.clone();
+                let app = target.route(
+                    "/sts/exchange",
+                    get(move |headers: HeaderMap| {
+                        let attempt = seen.fetch_add(1, Ordering::SeqCst);
+                        let location = if same_origin {
+                            "/redirect-target".to_owned()
+                        } else {
+                            target_url.clone()
+                        };
+                        async move {
+                            assert_eq!(headers["authorization"], "Bearer fixture-oidc");
+                            if attempt == 0 {
+                                (
+                                    StatusCode::from_u16(status).unwrap(),
+                                    [("location", location)],
+                                    axum::Json(json!({"token": "redirect-body-token"})),
+                                )
+                                    .into_response()
+                            } else {
+                                axum::Json(json!({"token": "direct-token"})).into_response()
+                            }
+                        }
+                    }),
+                );
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let root = format!("http://{}", listener.local_addr().unwrap());
+                let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+                let dir = tempfile::tempdir().unwrap();
+                let file = dir.path().join("token");
+                std::fs::write(&file, "fixture-oidc").unwrap();
+                let sts = OctoSts::new(&root, "example".into(), "preview".into(), file).unwrap();
+
+                let result = sts.token().await;
+                assert_eq!(targets.load(Ordering::SeqCst), 0, "HTTP {status}");
+                let error = format!("{:#}", result.unwrap_err());
+                assert!(error.contains(&format!("HTTP {status}")), "{error}");
+                assert!(!error.contains("redirect-body-token"));
+                assert!(!error.contains("redirect-target"));
+                assert!(sts.current.lock().await.is_none());
+                // A later direct exchange can recover; only its token is cached.
+                assert_eq!(sts.token().await.unwrap(), "direct-token");
+                assert_eq!(sts.token().await.unwrap(), "direct-token");
+                assert_eq!(calls.load(Ordering::SeqCst), 2);
+                server.abort();
+                other_server.abort();
+            }
+        }
     }
 
     #[tokio::test]
