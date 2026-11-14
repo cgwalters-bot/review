@@ -357,7 +357,7 @@ impl Direct {
                     Some(query) => reader.http.post(url).json(&query),
                     None => reader.http.get(url),
                 }
-                .bearer_auth(token)
+                .bearer_auth(&token)
                 .header("User-Agent", "control-app")
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2022-11-28");
@@ -412,6 +412,18 @@ impl Direct {
                 {
                     ensure!(body.len() + chunk.len() <= MAX_BODY, "forge body too large");
                     body.extend_from_slice(&chunk);
+                }
+                // The last response has no subsequent request to detect a
+                // rotation. Recheck before accepting its evidence, within the
+                // same request timeout (including token acquisition).
+                let current = reader
+                    .token
+                    .token()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("forge token unavailable"))?;
+                if current != token {
+                    work.credential_changed.store(true, Ordering::SeqCst);
+                    bail!("preview credential changed");
                 }
                 if (200..300).contains(&out.status) {
                     out.body = serde_json::from_slice(&body).context("invalid forge JSON")?;
@@ -1058,6 +1070,7 @@ mod tests {
         usage: Arc<Mutex<Option<Value>>>,
         items: Arc<Mutex<Vec<Value>>>,
         rotate_token: Arc<Mutex<Option<std::path::PathBuf>>>,
+        rotate_at: Arc<Mutex<Option<usize>>>,
     }
 
     async fn fake(
@@ -1066,12 +1079,14 @@ mod tests {
         headers: HeaderMap,
         body: String,
     ) -> Json<Value> {
-        fake.calls.fetch_add(1, Ordering::SeqCst);
+        let call = fake.calls.fetch_add(1, Ordering::SeqCst) + 1;
         fake.auth
             .lock()
             .unwrap()
             .push(headers["authorization"].to_str().unwrap().to_owned());
-        if let Some(path) = fake.rotate_token.lock().unwrap().take() {
+        if fake.rotate_at.lock().unwrap().is_none_or(|at| at == call)
+            && let Some(path) = fake.rotate_token.lock().unwrap().take()
+        {
             std::fs::write(path, "fixture-rotated").unwrap();
         }
         let query: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
@@ -1249,6 +1264,56 @@ mod tests {
                 .iter()
                 .skip(before + 1)
                 .all(|a| a == "Bearer fixture-rotated")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn final_response_rotation_discards_preview_and_prior_evidence() {
+        let fake = Fake::default();
+        let root = serve(fake.clone()).await;
+        let dir = std::env::temp_dir().join(format!(
+            "review-board-final-rotation-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("token");
+        std::fs::write(&file, "fixture-original").unwrap();
+        let mut reader = reader(Some(root), TokenSource::File(file.clone()));
+        let mut config: Value = serde_json::from_str(&reader.config).unwrap();
+        config["usage"].as_object_mut().unwrap().remove("url");
+        reader.config = Arc::new(config.to_string());
+        let previous = reader.refresh(None, AT).await;
+        assert_eq!(previous.items[0]["failures"], 0);
+        let count = fake.calls.load(Ordering::SeqCst);
+        assert!(count > 0);
+        *fake.rotate_at.lock().unwrap() = Some(2 * count);
+        *fake.rotate_token.lock().unwrap() = Some(file);
+
+        let changed = reader.refresh(Some(&previous), AT).await;
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2 * count);
+        assert!(changed.items.is_empty());
+        assert_eq!(changed.read_at, None);
+        assert!(!changed.complete);
+        assert_eq!(
+            changed.error.as_deref(),
+            Some("board preview credential changed")
+        );
+        assert_eq!(reader.status().consecutive_failures, 1);
+        reader.refresh(Some(&changed), AT).await;
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2 * count);
+
+        reader.pacing.lock().unwrap().until = None;
+        let recovered = reader.refresh(Some(&changed), AT).await;
+        assert_eq!(recovered.items, previous.items);
+        assert_eq!(reader.status().consecutive_failures, 0);
+        assert!(
+            fake.auth
+                .lock()
+                .unwrap()
+                .iter()
+                .skip(2 * count)
+                .all(|auth| auth == "Bearer fixture-rotated")
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
