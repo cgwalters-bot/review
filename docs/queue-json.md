@@ -26,6 +26,12 @@ apply (jq's `.field` then reads `null`).
 | `entries` | array | Ranked entries (below). |
 | `warnings` | string[] | Data that couldn't be read (say, the forge search); the queue may then be incomplete. |
 
+Direct GitHub PR searches reject missing/non-array `items`, GitHub's
+`incomplete_results`, and results beyond the five-page (500-item) read bound.
+The affected PR list is unavailable, not known empty; the queue retains its
+board entries and reports the failed read in `warnings`. No extra requests or
+automatic retries are made beyond that bound. Service-backed reads are unchanged.
+
 ## Entries
 
 Entries use the app's order: priority (P0 first, no priority last), then
