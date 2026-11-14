@@ -551,7 +551,9 @@ read on GitHub; an open review request remains until reviewed. Unknown-age
 requests are labelled unknown, and unresolved mentions say so. Closed folds
 do not poll. Classic tokens need `notifications` or `repo`; fine-grained
 tokens do not support notification endpoints. Inaccessible notifications
-leave review-request search results visible with a warning.
+leave review-request search results visible with a warning. If a later search
+page fails, already-read review requests remain actionable alongside the search
+warning; the list is not complete. Search still stops at 1,000 results.
 
 ## Focus
 
