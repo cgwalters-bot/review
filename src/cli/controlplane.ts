@@ -28,7 +28,7 @@ import { enrich, LIVE_SOURCES, type LiveRun, type LiveRuns, loadLiveRuns } from 
 import { redactAddresses, stale } from "../github/passes.ts";
 import type { AgentRun, PassView } from "../github/passview.ts";
 import { startPass } from "../github/runpass.ts";
-import { readService, serviceProblem } from "../github/service.ts";
+import { readService, serviceProblem, type ServiceDecision } from "../github/service.ts";
 import { type Io, readOnly, run as runQueue } from "./queue.ts";
 
 export const PROG = "control-app";
@@ -183,12 +183,12 @@ function cardJson(c: Card) {
  * Needs you as Home shows it on a first read, from the same derivation:
  * the list's cards in its order, else the snapshot's own operator holds
  * and listError saying why there is no list. The read is GitHub's answer
- * just now, so the note says it was checked now.
+ * just now by default; service reads label receipt separately from validation.
  */
-function needsYou(h: Holds, now: number, warning?: string) {
+function needsYou(h: Holds, now: number, source: "github" | "service" = "github") {
   const published = firstPublished(h, now);
   const l = published.list;
-  const { text, settled } = publishedNote(published, now);
+  const { text, settled } = publishedNote(published, now, source);
   const { known, listed, unlisted } = inboxCounts(published);
   return {
     snapshotAt: h.at,
@@ -197,11 +197,19 @@ function needsYou(h: Holds, now: number, warning?: string) {
     validatedAt: l?.validatedAt ?? null,
     changedAt: l?.changedAt ?? null,
     complete: l?.complete ?? null,
-    note: warning ? `${warning} ${text}` : text,
-    settled: settled && !warning,
+    note: text,
+    settled,
     counts: { known, listed, unlisted },
     cards: inboxCards({ published }).map(cardJson),
   };
+}
+
+function serviceNeedsYou(d: ServiceDecision, now: number, problem: string | undefined) {
+  const body = needsYou(d.holds, now, "service");
+  // Service availability and coverage supplement, not replace, list evidence.
+  const notes = [problem, !d.complete ? "Service decision is incomplete; listed cards are partial evidence." : undefined, body.note];
+  return { ...body, settled: body.settled && d.complete && !problem,
+    ...(problem ? { unavailable: true } : {}), note: notes.filter(Boolean).join(" ") };
 }
 
 function repo(h: Holds, name: string, now: number) {
@@ -417,7 +425,7 @@ export async function run(argv: readonly string[], io: Io & { serviceUrl?: strin
       const problem = serviceProblem(d, now);
       const holds = d.holds;
       const body = command === "status" ? { snapshotAt: holds.at, wip: holds.wip, candidates: d.candidates, pools: d.pools, holds: holds.holds, holdsOmitted: d.holdsOmitted, poolsOmitted: d.poolsOmitted, passes: null, live: null }
-        : command === "needs-you" ? { ...needsYou(holds, now, problem ?? (!d.complete ? "Service decision is incomplete; listed cards are partial evidence." : undefined)), ...(problem ? { unavailable: true } : {}) }
+        : command === "needs-you" ? serviceNeedsYou(d, now, problem)
           : command === "act-now" ? (problem ? { rows: [], unavailable: problem } : actNow(holds, now))
             : command === "repo" ? repo(holds, opts.repo!, now)
               : { since: new Date(opts.since!).toISOString(), passes: null, asks: null, error: "Service decision contract does not supply pass history" };

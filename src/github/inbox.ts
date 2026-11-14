@@ -281,14 +281,15 @@ const shortfall = (l: NeedsYou): string[] => Object.entries(l.sources).flatMap((
  * empty inbox may say nothing waits: only a complete list, read now and
  * confirmed by the pass within NEEDS_YOU_MAX_AGE_MS.
  */
-export function publishedNote(p: Published, now: number): { text: string; settled: boolean } {
+export function publishedNote(p: Published, now: number, source: "github" | "service" = "github"): { text: string; settled: boolean } {
   const l = p.list;
   if (!l && !p.error) return { text: "Reading the pass's needs-you list…", settled: false };
   const parts: string[] = [];
   if (p.error) parts.push(`${p.error}.`);
   if (l) {
     const old = now - Date.parse(l.validatedAt) > NEEDS_YOU_MAX_AGE_MS;
-    parts.push(`${p.unavailable ? "Cards from the list the pass" : "The pass's list:"} confirmed ${ago(l.validatedAt, now)}, changed ${ago(l.changedAt, now)}${p.checkedAt === undefined ? ", shown from this browser's cache" : `, checked on GitHub ${ago(new Date(p.checkedAt).toISOString(), now)}`}${p.unavailable ? "; marked unavailable until it can be read again." : "."}`);
+    const receipt = source === "service" ? "received from service" : "checked on GitHub";
+    parts.push(`${p.unavailable ? "Cards from the list the pass" : "The pass's list:"} confirmed ${ago(l.validatedAt, now)}, changed ${ago(l.changedAt, now)}${p.checkedAt === undefined ? ", shown from this browser's cache" : `, ${receipt} ${ago(new Date(p.checkedAt).toISOString(), now)}`}${p.unavailable ? "; marked unavailable until it can be read again." : "."}`);
     if (old) parts.push("The pass has not confirmed it for over an hour: it may have stopped, and this may be out of date.");
     if (l.excludedHolds) parts.push(`${l.excludedHolds} superseded hold decisions excluded: this snapshot no longer lists them as waiting on the operator.`);
     const missing = [...shortfall(l), ...(l.omitted ? [`${l.omitted} past the pass's cap`] : []), ...(l.refused ? [`${l.refused} unreadable here`] : [])];
