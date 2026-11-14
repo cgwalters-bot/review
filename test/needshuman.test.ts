@@ -80,6 +80,29 @@ describe("needs-human direct read", () => {
     assert.equal(sources["needs-human"]!.state, "unavailable");
     assert.ok(sources["needs-human"]!.error);
   });
+
+  for (const items of [undefined, null, {}, "", 0]) it(`rejects malformed search items: ${JSON.stringify(items)}`, async () => {
+    const { gh, calls } = client(() => ({ body: { items } }));
+    const sources: Sources = {};
+    assert.equal(await readSource(sources, "needs-human", loadNeedsHuman, gh), undefined);
+    assert.equal(calls.length, 1);
+    assert.equal(sources["needs-human"]!.state, "unavailable");
+    assert.match(sources["needs-human"]!.error!, /no valid items array/);
+  });
+
+  it("accepts an explicitly empty search", async () => {
+    const { gh, calls } = client(() => ({ body: { items: [], total_count: 0, incomplete_results: false } }));
+    assert.deepEqual(await loadNeedsHuman(gh), { issues: [] });
+    assert.equal(calls.length, 1);
+  });
+
+  it("does not certify earlier pages when a later page is malformed", async () => {
+    const { gh, calls } = client((page) => ({ body: page === 1
+      ? { items: Array.from({ length: 100 }, (_, i) => issue(BOARD, i + 1)), total_count: 101 }
+      : {} }));
+    await assert.rejects(loadNeedsHuman(gh), /no valid items array/);
+    assert.equal(calls.length, 2);
+  });
 });
 
 describe("Act now decisions with the direct read", () => {
