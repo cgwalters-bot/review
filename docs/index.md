@@ -715,8 +715,11 @@ grow with completed history. Status filters come from a search index that
 can lag, and a rerun keeps its old place in the run list, so the unfiltered
 list is read last, newest first, back through GitHub's 30-day rerun window;
 any run in it not completed also prevents dispatch, and more than 6,000 runs
-in that window refuses rather than reading further. The reads happen only on
-demand, not on the snapshot poll.
+in that window refuses rather than reading further. A short page that leaves
+runs unread according to `total_count` is incomplete, not evidence of idle:
+the check refuses without dispatching or retrying. These same activity checks
+protect the CLI's `run-pass`. The reads happen only on demand, not on the
+snapshot poll.
 The check expires after a minute. Confirmation
 rechecks activity, viewer identity and repository write access, then sends
 one `workflow_dispatch` on tracker's default branch with `apply: true`, using

@@ -106,6 +106,27 @@ describe("manual applying pass", () => {
     assert.equal(calls.filter((c) => c.url.includes("/runs?")).length, ACTIVE_SWEEP.length + 45);
   });
 
+  for (const page of [1, 2]) for (const length of [0, 1, 99]) {
+    it(`refuses a truncated recent page ${page} with ${length} runs without dispatching`, async () => {
+      const { gh, calls } = api((_m, path) => {
+        if (!path.includes("/runs?per_page=")) return undefined;
+        const current = Number(new URL(path, "https://api.github.com").searchParams.get("page"));
+        return { body: { total_count: 200, workflow_runs: history(current === page ? length : 100) } };
+      });
+      await assert.rejects(dispatchPass(gh, facts), /Pass activity incomplete/);
+      assert.equal(calls.some((c) => c.method === "POST"), false);
+      assert.equal(calls.filter((c) => c.url.includes("/runs?")).length, ACTIVE_SWEEP.length + page);
+    });
+  }
+
+  for (const length of [0, 1, 100, 101, 199]) {
+    it(`dispatches after a complete recent history of ${length} runs`, async () => {
+      const { gh, calls } = listing(history(length));
+      assert.equal(await dispatchPass(gh, facts), 73);
+      assert.equal(calls.filter((c) => c.method === "POST").length, 1);
+    });
+  }
+
   it("refuses an old rerun behind more than 100 newer runs while the status index lags", async () => {
     for (const at of [150, 4000]) {
       const { gh, calls } = listing(history(20_000, (i) => i === at ? "queued" : "completed"));
