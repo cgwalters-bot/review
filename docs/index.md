@@ -248,7 +248,8 @@ rows are separate from the published ones and read-only: a GitHub link and
 permission to release the hold, and nothing removes it. A published row for
 the same issue wins. A failed, partial or capped read says so and never
 that no decision waits. A decision without the label, or outside the
-organization, cannot be found this way.
+organization, cannot be found this way. A response with a missing or non-array
+`items` field is a failed read, not an empty search, including on later pages.
 
 **Published activity** sits immediately after Act now, keeping decisions first.
 It derives at most 12 rows from the existing needs-you context snapshot and

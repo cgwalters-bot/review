@@ -48,7 +48,8 @@ export async function loadNeedsHuman(gh: GitHub): Promise<NeedsHumanRead> {
   for (let page = 1; page <= NEEDS_HUMAN_PAGES; page++) {
     const { data } = await gh.get<{ items?: SearchIssue[]; total_count?: number; incomplete_results?: boolean }>(
       `/search/issues?q=${encodeURIComponent(NEEDS_HUMAN_QUERY)}&sort=created&order=asc&per_page=${PAGE_SIZE}&page=${page}`);
-    const items = data.items ?? [];
+    const items = data?.items;
+    if (!Array.isArray(items)) throw new Error("GitHub's search response has no valid items array");
     total = Math.max(total, data.total_count ?? 0);
     if (data.incomplete_results && !notes.length) notes.push("GitHub's search returned incomplete results");
     for (const raw of items) {
