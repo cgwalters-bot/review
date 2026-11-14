@@ -414,7 +414,8 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
       const fact: ProjectField = { value: item.fieldValueByName?.name ?? null, project: item.project.id, item: item.id, field: field.id,
         options: [...field.options!].sort((a, b) => a.id.localeCompare(b.id)) };
       return { title: i.title, fact, apply: async () => {
-        await gh.graphql(`mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}`, { project: item.project.id, item: item.id, field: field.id, option: option.id });
+        const result = await gh.graphql<{ updateProjectV2ItemFieldValue?: { projectV2Item?: { id?: unknown } | null } | null }>(`mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}`, { project: item.project.id, item: item.id, field: field.id, option: option.id });
+        if (result?.updateProjectV2ItemFieldValue?.projectV2Item?.id !== item.id) throw new Error("Project update not confirmed; check GitHub");
       } };
     }
   }

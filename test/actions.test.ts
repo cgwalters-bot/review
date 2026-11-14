@@ -64,6 +64,7 @@ function mock(o = offer()) {
   let intercept: (() => void) | undefined;
   const reasonReceipt = { value: { id: 30, issue_url: "https://api.github.com/repos/example/tasks/issues/1", body: "Superseded" } as unknown };
   const mergeReceipt = { value: { merged: true } as unknown };
+  const projectReceipt = { value: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "item" } } } as unknown };
   const gh = new GitHub(async () => "viewer-secret", async (url, init) => {
     assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer viewer-secret");
     const path = url.replace("https://api.github.com", "");
@@ -74,7 +75,7 @@ function mock(o = offer()) {
     if (path === "/user") return Response.json({ login: viewer });
     if (path === "/graphql") {
       if (body.query.includes("comments(first")) return Response.json({ data: { repository: { issue: { state: closed ? "CLOSED" : "OPEN", comments: { nodes: all, pageInfo: { hasNextPage: more } } } } } });
-      if (body.query.includes("updateProject")) { field.value = field.options.find((o) => o.id === body.variables.option)!.name; return Response.json({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: field.item } } } }); }
+      if (body.query.includes("updateProject")) { field.value = field.options.find((o) => o.id === body.variables.option)!.name; return Response.json({ data: projectReceipt.value }); }
       return Response.json({ data: { node: { projectItems: { nodes: [{ id: field.item, project: { id: field.project, url: project, field: { id: field.id, options: field.options } }, fieldValueByName: field.value === null ? null : { name: field.value } }], pageInfo: { hasNextPage: field.more } } } } });
     }
     const variable = /^\/orgs\/example\/actions\/variables(\/\w+)?(\/repositories\?per_page=100)?$/.exec(path);
@@ -115,7 +116,7 @@ function mock(o = offer()) {
     }
     return Response.json({});
   });
-  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
+  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, projectReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
 }
 
 const writes = (m: ReturnType<typeof mock>) => m.calls.filter((v) => v.method !== "GET" && !(v.path === "/graphql" && !v.body.query.includes("mutation")));
@@ -394,6 +395,30 @@ it("executes every action type as its exact typed mutation", async () => {
     if (expected.body) assert.deepEqual(call.body, expected.body);
     if (action.type === "set_project_field") assert.deepEqual(call.body.variables, { project: "PVT_1", item: "item", field: "field", option: "option" });
   }
+});
+
+it("stops unconfirmed project updates and never replays them", async () => {
+  for (const payload of [null, {}, [], true, { projectV2Item: null }, { projectV2Item: {} },
+    ...[null, 1, "", "other-item"].map((id) => ({ projectV2Item: { id } }))]) {
+    const o = offer([{ ...base, type: "set_project_field", project, field: "Priority", value: "P1" }, close]);
+    const m = mock(o); m.projectReceipt.value = { updateProjectV2ItemFieldValue: payload };
+    const shown = await plan(m.gh, c, o.proposal.actions);
+    const progress: string[] = [];
+    await assert.rejects(execute(m.gh, c, o, shown.expected, (_, result) => progress.push(result)), /Project update not confirmed/);
+    assert.deepEqual(progress, ["Failed or uncertain; stopped"]);
+    assert.deepEqual(targetWrites(m).map(({ method, path }) => [method, path]), [["POST", "/graphql"]]);
+    assert.match(writes(m).at(-1)!.body.body, /1\. failed or uncertain/);
+    const count = writes(m).length;
+    await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /execution record/);
+    assert.equal(writes(m).length, count);
+  }
+});
+
+it("continues after a project update confirms the exact item", async () => {
+  const { m } = await run([{ ...base, type: "set_project_field", project, field: "Priority", value: "P1" }, close]);
+  assert.equal(m.field.value, "P1");
+  assert.equal(m.issue("/repos/example/tasks/issues/1").state, "closed");
+  assert.match(writes(m).at(-1)!.body.body, /1\. done\n2\. done/);
 });
 
 it("stops proposal merges without an affirmative boolean receipt and never replays them", async () => {
