@@ -351,7 +351,13 @@ a job. It refuses all non-GET REST methods, GraphQL documents containing a
 `mutation` token, and downloads, independently of the library's preview
 guard. Only GitHub API-origin requests receive the token; redirects are
 not followed. File tokens are reread for every request, and Octo STS shares
-the existing rotation/exchange logic. **Keep the token read-only**: Projects
+the existing rotation/exchange logic. To prevent a single preview combining
+visibility scopes from different credentials, a changed token stops further
+requests and discards that preview and any prior decision evidence. The section
+reports `board preview credential changed` without a `readAt`; the existing
+failure cooldown applies before a fresh preview can use the new credential.
+Even renewal for the same identity conservatively restarts the observation;
+rotation between previews remains supported. **Keep the token read-only**: Projects
 read may be needed for the supplied board, but do not broaden a deployed
 token's permissions as part of enabling this preview. `poll.yml` remains
 the sole writer; preview starts are proposals, never execution receipts.

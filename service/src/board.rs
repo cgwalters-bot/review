@@ -90,6 +90,7 @@ impl Pacing {
 struct Work {
     cancelled: AtomicBool,
     limited: AtomicBool,
+    credential_changed: AtomicBool,
     request: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
@@ -191,6 +192,10 @@ impl Reader {
                     Default::default(),
                     OffsetDateTime::parse(&at_owned, &Rfc3339)?,
                 ))?;
+                ensure!(
+                    !transport.work.credential_changed.load(Ordering::SeqCst),
+                    "preview credential changed"
+                );
                 let mut value = serde_json::to_value(snapshot)?;
                 let mut private = transport.reader.private.clone();
                 private.extend(transport.secrets.lock().unwrap().iter().cloned());
@@ -210,7 +215,11 @@ impl Reader {
         })
         .await;
         let result = result.ok().and_then(Result::ok);
-        if work.limited.load(Ordering::SeqCst) {
+        if work.credential_changed.load(Ordering::SeqCst) {
+            // Prior evidence may belong to the old credential too. Do not carry
+            // it into a publication after observing an identity boundary.
+            deferred(None, "board preview credential changed")
+        } else if work.limited.load(Ordering::SeqCst) {
             deferred(prev, "board preview rate limited")
         } else {
             observed(result, prev, at)
@@ -319,7 +328,19 @@ impl Direct {
                     .token()
                     .await
                     .map_err(|_| anyhow::anyhow!("forge token unavailable"))?;
-                secrets.lock().unwrap().push(token.clone());
+                {
+                    let mut secrets = secrets.lock().unwrap();
+                    // A single preview must not combine visibility scopes from
+                    // different credentials. Still reread the source each time,
+                    // so rotation/revocation is not hidden by a pinned token.
+                    if secrets.first().is_some_and(|first| first != &token) {
+                        work.credential_changed.store(true, Ordering::SeqCst);
+                        bail!("preview credential changed");
+                    }
+                    if secrets.is_empty() {
+                        secrets.push(token.clone());
+                    }
+                }
                 let is_query = query.is_some();
                 let mut req = match query {
                     Some(query) => reader.http.post(url).json(&query),
@@ -419,6 +440,10 @@ impl Direct {
     }
 
     fn admit(&self) -> Result<()> {
+        ensure!(
+            !self.work.credential_changed.load(Ordering::SeqCst),
+            "preview credential changed"
+        );
         ensure!(
             !self.work.cancelled.load(Ordering::SeqCst),
             "preview cancelled"
@@ -989,6 +1014,7 @@ mod tests {
         auth: Arc<Mutex<Vec<String>>>,
         usage: Arc<Mutex<Option<Value>>>,
         items: Arc<Mutex<Vec<Value>>>,
+        rotate_token: Arc<Mutex<Option<std::path::PathBuf>>>,
     }
 
     async fn fake(
@@ -1002,6 +1028,9 @@ mod tests {
             .lock()
             .unwrap()
             .push(headers["authorization"].to_str().unwrap().to_owned());
+        if let Some(path) = fake.rotate_token.lock().unwrap().take() {
+            std::fs::write(path, "fixture-rotated").unwrap();
+        }
         let query: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
         if query.is_null() {
             if uri.path().contains("/actions/") {
@@ -1122,6 +1151,62 @@ mod tests {
         assert_eq!(stale.read_at, first.read_at);
         assert!(!stale.complete);
         assert!(stale.error.is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mid_preview_rotation_discards_evidence_and_recovers() {
+        let fake = Fake::default();
+        let root = serve(fake.clone()).await;
+        let dir =
+            std::env::temp_dir().join(format!("review-board-rotation-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("token");
+        std::fs::write(&file, "fixture-original").unwrap();
+        let reader = reader(Some(root), TokenSource::File(file.clone()));
+        let previous = reader.refresh(None, AT).await;
+        assert_eq!(previous.items.len(), 1);
+        *reader.pacing.lock().unwrap() = Pacing::default();
+        let before = fake.calls.load(Ordering::SeqCst);
+        *fake.rotate_token.lock().unwrap() = Some(file);
+
+        let changed = reader.refresh(Some(&previous), AT).await;
+        assert_eq!(fake.calls.load(Ordering::SeqCst), before + 1);
+        assert!(
+            changed.items.is_empty(),
+            "must not retain old-identity evidence"
+        );
+        assert_eq!(changed.read_at, None);
+        assert!(!changed.complete);
+        assert_eq!(
+            changed.error.as_deref(),
+            Some("board preview credential changed")
+        );
+        assert_eq!(reader.status().consecutive_failures, 1);
+        assert_eq!(reader.status().last_success_age_seconds, None);
+        assert!(
+            !fake
+                .auth
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|a| a.contains("rotated"))
+        );
+
+        // The existing cooldown applies; no immediate retry or credential loop.
+        reader.refresh(Some(&changed), AT).await;
+        assert_eq!(fake.calls.load(Ordering::SeqCst), before + 1);
+        *reader.pacing.lock().unwrap() = Pacing::default();
+        let recovered = reader.refresh(Some(&changed), AT).await;
+        assert_eq!(recovered.items, previous.items);
+        assert!(
+            fake.auth
+                .lock()
+                .unwrap()
+                .iter()
+                .skip(before + 1)
+                .all(|a| a == "Bearer fixture-rotated")
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
