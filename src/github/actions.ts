@@ -373,8 +373,8 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
       return { title: pr.title, fact: pr.merged ? "merged" : `${pr.state}${pr.draft ? " draft" : ""} ${pr.head.sha}`, apply: async () => {
         if (a.type === "approve_pull_request") await send("POST", `${prPath}/reviews`, { event: "APPROVE", commit_id: a.head_sha });
         else {
-          const result = await gh.send<{ merged: boolean; message: string }>("PUT", `${prPath}/merge`, { sha: a.head_sha, merge_method: a.method });
-          if (!result.merged) throw new Error(`Not merged: ${result.message}`);
+          const result = await gh.send<{ merged?: unknown } | null>("PUT", `${prPath}/merge`, { sha: a.head_sha, merge_method: a.method });
+          if (result?.merged !== true) throw new Error("Merge not confirmed; check GitHub");
         }
       } };
     }
