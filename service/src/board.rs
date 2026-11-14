@@ -485,14 +485,20 @@ impl Direct {
                     pacing.lock().unwrap().limited(evidence.clone(), wait);
                 }
                 let mut body = Vec::new();
-                while let Some(chunk) = response
-                    .chunk()
-                    .await
-                    .map_err(|_| anyhow::anyhow!("forge body failed"))?
-                {
-                    ensure!(body.len() + chunk.len() <= MAX_BODY, "forge body too large");
-                    body.extend_from_slice(&chunk);
+                // Header-classified refusals need no body evidence. A stalled
+                // error stream must not hold the preview until its timeout or
+                // turn a known throttle into a generic body-read failure.
+                if !limited {
+                    while let Some(chunk) = response
+                        .chunk()
+                        .await
+                        .map_err(|_| anyhow::anyhow!("forge body failed"))?
+                    {
+                        ensure!(body.len() + chunk.len() <= MAX_BODY, "forge body too large");
+                        body.extend_from_slice(&chunk);
+                    }
                 }
+                drop(response);
                 // The last response has no subsequent request to detect a
                 // rotation. Recheck before accepting its evidence, within the
                 // same request timeout (including token acquisition).
@@ -1805,6 +1811,85 @@ mod tests {
         assert_eq!(value["decision"]["items"], json!([]));
         assert_eq!(value["decision"]["readAt"], Value::Null);
         assert_eq!(fake.calls.load(Ordering::SeqCst), calls);
+    }
+
+    #[tokio::test]
+    async fn header_throttles_skip_stalled_bodies_but_recheck_credentials() {
+        use axum::{body::Body, http::StatusCode, response::IntoResponse};
+
+        for status in [403, 429, 503] {
+            for rotate in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let file = dir.path().join("token");
+                tokio::fs::write(&file, "fixture-before").await.unwrap();
+                let calls = Arc::new(AtomicUsize::new(0));
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let root = format!("http://{}", listener.local_addr().unwrap());
+                let server = tokio::spawn({
+                    let file = file.clone();
+                    let calls = calls.clone();
+                    async move {
+                        axum::serve(
+                            listener,
+                            Router::new().fallback(any(move || {
+                                let file = file.clone();
+                                let calls = calls.clone();
+                                async move {
+                                    calls.fetch_add(1, Ordering::SeqCst);
+                                    if rotate {
+                                        tokio::fs::write(file, "fixture-after").await.unwrap();
+                                    }
+                                    (
+                                        StatusCode::from_u16(status).unwrap(),
+                                        [("retry-after", "600")],
+                                        Body::from_stream(futures_util::stream::pending::<
+                                            Result<axum::body::Bytes, std::io::Error>,
+                                        >(
+                                        )),
+                                    )
+                                        .into_response()
+                                }
+                            })),
+                        )
+                        .await
+                        .unwrap();
+                    }
+                });
+                let reader = reader(Some(root), TokenSource::File(file));
+                let runtime = tokio::runtime::Handle::current();
+                let work = Arc::new(Work::default());
+                let cancel = CancelOnDrop(work.clone());
+                let request = tokio::task::spawn_blocking({
+                    let reader = reader.clone();
+                    let work = work.clone();
+                    move || {
+                        let _guard = runtime.enter();
+                        let mut client = direct(reader);
+                        client.work = work;
+                        client
+                            .get("https://api.github.com/stalled", None)
+                            .err()
+                            .unwrap()
+                    }
+                });
+                let result = tokio::time::timeout(Duration::from_secs(2), request).await;
+                drop(cancel);
+                server.abort();
+                let error = result
+                    .expect("throttle must not wait for its body")
+                    .unwrap();
+                assert_eq!(error.is::<board_forge::github::RateLimited>(), !rotate);
+                assert_eq!(work.credential_changed.load(Ordering::SeqCst), rotate);
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+                let status = reader.status();
+                assert!(status.retry_in_seconds >= 598);
+                assert_eq!(status.rate_limit.unwrap().retry_after_seconds, Some(600));
+                for _ in 0..3 {
+                    reader.refresh(None, AT).await;
+                }
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+            }
+        }
     }
 
     #[tokio::test]
