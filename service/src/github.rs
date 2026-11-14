@@ -28,6 +28,10 @@ const SHORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 const API_VERSION: &str = "2022-11-28";
 
+// Page counts alone do not bound memory: even one upstream item or error
+// response can be arbitrarily large. Bound bytes before parsing or caching.
+const MAX_BODY: usize = 2 * 1024 * 1024;
+
 /// Where the state's reads come from: GitHub, or recorded answers in tests.
 pub trait Source: Sync {
     /// The JSON answer to a GET of `path` (with its query), relative to the API root.
@@ -151,7 +155,7 @@ impl Source for Client {
         if let Some((etag, _)) = &cached {
             req = req.header(IF_NONE_MATCH, etag);
         }
-        let resp = req.send().await.with_context(|| format!("GET {path}"))?;
+        let mut resp = req.send().await.with_context(|| format!("GET {path}"))?;
         let status = resp.status();
         if status == StatusCode::NOT_MODIFIED {
             let Some((etag, value)) = cached else {
@@ -169,17 +173,28 @@ impl Source for Client {
             .get(ETAG)
             .and_then(|v: &HeaderValue| v.to_str().ok())
             .map(str::to_owned);
+        // Count streamed bytes, not just Content-Length (which may be absent).
+        // The same bound covers errors; never cache a truncated representation.
+        let mut body = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .with_context(|| format!("GET {path}: reading the answer"))?
+        {
+            ensure!(
+                chunk.len() <= MAX_BODY - body.len(),
+                "GET {path}: response body exceeds {MAX_BODY} bytes"
+            );
+            body.extend_from_slice(&chunk);
+        }
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<Value>(&body)
+            let message = serde_json::from_slice::<Value>(&body)
                 .ok()
                 .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_owned))
-                .unwrap_or(body);
+                .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
             bail!("GET {path}: HTTP {}: {message}", status.as_u16());
         }
-        let value: Value = resp
-            .json()
-            .await
+        let value: Value = serde_json::from_slice(&body)
             .with_context(|| format!("GET {path}: reading the answer"))?;
         if let Some(etag) = etag {
             self.cache
@@ -447,5 +462,102 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err.to_string(), "the CA has no certificate");
+    }
+
+    #[tokio::test]
+    async fn response_body_bound() {
+        use axum::body::{Body, Bytes};
+        use axum::extract::Path;
+
+        let app = Router::new().route(
+            "/{status}/{size}/{streamed}",
+            get(
+                |Path((status, size, streamed)): Path<(u16, usize, bool)>| async move {
+                    // Valid JSON exactly `size` bytes long, also on the error path.
+                    let json = format!("\"{}\"", "x".repeat(size - 2));
+                    let body = if streamed {
+                        let chunks: Vec<_> = json
+                            .as_bytes()
+                            .chunks(8192)
+                            .map(|b| Ok::<_, std::io::Error>(Bytes::copy_from_slice(b)))
+                            .collect();
+                        Body::from_stream(futures_util::stream::iter(chunks))
+                    } else {
+                        Body::from(json)
+                    };
+                    (
+                        StatusCode::from_u16(status).unwrap(),
+                        [(ETAG, "\"v1\"")],
+                        body,
+                    )
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for api in [Api::GitHub, Api::Forgejo, Api::Kubernetes] {
+            let client =
+                Client::build(api, Arc::new(TokenSource::Fixed("t".into())), &root, None).unwrap();
+            for streamed in [false, true] {
+                let path = format!("/200/{MAX_BODY}/{streamed}");
+                assert_eq!(
+                    client.get(&path).await.unwrap().as_str().unwrap().len(),
+                    MAX_BODY - 2
+                );
+                assert!(client.cached(&CacheKey::new(&path, "t")).is_some());
+                for status in [200, 500] {
+                    let path = format!("/{status}/{}/{streamed}", MAX_BODY + 1);
+                    let err = client.get(&path).await.unwrap_err().to_string();
+                    assert_eq!(
+                        err,
+                        format!("GET {path}: response body exceeds {MAX_BODY} bytes"),
+                        "{api:?}"
+                    );
+                    assert!(client.cached(&CacheKey::new(&path, "t")).is_none());
+                }
+            }
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oversized_refresh_does_not_replace_cached_answer() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/thing",
+            get(move |headers: HeaderMap| {
+                let read = reads.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if read == 0 {
+                        assert!(!headers.contains_key(IF_NONE_MATCH));
+                        return ([(ETAG, "\"old\"")], "{\"n\":1}").into_response();
+                    }
+                    assert_eq!(headers[IF_NONE_MATCH], "\"old\"");
+                    if read == 1 {
+                        ([(ETAG, "\"oversized\"")], "x".repeat(MAX_BODY + 1)).into_response()
+                    } else {
+                        StatusCode::NOT_MODIFIED.into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Client::new(TokenSource::Fixed("t".into()), &root).unwrap();
+        let original = client.get("/thing").await.unwrap();
+        client.sweep();
+        assert!(
+            client
+                .get("/thing")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("response body exceeds")
+        );
+        assert!(client.cache.lock().unwrap().next.is_empty());
+        assert_eq!(client.get("/thing").await.unwrap(), original);
+        server.abort();
     }
 }
