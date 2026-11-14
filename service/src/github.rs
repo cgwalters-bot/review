@@ -1,6 +1,6 @@
 //! A read-only REST client for the GitHub, Forgejo or Kubernetes API. It has only
 //! `get`, so the service can't write with the token it holds. Each GET is
-//! conditional on the ETag of the last answer to the same path: an
+//! conditional on the ETag of the last answer to the same path and credential: an
 //! unchanged answer is a 304, which costs no rate budget, and is served
 //! from the cache.
 
@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail, ensure};
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, AUTHORIZATION, ETAG, HeaderValue, IF_NONE_MATCH, USER_AGENT};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::token::TokenSource;
 
@@ -33,13 +34,31 @@ pub trait Source: Sync {
     fn get(&self, path: &str) -> impl Future<Output = Result<Value>> + Send;
 }
 
-/// The cached answers by path. `prev` holds the last refresh's, `next`
+/// Scope validators and bodies to the credential actually sent on the request.
+/// Keep only its digest in the cache, never the bearer token. Root, API type and
+/// representation headers are fixed for the lifetime of the owning client.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    path: String,
+    credential: [u8; 32],
+}
+
+impl CacheKey {
+    fn new(path: &str, token: &str) -> Self {
+        Self {
+            path: path.to_owned(),
+            credential: Sha256::digest(token.as_bytes()).into(),
+        }
+    }
+}
+
+/// The cached answers by path and credential. `prev` holds the last refresh's, `next`
 /// this one's; `sweep` drops what a refresh didn't ask for again, so the
 /// cache holds at most two refreshes' answers.
 #[derive(Default)]
 struct Cache {
-    prev: HashMap<String, (String, Value)>,
-    next: HashMap<String, (String, Value)>,
+    prev: HashMap<CacheKey, (String, Value)>,
+    next: HashMap<CacheKey, (String, Value)>,
 }
 
 /// Which API a client speaks, which decides how it sends the token.
@@ -102,20 +121,17 @@ impl Client {
         cache.prev = std::mem::take(&mut cache.next);
     }
 
-    fn cached(&self, path: &str) -> Option<(String, Value)> {
+    fn cached(&self, key: &CacheKey) -> Option<(String, Value)> {
         let cache = self.cache.lock().unwrap();
-        cache
-            .next
-            .get(path)
-            .or_else(|| cache.prev.get(path))
-            .cloned()
+        cache.next.get(key).or_else(|| cache.prev.get(key)).cloned()
     }
 }
 
 impl Source for Client {
     async fn get(&self, path: &str) -> Result<Value> {
-        let cached = self.cached(path);
         let token = self.token.token().await?;
+        let key = CacheKey::new(path, &token);
+        let cached = self.cached(&key);
         let mut req = self
             .http
             .get(format!("{}{path}", self.root))
@@ -145,7 +161,7 @@ impl Source for Client {
                 .lock()
                 .unwrap()
                 .next
-                .insert(path.to_owned(), (etag, value.clone()));
+                .insert(key, (etag, value.clone()));
             return Ok(value);
         }
         let etag = resp
@@ -170,7 +186,7 @@ impl Source for Client {
                 .lock()
                 .unwrap()
                 .next
-                .insert(path.to_owned(), (etag, value.clone()));
+                .insert(key, (etag, value.clone()));
         }
         Ok(value)
     }
@@ -279,6 +295,150 @@ mod tests {
         ] {
             assert_eq!(client.get("/auth").await.unwrap(), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn rotated_credentials_do_not_share_validators_or_bodies() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let seen = hits.clone();
+        let app = Router::new()
+            .route(
+                "/scoped",
+                get(move |headers: HeaderMap| {
+                    let seen = seen.clone();
+                    async move {
+                        if headers[AUTHORIZATION]
+                            .to_str()
+                            .unwrap()
+                            .ends_with(" refused")
+                        {
+                            return StatusCode::UNAUTHORIZED.into_response();
+                        }
+                        // Resource versions can coincide across credential-dependent
+                        // representations. A validator alone is not an identity.
+                        if headers.contains_key(IF_NONE_MATCH) {
+                            seen.fetch_add(1, Ordering::SeqCst);
+                            return StatusCode::NOT_MODIFIED.into_response();
+                        }
+                        (
+                            [(ETAG, "\"same-version\"")],
+                            axum::Json(serde_json::json!({
+                                "authorization": headers[AUTHORIZATION].to_str().unwrap(),
+                            })),
+                        )
+                            .into_response()
+                    }
+                }),
+            )
+            .route("/unsolicited", get(|| async { StatusCode::NOT_MODIFIED }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        for api in [Api::GitHub, Api::Forgejo, Api::Kubernetes] {
+            let before = hits.load(Ordering::SeqCst);
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("token");
+            let client =
+                Client::build(api, Arc::new(TokenSource::File(path.clone())), &root, None).unwrap();
+            let scheme = if api == Api::Forgejo {
+                "token"
+            } else {
+                "Bearer"
+            };
+            for token in ["first", "first", "second", "second", "first"] {
+                tokio::fs::write(&path, token).await.unwrap();
+                let value = client.get("/scoped").await.unwrap();
+                assert_eq!(
+                    value["authorization"],
+                    format!("{scheme} {token}"),
+                    "{api:?}"
+                );
+                client.sweep();
+            }
+            // A cache miss must not accept an unsolicited 304 either.
+            client.sweep();
+            client.sweep();
+            assert_eq!(
+                client.get("/scoped").await.unwrap()["authorization"],
+                format!("{scheme} first")
+            );
+            assert!(
+                client
+                    .get("/unsolicited")
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("304 without a cached answer")
+            );
+            // An expired/revoked replacement must fail, not serve old facts.
+            tokio::fs::write(&path, "refused").await.unwrap();
+            assert!(
+                client
+                    .get("/scoped")
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("HTTP 401")
+            );
+            assert_eq!(
+                hits.load(Ordering::SeqCst) - before,
+                2,
+                "{api:?}: unchanged credentials still revalidate; rotation and cache loss read full bodies"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn late_response_stays_in_its_requests_credential_scope() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let signals = (started.clone(), release.clone());
+        let app = Router::new().route(
+            "/scoped",
+            get(move |headers: HeaderMap| {
+                let (started, release) = signals.clone();
+                async move {
+                    if headers.contains_key(IF_NONE_MATCH) {
+                        return StatusCode::NOT_MODIFIED.into_response();
+                    }
+                    let auth = headers[AUTHORIZATION].to_str().unwrap();
+                    if auth == "Bearer first" {
+                        started.notify_one();
+                        release.notified().await;
+                    }
+                    (
+                        [(ETAG, "\"same-version\"")],
+                        axum::Json(serde_json::json!({"authorization": auth})),
+                    )
+                        .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token");
+        tokio::fs::write(&path, "first").await.unwrap();
+        let client = Arc::new(Client::new(TokenSource::File(path.clone()), &root).unwrap());
+        let old = client.clone();
+        let old = tokio::spawn(async move { old.get("/scoped").await.unwrap() });
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, "second").await.unwrap();
+        assert_eq!(
+            client.get("/scoped").await.unwrap()["authorization"],
+            "Bearer second"
+        );
+        release.notify_one();
+        assert_eq!(old.await.unwrap()["authorization"], "Bearer first");
+        client.sweep();
+        assert_eq!(
+            client.get("/scoped").await.unwrap()["authorization"],
+            "Bearer second"
+        );
     }
 
     #[test]
