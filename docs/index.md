@@ -945,6 +945,12 @@ shortfalls, omitted/unreadable counts and missing-list explanations alongside
 service coverage or refresh errors; partial or unavailable decisions never
 report `settled: true`. Without this setting, direct GitHub reads are unchanged.
 
+Service HTTP reads have a 15-second timeout and a 2 MiB body limit. A connection
+failure, including one after response headers or a partial body, reports
+`Service decision unavailable` without exposing transport error details. Failed
+reads do not fall back to GitHub or treat a partial document as an empty queue;
+the CLI exits unsuccessfully. Oversized bodies retain a distinct size-bound error.
+
 Its read commands send only GET requests. Its act commands run the code
 behind the app's buttons, with the same checks, and write only with `--yes`;
 `--dry-run` makes the same reads and prints the writes it would send. Only
