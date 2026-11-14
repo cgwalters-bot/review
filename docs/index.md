@@ -249,7 +249,11 @@ permission to release the hold, and nothing removes it. A published row for
 the same issue wins. A failed, partial or capped read says so and never
 that no decision waits. A decision without the label, or outside the
 organization, cannot be found this way. A response with a missing or non-array
-`items` field is a failed read, not an empty search, including on later pages.
+`items` field is a failed read, not an empty search. If a later page fails
+(including a malformed response), decisions from earlier pages stay visible
+with a partial-read warning naming the failed page. The search stops there;
+it does not retry or claim those decisions are the whole list. A first-page
+failure still reports the source unavailable.
 
 **Published activity** sits immediately after Act now, keeping decisions first.
 It derives at most 12 rows from the existing needs-you context snapshot and

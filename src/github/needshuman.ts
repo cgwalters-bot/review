@@ -26,7 +26,7 @@ export interface LabelledIssue {
 
 export interface NeedsHumanRead {
   issues: readonly LabelledIssue[];
-  /** Why the issues may not be all of them: a page cap or GitHub's incomplete search. */
+  /** Why the issues may not be all of them: a failed page, cap or incomplete search. */
   partial?: string;
   /** Why nothing could be read; `issues` is then empty and says nothing about whether any exist. */
   error?: string;
@@ -40,16 +40,23 @@ interface SearchIssue {
 
 export const issueKey = (repository: string, number: number): string => `${repository}#${number}`.toLowerCase();
 
-/** One bounded search; a failed read throws, for readSource to say. */
+/** One bounded search; keep known decisions if a later page cannot be read. */
 export async function loadNeedsHuman(gh: GitHub): Promise<NeedsHumanRead> {
   const issues = new Map<string, LabelledIssue>();
   const notes: string[] = [];
   let total = 0;
   for (let page = 1; page <= NEEDS_HUMAN_PAGES; page++) {
-    const { data } = await gh.get<{ items?: SearchIssue[]; total_count?: number; incomplete_results?: boolean }>(
-      `/search/issues?q=${encodeURIComponent(NEEDS_HUMAN_QUERY)}&sort=created&order=asc&per_page=${PAGE_SIZE}&page=${page}`);
-    const items = data?.items;
-    if (!Array.isArray(items)) throw new Error("GitHub's search response has no valid items array");
+    let data: { items?: SearchIssue[]; total_count?: number; incomplete_results?: boolean };
+    try {
+      ({ data } = await gh.get<typeof data>(
+        `/search/issues?q=${encodeURIComponent(NEEDS_HUMAN_QUERY)}&sort=created&order=asc&per_page=${PAGE_SIZE}&page=${page}`));
+      if (!Array.isArray(data?.items)) throw new Error("GitHub's search response has no valid items array");
+    } catch (e) {
+      if (page === 1) throw e;
+      notes.push(`Could not read search page ${page}; only earlier pages are shown`);
+      break;
+    }
+    const items = data.items!;
     total = Math.max(total, data.total_count ?? 0);
     if (data.incomplete_results && !notes.length) notes.push("GitHub's search returned incomplete results");
     for (const raw of items) {
