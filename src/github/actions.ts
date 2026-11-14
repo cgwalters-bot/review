@@ -388,7 +388,9 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
           const posted = await gh.send<{ id?: number; issue_url?: string; body?: string } | null>("POST", `${path}/comments`, { body: a.reason });
           if (typeof posted?.id !== "number" || !Number.isSafeInteger(posted.id) || posted.id < 1 || typeof posted.issue_url !== "string" || posted.issue_url.toLowerCase() !== `https://api.github.com${path}`.toLowerCase() || posted.body !== a.reason) throw new Error("GitHub did not confirm the reason comment on this issue; check GitHub before proposing another close");
         }
-        await send("PATCH", path, { state: a.type === "close_issue" ? "closed" : "open" });
+        const state = a.type === "close_issue" ? "closed" : "open";
+        const result = await gh.send<{ id?: unknown; url?: unknown; state?: unknown; pull_request?: unknown } | null>("PATCH", path, { state });
+        if (typeof result?.id !== "number" || !Number.isSafeInteger(result.id) || result.id < 1 || result.id !== i.id || typeof result.url !== "string" || result.url.toLowerCase() !== `https://api.github.com${path}`.toLowerCase() || result.state !== state || result.pull_request) throw new Error("Issue state update not confirmed; check GitHub before proposing another state change");
       } };
     }
     case "add_label": case "remove_label": {
