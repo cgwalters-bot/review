@@ -404,7 +404,10 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
     case "add_sub_issue": case "move_sub_issue": {
       const i = await issue(gh, a.repo, a.number);
       const parent = await issue(gh, a.parent_repo, a.parent_number);
-      return { title: `${i.title} → ${parent.title}`, fact: parentOf(i), apply: () => send("POST", `/repos/${a.parent_repo}/issues/${a.parent_number}/sub_issues`, { sub_issue_id: i.id, replace_parent: a.type === "move_sub_issue" }) };
+      return { title: `${i.title} → ${parent.title}`, fact: parentOf(i), apply: async () => {
+        const result = await gh.send<{ id?: unknown; url?: unknown; parent_issue_url?: unknown; pull_request?: unknown } | null>("POST", `/repos/${a.parent_repo}/issues/${a.parent_number}/sub_issues`, { sub_issue_id: i.id, replace_parent: a.type === "move_sub_issue" });
+        if (typeof result?.id !== "number" || !Number.isSafeInteger(result.id) || result.id < 1 || result.id !== i.id || typeof result.url !== "string" || result.url.toLowerCase() !== `https://api.github.com${path}`.toLowerCase() || typeof result.parent_issue_url !== "string" || result.parent_issue_url.toLowerCase() !== `https://api.github.com/repos/${a.parent_repo}/issues/${a.parent_number}`.toLowerCase() || result.pull_request) throw new Error("Sub-issue update not confirmed; check GitHub before proposing another parent change");
+      } };
     }
     case "set_project_field": {
       if (!c.project || a.project.toLowerCase() !== c.project.toLowerCase()) throw new Error("Project is not allowed");

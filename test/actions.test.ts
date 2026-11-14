@@ -66,6 +66,7 @@ function mock(o = offer()) {
   const mergeReceipt = { value: { merged: true } as unknown };
   const stateReceipt = { value: undefined as unknown };
   const labelReceipt = { value: undefined as unknown };
+  const subIssueReceipt = { value: undefined as unknown };
   const projectReceipt = { value: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "item" } } } as unknown };
   const approvalReceipt = { value: { id: 31, state: "APPROVED", commit_id: head, pull_request_url: "https://api.github.com/repos/example/tasks/pulls/1" } as unknown };
   const gh = new GitHub(async () => "viewer-secret", async (url, init) => {
@@ -115,12 +116,16 @@ function mock(o = offer()) {
       if (method === "POST" && m[2] === "/labels") i.labels.push({ name: body.labels[0] });
       if (method === "DELETE" && m[2]!.startsWith("/labels/")) i.labels = i.labels.filter((l: { name: string }) => l.name !== decodeURIComponent(m[2]!.slice(8)));
       if (m[2]!.startsWith("/labels") && method !== "GET") return Response.json(labelReceipt.value === undefined ? i.labels : labelReceipt.value);
-      if (method === "POST" && m[2] === "/sub_issues") issue(`/repos/example/tasks/issues/1`).parent_issue_url = `https://api.github.com${m[1]}`;
+      if (method === "POST" && m[2] === "/sub_issues") {
+        const child = issue(`/repos/example/tasks/issues/1`);
+        child.parent_issue_url = `https://api.github.com${m[1]}`;
+        return Response.json(subIssueReceipt.value === undefined ? child : subIssueReceipt.value);
+      }
       return Response.json(method === "GET" ? i : {});
     }
     return Response.json({});
   });
-  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, stateReceipt, labelReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
+  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, stateReceipt, labelReceipt, subIssueReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
 }
 
 const writes = (m: ReturnType<typeof mock>) => m.calls.filter((v) => v.method !== "GET" && !(v.path === "/graphql" && !v.body.query.includes("mutation")));
@@ -553,6 +558,43 @@ it("stops unconfirmed issue state writes and never replays them", async () => {
       assert.equal(writes(m).length, count);
     }
   }
+});
+
+it("stops unconfirmed sub-issue writes and never replays them", async () => {
+  const path = "/repos/example/tasks/issues/1";
+  const parent = "https://api.github.com/repos/example/tracker/issues/2";
+  const valid = { id: 101, url: `https://api.github.com${path}`, parent_issue_url: parent };
+  for (const type of ["add_sub_issue", "move_sub_issue"] as const) {
+    const action: Action = { ...base, type, parent_repo: "example/tracker", parent_number: 2,
+      ...(type === "move_sub_issue" ? { previous_parent_repo: "example/tasks", previous_parent_number: 3 } : {}) } as Action;
+    for (const receipt of [null, {}, [], true,
+      ...[null, "101", 0, 1.5, 102].map((id) => ({ ...valid, id })),
+      ...[null, 42, "https://api.github.com/repos/example/tasks/issues/2"].map((url) => ({ ...valid, url })),
+      ...[undefined, null, 42, "https://api.github.com/repos/example/tasks/issues/2", "https://api.github.com/repos/example/tasks/issues/3"].map((parent_issue_url) => ({ ...valid, parent_issue_url })),
+      { ...valid, pull_request: {} }]) {
+      const o = offer([action, { ...base, type: "add_label", label: "done" }]);
+      const m = mock(o); m.subIssueReceipt.value = receipt;
+      if (type === "move_sub_issue") m.issue(path).parent_issue_url = "https://api.github.com/repos/example/tasks/issues/3";
+      const shown = await plan(m.gh, c, o.proposal.actions);
+      const progress: string[] = [];
+      await assert.rejects(execute(m.gh, c, o, shown.expected, (_, result) => progress.push(result)), /Sub-issue update not confirmed/);
+      assert.deepEqual(progress, ["Failed or uncertain; stopped"]);
+      assert.equal(targetWrites(m).length, 1);
+      assert.deepEqual(targetWrites(m)[0], { method: "POST", path: "/repos/example/tracker/issues/2/sub_issues", body: { sub_issue_id: 101, replace_parent: type === "move_sub_issue" } });
+      assert.match(writes(m).at(-1)!.body.body, /1\. failed or uncertain/);
+      const count = writes(m).length;
+      await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /execution record/);
+      assert.equal(writes(m).length, count);
+    }
+  }
+});
+
+it("continues after confirmed cross-repository sub-issue acknowledgments", async () => {
+  const { m } = await run([
+    { ...base, type: "add_sub_issue", parent_repo: "example/tracker", parent_number: 2 },
+    { ...base, type: "move_sub_issue", parent_repo: "example/tasks", parent_number: 3, previous_parent_repo: "example/tracker", previous_parent_number: 2 },
+  ]);
+  assert.match(writes(m).at(-1)!.body.body, /1\. done\n2\. done/);
 });
 
 it("continues after confirmed close and reopen acknowledgments", async () => {
