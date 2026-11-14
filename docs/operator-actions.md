@@ -68,6 +68,12 @@ The preview still shows values, not internal IDs. Changing any option requires
 a fresh preview, even if it is not the option being set. No extra requests or
 configuration are needed; the existing proposal opt-in remains unchanged.
 
+To avoid reporting an unconfirmed project update as done, its mutation response
+must name the exact item ID just written. A missing, malformed or different ID
+stops the batch as failed or uncertain, retaining the execution reservation so
+it cannot silently retry. Check the project on GitHub before proposing a repair;
+the write may have succeeded even when its confirmation was unusable.
+
 `set_org_variable` and `apply_org_ruleset` are different: they overwrite org
 state that was the proposal's input, so they carry the prior state the
 proposer saw, and the action is stale unless live state still matches it.
