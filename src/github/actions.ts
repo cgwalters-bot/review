@@ -521,7 +521,8 @@ export async function execute(gh: GitHub, c: ActionConfig, o: Offered, shown: Fa
   if (JSON.stringify(expected) !== JSON.stringify(shown)) throw new Error("Stale: a target changed since the proposal was shown; reload it");
   // Record BEFORE mutations: a lost response, closed tab or partial failure must
   // never silently retry. GitHub comments are not a transactional lock; see docs.
-  const receipt = await gh.send<{ id: number }>("POST", `/repos/${c.tracker}/issues/${o.issue}/comments`, { body: `${marker(o)}\nExecution reserved; an interrupted execution must be checked manually.` });
+  const receipt = await gh.send<{ id?: unknown } | null>("POST", `/repos/${c.tracker}/issues/${o.issue}/comments`, { body: `${marker(o)}\nExecution reserved; an interrupted execution must be checked manually.` });
+  if (typeof receipt?.id !== "number" || !Number.isSafeInteger(receipt.id) || receipt.id < 1) throw new Error("Reservation not confirmed; check GitHub before trying again");
   const results: string[] = [];
   try {
     const all = await comments(gh, c, o.issue);

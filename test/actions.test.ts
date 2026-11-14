@@ -62,6 +62,7 @@ function mock(o = offer()) {
   let more = false;
   let closed = false;
   let intercept: (() => void) | undefined;
+  const reservationReceipt = { value: { id: 20 } as unknown, visible: true };
   const reasonReceipt = { value: { id: 30, issue_url: "https://api.github.com/repos/example/tasks/issues/1", body: "Superseded" } as unknown };
   const mergeReceipt = { value: { merged: true } as unknown };
   const stateReceipt = { value: undefined as unknown };
@@ -103,8 +104,8 @@ function mock(o = offer()) {
     }
     if (path.includes("?state=open")) return Response.json([{ number: 9 }]);
     if (method === "POST" && path === `/repos/${c.tracker}/issues/9/comments`) {
-      all.push({ id: "IC_receipt", databaseId: 20, body: body.body, updatedAt: stamp, author: { login: c.operator }, editor: null, lastEditedAt: null });
-      return Response.json({ id: 20 });
+      if (reservationReceipt.visible) all.push({ id: "IC_receipt", databaseId: 20, body: body.body, updatedAt: stamp, author: { login: c.operator }, editor: null, lastEditedAt: null });
+      return Response.json(reservationReceipt.value);
     }
     if (method === "GET" && /\/pulls\/\d+$/.test(path)) return Response.json(pr);
     if (method === "PUT" && path.endsWith("/merge")) { pr.merged = true; return Response.json(mergeReceipt.value); }
@@ -126,7 +127,7 @@ function mock(o = offer()) {
     }
     return Response.json({});
   });
-  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, stateReceipt, labelReceipt, subIssueReceipt, rulesetReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
+  return { gh, all, calls, issue, pr, field, org, reservationReceipt, reasonReceipt, mergeReceipt, stateReceipt, labelReceipt, subIssueReceipt, rulesetReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
 }
 
 const writes = (m: ReturnType<typeof mock>) => m.calls.filter((v) => v.method !== "GET" && !(v.path === "/graphql" && !v.body.query.includes("mutation")));
@@ -715,6 +716,22 @@ it("refuses to execute when a target changed after it was shown, before reservin
   const shown = await plan(m.gh, c, o.proposal.actions); m.field.value = "P3";
   await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /since the proposal was shown/);
   assert.deepEqual(writes(m), []);
+});
+
+it("refuses malformed reservation IDs before any action or receipt update", async () => {
+  for (const visible of [false, true]) for (const value of [{}, null, [], true, { id: null }, { id: "20" }, { id: 0 }, { id: -1 }, { id: 1.5 }, { id: Number.MAX_SAFE_INTEGER + 1 }]) {
+    const o = offer(); const m = mock(o);
+    m.reservationReceipt.value = value; m.reservationReceipt.visible = visible;
+    const shown = await plan(m.gh, c, o.proposal.actions);
+    const progress: string[] = [];
+    await assert.rejects(execute(m.gh, c, o, shown.expected, (_, result) => progress.push(result)), /Reservation not confirmed/);
+    assert.deepEqual(progress, []);
+    assert.deepEqual(writes(m).map(({ method, path }) => ({ method, path })), [{ method: "POST", path: `/repos/${c.tracker}/issues/9/comments` }]);
+    if (visible) {
+      await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /already has an execution record/);
+      assert.equal(writes(m).length, 1, "a persisted reservation still blocks replay");
+    }
+  }
 });
 
 it("reserves before execution, rechecks targets, records results and refuses replay", async () => {
