@@ -381,7 +381,10 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
     case "close_issue": case "reopen_issue": {
       const i = await issue(gh, a.repo, a.number);
       return { title: i.title, fact: i.state, apply: async () => {
-        if (a.type === "close_issue") await send("POST", `${path}/comments`, { body: a.reason });
+        if (a.type === "close_issue") {
+          const posted = await gh.send<{ id?: number; issue_url?: string; body?: string } | null>("POST", `${path}/comments`, { body: a.reason });
+          if (typeof posted?.id !== "number" || !Number.isSafeInteger(posted.id) || posted.id < 1 || typeof posted.issue_url !== "string" || posted.issue_url.toLowerCase() !== `https://api.github.com${path}`.toLowerCase() || posted.body !== a.reason) throw new Error("GitHub did not confirm the reason comment on this issue; check GitHub before proposing another close");
+        }
         await send("PATCH", path, { state: a.type === "close_issue" ? "closed" : "open" });
       } };
     }

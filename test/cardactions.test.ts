@@ -222,7 +222,7 @@ describe("proposal on a card (close, merge)", () => {
         if (method === "PATCH") issueState = b!.state;
         return { body: { id: 1, node_id: "I_1", title: "Old task", state: issueState, labels: [] } };
       }
-      if (path === "/repos/example/tasks/issues/1/comments") return { body: {} };
+      if (path === "/repos/example/tasks/issues/1/comments") return { body: { id: 100, issue_url: "https://api.github.com/repos/example/tasks/issues/1", body: b!.body } };
       if (path === "/repos/example/tasks/pulls/2") return { body: { title: "Ready", state: "open", merged: false, draft: false, head: { sha: opts.head ?? A } } };
       if (path === "/repos/example/tasks/pulls/2/merge") return { status: opts.merge ?? 200, body: { merged: true, message: "Merge queue required" } };
       return undefined;
