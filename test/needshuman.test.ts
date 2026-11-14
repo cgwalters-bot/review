@@ -96,12 +96,41 @@ describe("needs-human direct read", () => {
     assert.equal(calls.length, 1);
   });
 
-  it("does not certify earlier pages when a later page is malformed", async () => {
-    const { gh, calls } = client((page) => ({ body: page === 1
-      ? { items: Array.from({ length: 100 }, (_, i) => issue(BOARD, i + 1)), total_count: 101 }
-      : {} }));
-    await assert.rejects(loadNeedsHuman(gh), /no valid items array/);
+  for (const failure of [
+    { name: "unauthorized", response: { status: 401, body: { message: "Bad credentials" } } },
+    { name: "malformed", response: { body: {} } },
+    { name: "network failure", response: undefined },
+  ]) for (const failedPage of [2, 3]) it(`keeps earlier decisions after ${failure.name} on page ${failedPage}`, async () => {
+    const { gh, calls } = client((page) => {
+      if (page === failedPage) {
+        if (!failure.response) throw new TypeError("Failed to fetch");
+        return failure.response;
+      }
+      return { body: { items: Array.from({ length: 100 }, (_, i) => issue(BOARD, (page - 1) * 100 + i + 1)), total_count: 301, incomplete_results: true } };
+    });
+    const read = await loadNeedsHuman(gh);
+    assert.equal(calls.length, failedPage, "stop at the failed page, without retrying or reading beyond it");
+    assert.equal(read.issues.length, (failedPage - 1) * 100);
+    assert.equal(read.issues[0]!.key, `${BOARD}#1`);
+    assert.equal(read.issues.at(-1)!.key, `${BOARD}#${(failedPage - 1) * 100}`);
+    assert.equal(read.error, undefined);
+    assert.equal(read.partial, `GitHub's search returned incomplete results; Could not read search page ${failedPage}; only earlier pages are shown`);
+    const slot = draw({ asks: [], unavailable: false, error: "publication unavailable" }, read);
+    assert.ok(links(slot).includes(`https://github.com/${BOARD}/issues/1`));
+    assert.match(slot.textContent!, /Partial:.*only earlier pages are shown/);
+    assert.doesNotMatch(slot.textContent!, /No open needs-human issue found/);
+    assert.equal(slot.querySelector("button, input, form"), null);
+  });
+
+  it("does not claim an empty search when earlier pages contain no in-scope issues", async () => {
+    const { gh, calls } = client((page) => page === 1
+      ? { body: { items: Array.from({ length: 100 }, (_, i) => issue("other/repo", i + 1)), total_count: 101 } }
+      : { status: 401, body: { message: "Bad credentials" } });
+    const read = await loadNeedsHuman(gh);
+    assert.deepEqual(read.issues, []);
+    assert.match(read.partial!, /Could not read search page 2/);
     assert.equal(calls.length, 2);
+    assert.doesNotMatch(draw({ asks: [], unavailable: false, error: "down" }, read).textContent!, /No open needs-human issue found/);
   });
 });
 
