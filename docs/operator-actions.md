@@ -184,6 +184,13 @@ batch. Check targets manually and write a new proposal with fresh preconditions
 to recover. A lost receipt response may have created the receipt; a lost write
 response may have performed the action. The UI never automatically retries.
 
+To prevent mutations without a confirmed replay guard, the reservation response
+must contain a positive safe-integer comment ID before execution can continue
+to the existing bounded reread. A malformed ID stops before any target write
+or result-comment update; it must not compare equal to an absent reservation.
+Check GitHub manually: the reservation may still have been posted, and if so
+it blocks replay. No extra request, retry or setting is added.
+
 Only a literal `merged: true` in a merge response confirms success. A missing,
 false or malformed result stops the batch as failed or uncertain; a truthy
 string or object is not confirmation. The reservation still prevents replay.
