@@ -371,7 +371,10 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
       const prPath = `/repos/${a.repo}/pulls/${a.number}`;
       const pr = await gh.send<{ title: string; state: string; merged: boolean; draft: boolean; head: { sha: string } }>("GET", prPath);
       return { title: pr.title, fact: pr.merged ? "merged" : `${pr.state}${pr.draft ? " draft" : ""} ${pr.head.sha}`, apply: async () => {
-        if (a.type === "approve_pull_request") await send("POST", `${prPath}/reviews`, { event: "APPROVE", commit_id: a.head_sha });
+        if (a.type === "approve_pull_request") {
+          const review = await gh.send<{ id?: number; state?: string; commit_id?: string; pull_request_url?: string } | null>("POST", `${prPath}/reviews`, { event: "APPROVE", commit_id: a.head_sha });
+          if (typeof review?.id !== "number" || !Number.isSafeInteger(review.id) || review.id < 1 || review.state !== "APPROVED" || review.commit_id !== a.head_sha || typeof review.pull_request_url !== "string" || review.pull_request_url.toLowerCase() !== `https://api.github.com${prPath}`.toLowerCase()) throw new Error("Approval not confirmed for this PR and head; check GitHub before proposing another approval");
+        }
         else {
           const result = await gh.send<{ merged?: unknown } | null>("PUT", `${prPath}/merge`, { sha: a.head_sha, merge_method: a.method });
           if (result?.merged !== true) throw new Error("Merge not confirmed; check GitHub");

@@ -59,6 +59,13 @@ project field's current value. Actions run in order, so an action on a target
 an earlier action changed is checked against that earlier action's result.
 Any failed or unavailable check disables the batch.
 
+An approval must return a positive safe-integer review ID, `APPROVED` state,
+the requested commit and the same PR's API URL before the action is marked done.
+This prevents an unconfirmed or wrong-head review response from claiming success
+and letting later actions proceed. Missing or mismatched receipts stop the batch
+as failed or uncertain; the existing reservation prevents replay. Check GitHub
+before proposing another approval. No extra read or setting is added.
+
 Project-field approvals also bind to the project, item and field IDs and the
 field's option IDs and names, all from the existing bounded project read. Removing
 and re-adding an item or recreating a field or option must not redirect an approval
