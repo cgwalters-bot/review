@@ -403,6 +403,14 @@ permits a fresh preview after the existing cooldown; no further forge requests a
 the failed preview. Ordinary upstream failures still retain stale evidence.
 This adds no setting, retry, or write authority; previews remain opt-in.
 
+The forge can revoke a token without changing its source file. An HTTP 401
+therefore uses that same invalidation path as soon as headers arrive, before
+reading the error body: discard current and prior decision evidence and stop
+further reads in that preview. This applies to REST and GraphQL, including the
+final request. A later preview may recover after the existing cooldown. Other
+HTTP failures retain their existing partial-read or rate-limit behavior; a 403
+alone does not establish credential revocation.
+
 When enabled, `/api/v1/state`, `/api/state` and the `state` SSE payload
 include an additional `decision` section. Its `items` has zero entries
 before observation, then one `agent-board/decision/v1` snapshot. The
