@@ -12,6 +12,7 @@ use board_forge::github::{GraphQl, Transport};
 use board_forge::pass::{self, Broker, decision};
 use board_forge::poll::{Rest, RestResponse};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -110,6 +111,7 @@ struct Work {
     cancelled: AtomicBool,
     limited: AtomicBool,
     credential_changed: AtomicBool,
+    credential: Mutex<Option<[u8; 32]>>,
     request: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
@@ -157,6 +159,8 @@ pub struct Reader {
     http: reqwest::Client,
     private: Vec<String>,
     pacing: Arc<Mutex<Pacing>>,
+    // Identity of the last published observation; never persist the token.
+    credential: Arc<Mutex<Option<[u8; 32]>>>,
     active: Arc<tokio::sync::Semaphore>,
     #[cfg(test)]
     api_root: Option<String>,
@@ -200,6 +204,7 @@ impl Reader {
                 .build()?,
             private,
             pacing: Default::default(),
+            credential: Default::default(),
             active: Arc::new(tokio::sync::Semaphore::new(1)),
             #[cfg(test)]
             api_root: None,
@@ -223,8 +228,7 @@ impl Reader {
         let runtime = tokio::runtime::Handle::current();
         // The exported API includes synchronous transports and non-Send futures.
         // Keep its entire computation off the HTTP runtime's worker threads.
-        let result = tokio::task::spawn_blocking(move || -> Result<Value> {
-            let _permit = permit;
+        let result = tokio::task::spawn_blocking(move || {
             let transport = Direct {
                 reader,
                 runtime: runtime.clone(),
@@ -264,10 +268,25 @@ impl Reader {
                     transport.requests.get(),
                 );
             }
-            result
+            (result, permit)
         })
         .await;
-        let result = result.ok().and_then(Result::ok);
+        // Keep admission closed through publication of the credential binding,
+        // not just through the blocking reads. Cancellation still leaves the
+        // permit with the worker until it exits.
+        let (result, _permit) = match result {
+            Ok((result, permit)) => (result.ok(), Some(permit)),
+            Err(_) => (None, None),
+        };
+        let credential = *work.credential.lock().unwrap();
+        let prev = if let Some(credential) = credential {
+            let mut previous = self.credential.lock().unwrap();
+            let same = *previous == Some(credential);
+            *previous = Some(credential);
+            prev.filter(|_| same)
+        } else {
+            prev
+        };
         if work.credential_changed.load(Ordering::SeqCst) {
             // Prior evidence may belong to the old credential too. Do not carry
             // it into a publication after observing an identity boundary.
@@ -377,6 +396,18 @@ impl Direct {
         let task = self.runtime.spawn(async move {
             let result = tokio::time::timeout(timeout, async {
                 let token = preview_token(&work, reader.token.token()).await?;
+                {
+                    let mut credential = work.credential.lock().unwrap();
+                    if credential.is_none() {
+                        let digest = Sha256::digest(token.as_bytes()).into();
+                        *credential = Some(digest);
+                        if *reader.credential.lock().unwrap() != Some(digest) {
+                            // Success age and fallback evidence belong to the
+                            // prior credential, not merely to this board config.
+                            reader.pacing.lock().unwrap().last_success = None;
+                        }
+                    }
+                }
                 {
                     let mut secrets = secrets.lock().unwrap();
                     // A single preview must not combine visibility scopes from
@@ -831,6 +862,8 @@ mod tests {
             }
         });
         let reader = reader(Some(root), TokenSource::Fixed("fixture".into()));
+        // Bind the synthetic prior publication to the credential that read it.
+        *reader.credential.lock().unwrap() = Some(Sha256::digest(b"fixture").into());
         let previous = observed(
             Some(json!({"complete":true,"failures":0,"validated_at":AT})),
             None,
@@ -1098,6 +1131,7 @@ mod tests {
                 .unwrap(),
             private: Vec::new(),
             pacing: Default::default(),
+            credential: Default::default(),
             active: Arc::new(tokio::sync::Semaphore::new(1)),
             api_root: root,
         }
@@ -1314,6 +1348,70 @@ mod tests {
         assert!(!stale.complete);
         assert!(stale.error.is_some());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn between_preview_rotation_cannot_retain_throttled_old_identity() {
+        let fake = Fake::default();
+        let root = serve(fake.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        std::fs::write(&file, "fixture-before").unwrap();
+        let reader = reader(Some(root), TokenSource::File(file.clone()));
+        let first = reader.refresh(None, AT).await;
+        assert_eq!(first.items.len(), 1);
+        // The fixture lacks complete usage; seed a prior complete success to
+        // verify its age cannot cross the credential boundary either.
+        reader.pacing.lock().unwrap().last_success = Some(tokio::time::Instant::now());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().fallback(any(move || {
+                    let count = count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        (axum::http::StatusCode::TOO_MANY_REQUESTS, Json(json!({})))
+                    }
+                })),
+            )
+            .await
+            .unwrap();
+        });
+        let mut throttled = reader.clone();
+        throttled.api_root = Some(format!("http://{address}"));
+        reader.pacing.lock().unwrap().until = None;
+        let same = throttled.refresh(Some(&first), AT).await;
+        assert_eq!(same.items, first.items);
+        assert_eq!(same.read_at, first.read_at);
+        assert!(reader.status().last_success_age_seconds.is_some());
+
+        std::fs::write(&file, "fixture-after").unwrap();
+        reader.pacing.lock().unwrap().until = None;
+        let changed = throttled.refresh(Some(&same), AT).await;
+        assert!(changed.items.is_empty(), "{changed:?}");
+        assert_eq!(changed.read_at, None);
+        assert!(!changed.complete);
+        assert_eq!(changed.error.as_deref(), Some("board preview rate limited"));
+        assert_eq!(reader.status().last_success_age_seconds, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let skipped = throttled.refresh(Some(&changed), AT).await;
+        assert!(skipped.items.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        reader.pacing.lock().unwrap().until = None;
+        let recovered = reader.refresh(Some(&skipped), AT).await;
+        assert_eq!(recovered.items, first.items);
+        assert_eq!(recovered.read_at.as_deref(), Some(AT));
+        assert_eq!(
+            fake.auth.lock().unwrap().last().unwrap(),
+            "Bearer fixture-after"
+        );
+        server.abort();
     }
 
     #[tokio::test]
