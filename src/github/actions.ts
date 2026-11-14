@@ -362,7 +362,14 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
       const mutation: Mutation = { method: live ? "PUT" : "POST", path: live ? `/orgs/${a.org}/rulesets/${live.id}` : `/orgs/${a.org}/rulesets`, body: JSON.parse(body),
         diff: { live: live ? normalizeRuleset(live.ruleset, "  ") : "(none)", source: normalizeRuleset(JSON.parse(body), "  ") } };
       return { title: `Organisation ruleset ${a.ruleset_name}`, fact: live ? await rulesetDigest(live.ruleset) : null, next: await sha256(body),
-        mutation, apply: () => send(mutation.method, mutation.path, mutation.body) };
+        mutation, apply: async () => {
+          const result = await gh.send<unknown>(mutation.method, mutation.path, mutation.body);
+          // Confirm this org's ruleset and every submitted field; GitHub may add
+          // metadata or defaults for omitted fields, but not change approved ones.
+          if (!isObject(result) || typeof result.id !== "number" || !Number.isSafeInteger(result.id) || result.id < 1 || (live && result.id !== live.id)
+            || typeof result.source !== "string" || result.source.toLowerCase() !== a.org.toLowerCase() || result.source_type !== "Organization"
+            || normalizeRuleset(Object.fromEntries(Object.keys(JSON.parse(body)).map((k) => [k, result[k]]))) !== body) throw new Error("Ruleset update not confirmed; check GitHub before proposing another ruleset change");
+        } };
     }
   }
   const path = `/repos/${a.repo}/issues/${a.number}`;

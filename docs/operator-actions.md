@@ -124,6 +124,16 @@ back; both are allowed and show in the diff for the operator to judge. The card 
 (method, path and body), the variable's current and new value in full, and a
 line diff of the live and source rulesets, both normalised.
 
+To prevent an unconfirmed ruleset change from being marked done and allowing
+later actions, its mutation receipt must identify the configured organisation,
+an organisation ruleset with a positive safe-integer ID (the live ID on update),
+and every submitted writable field with its approved value. Extra metadata and
+defaults for omitted fields are allowed; changes to submitted values are not.
+An unusable or contradictory receipt stops the batch as failed or uncertain,
+retaining the reservation against replay. Check GitHub before proposing a repair:
+the write may have succeeded. This adds no requests or settings and does not
+change the existing opt-in. Organisation-variable receipts are unchanged.
+
 These reads and writes need an org owner's token with `admin:org`. A classic
 token without it is refused at plan time; the rest of the site does not
 need it. A fine-grained token sends no scopes, and one without org access may
