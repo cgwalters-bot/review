@@ -411,6 +411,12 @@ impl Direct {
                     .send()
                     .await
                     .map_err(|_| anyhow::anyhow!("forge request failed"))?;
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    // An unchanged token can have been revoked at the forge.
+                    // Reject all evidence before reading an untrusted error body.
+                    work.credential_changed.store(true, Ordering::SeqCst);
+                    return Err(board_forge::github::AuthenticationRequired.into());
+                }
                 let header = |key| {
                     response
                         .headers()
@@ -1159,6 +1165,7 @@ mod tests {
         rotate_token: Arc<Mutex<Option<std::path::PathBuf>>>,
         rotate_at: Arc<Mutex<Option<usize>>>,
         remove_token: Arc<Mutex<Option<(usize, std::path::PathBuf)>>>,
+        reject_at: Arc<Mutex<Option<usize>>>,
     }
 
     async fn fake(
@@ -1166,7 +1173,7 @@ mod tests {
         uri: axum::extract::OriginalUri,
         headers: HeaderMap,
         body: String,
-    ) -> Json<Value> {
+    ) -> Result<Json<Value>, (axum::http::StatusCode, &'static str)> {
         let call = fake.calls.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let mut remove = fake.remove_token.lock().unwrap();
@@ -1178,6 +1185,9 @@ mod tests {
             .lock()
             .unwrap()
             .push(headers["authorization"].to_str().unwrap().to_owned());
+        if *fake.reject_at.lock().unwrap() == Some(call) {
+            return Err((axum::http::StatusCode::UNAUTHORIZED, "not JSON"));
+        }
         if fake.rotate_at.lock().unwrap().is_none_or(|at| at == call)
             && let Some(path) = fake.rotate_token.lock().unwrap().take()
         {
@@ -1186,15 +1196,15 @@ mod tests {
         let query: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
         if query.is_null() {
             if uri.path().contains("/actions/") {
-                return Json(json!({"total_count":0, "workflow_runs":[]}));
+                return Ok(Json(json!({"total_count":0, "workflow_runs":[]})));
             }
             let usage = fake.usage.lock().unwrap().clone();
-            return Json(match usage {
+            return Ok(Json(match usage {
                 Some(usage) => {
                     json!([{"user":{"login":"robot"}, "body": format!("<!-- bot-usage v1 -->\n```json\n{usage}\n```")}])
                 }
                 None => json!([]),
-            });
+            }));
         }
         let query = query["query"].as_str().unwrap_or("");
         let data = if query.contains("fragment Board") {
@@ -1217,7 +1227,7 @@ mod tests {
         } else {
             json!({"node":{"items":{"nodes":fake.items.lock().unwrap().clone(), "pageInfo":{"hasNextPage":fake.partial.load(Ordering::SeqCst), "endCursor":null}}}})
         };
-        Json(json!({"data":data}))
+        Ok(Json(json!({"data":data})))
     }
 
     async fn serve(fake_state: Fake) -> String {
@@ -1591,6 +1601,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejected_credential_discards_evidence_and_recovers() {
+        for stage in ["first", "last"] {
+            let fake = Fake::default();
+            let root = serve(fake.clone()).await;
+            let mut reader = reader(Some(root), TokenSource::Fixed("fixture".into()));
+            let mut config: Value = serde_json::from_str(&reader.config).unwrap();
+            config["usage"].as_object_mut().unwrap().remove("url");
+            reader.config = Arc::new(config.to_string());
+            let previous = reader.refresh(None, AT).await;
+            assert_eq!(previous.items[0]["failures"], 0);
+            let count = fake.calls.load(Ordering::SeqCst);
+            assert!(count > 1);
+            let sends = if stage == "first" { 1 } else { count };
+            *fake.reject_at.lock().unwrap() = Some(count + sends);
+
+            let rejected = reader.refresh(Some(&previous), AT).await;
+            assert!(rejected.items.is_empty(), "{stage}: {rejected:?}");
+            assert_eq!(rejected.read_at, None);
+            assert!(!rejected.complete);
+            assert_eq!(
+                rejected.error.as_deref(),
+                Some("board preview credential changed")
+            );
+            assert_eq!(fake.calls.load(Ordering::SeqCst), count + sends);
+            assert_eq!(reader.status().consecutive_failures, 1);
+
+            // No retry burst or replay of facts after the forge rejects auth.
+            let waiting = reader.refresh(Some(&rejected), AT).await;
+            assert!(waiting.items.is_empty());
+            assert_eq!(fake.calls.load(Ordering::SeqCst), count + sends);
+            reader.pacing.lock().unwrap().until = None;
+            let recovered = reader.refresh(Some(&rejected), AT).await;
+            assert_eq!(recovered.items, previous.items);
+            assert_eq!(reader.status().consecutive_failures, 0);
+        }
+    }
+
+    #[tokio::test]
     async fn one_shot_emits_existing_envelope_and_reports_partial_reads() {
         let fake = Fake::default();
         let root = serve(fake.clone()).await;
@@ -1725,14 +1773,6 @@ mod tests {
                 *client.reader.pacing.lock().unwrap() = Pacing::default();
                 assert_eq!(client.send("GET", &url, &Value::Null).unwrap().0, status);
             }
-            *client.reader.pacing.lock().unwrap() = Pacing::default();
-            assert!(
-                client
-                    .get("https://api.github.com/401", None)
-                    .err()
-                    .unwrap()
-                    .is::<board_forge::github::AuthenticationRequired>()
-            );
             for status in [403, 429] {
                 *client.reader.pacing.lock().unwrap() = Pacing::default();
                 assert!(
@@ -1755,6 +1795,18 @@ mod tests {
                         .is::<board_forge::github::RateLimited>()
                 );
             }
+            *client.reader.pacing.lock().unwrap() = Pacing::default();
+            assert!(
+                client
+                    .get("https://api.github.com/401", None)
+                    .err()
+                    .unwrap()
+                    .is::<board_forge::github::AuthenticationRequired>()
+            );
+            assert!(client.work.credential_changed.load(Ordering::SeqCst));
+            let requests = client.requests.get();
+            assert!(client.get("https://api.github.com/200", None).is_err());
+            assert_eq!(client.requests.get(), requests);
         })
         .await
         .unwrap();
