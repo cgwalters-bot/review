@@ -185,7 +185,7 @@ function cardJson(c: Card) {
  * and listError saying why there is no list. The read is GitHub's answer
  * just now, so the note says it was checked now.
  */
-function needsYou(h: Holds, now: number) {
+function needsYou(h: Holds, now: number, warning?: string) {
   const published = firstPublished(h, now);
   const l = published.list;
   const { text, settled } = publishedNote(published, now);
@@ -197,8 +197,8 @@ function needsYou(h: Holds, now: number) {
     validatedAt: l?.validatedAt ?? null,
     changedAt: l?.changedAt ?? null,
     complete: l?.complete ?? null,
-    note: text,
-    settled,
+    note: warning ? `${warning} ${text}` : text,
+    settled: settled && !warning,
     counts: { known, listed, unlisted },
     cards: inboxCards({ published }).map(cardJson),
   };
@@ -417,7 +417,7 @@ export async function run(argv: readonly string[], io: Io & { serviceUrl?: strin
       const problem = serviceProblem(d, now);
       const holds = d.holds;
       const body = command === "status" ? { snapshotAt: holds.at, wip: holds.wip, candidates: d.candidates, pools: d.pools, holds: holds.holds, holdsOmitted: d.holdsOmitted, poolsOmitted: d.poolsOmitted, passes: null, live: null }
-        : command === "needs-you" ? { ...needsYou(holds, now), ...(!d.complete ? { settled: false, note: "Service decision is incomplete; listed cards are partial evidence." } : {}), ...(problem ? { settled: false, unavailable: true, note: problem } : {}) }
+        : command === "needs-you" ? { ...needsYou(holds, now, problem ?? (!d.complete ? "Service decision is incomplete; listed cards are partial evidence." : undefined)), ...(problem ? { unavailable: true } : {}) }
           : command === "act-now" ? (problem ? { rows: [], unavailable: problem } : actNow(holds, now))
             : command === "repo" ? repo(holds, opts.repo!, now)
               : { since: new Date(opts.since!).toISOString(), passes: null, asks: null, error: "Service decision contract does not supply pass history" };
