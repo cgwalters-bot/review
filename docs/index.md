@@ -285,6 +285,10 @@ requires CLEAN and sends `sha` with a permitted method (squash, merge, then
 rebase). Nothing requests bypass, enables auto-merge, retries an uncertain write
 or falls back from enqueue to merge. Receipts distinguish enqueued from merged;
 uncertain writes require inspection on GitHub before retrying.
+Direct merge receipts require a boolean `merged` response: only `true` confirms
+success and only `false` confirms rejection. Missing or malformed results remain
+uncertain, since the write may already have taken effect; they are never retried
+automatically.
 
 `test/fixtures/act-now-needs-you.json` is the whole producer fixture at
 `e6fedc8ac1c7dc83cb01fc997e073362bde96548`, imported without changing its data.

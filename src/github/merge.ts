@@ -61,6 +61,7 @@ export async function mergeOrEnqueue(gh: GitHub, ref: IssueRef, head: string, po
         return { state: "enqueued", url: pr.url };
       }
       const result = await gh.send<{ merged: boolean; message: string }>("PUT", `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/merge`, { sha: head, merge_method: method });
+      if (typeof result?.merged !== "boolean") throw new MaybeSentError("Merge was not confirmed; inspect GitHub before retrying.");
       if (!result.merged) throw new GitHubError(409, `Not merged: ${result.message}`);
       return { state: "merged", url: pr.url };
     } catch (e) {
