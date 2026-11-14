@@ -53,7 +53,7 @@ function mock(o = offer()) {
     return issues.get(path)!;
   };
   const pr: Record<string, any> = { title: "<script>target</script>", state: "open", merged: false, draft: false, head: { sha: head } };
-  const field = { value: "P2" as string | null, more: false };
+  const field = { value: "P2" as string | null, more: false, project: "PVT_1", item: "item", id: "field", options: [{ id: "option", name: "P1" }] };
   // Org state: one variable, the org's rulesets, the source file's text (or a whole contents response), the compare status.
   const org = { variable: null as { value: string; visibility: string; repositories: string[] } | null, rulesets: [] as Record<string, any>[], source: JSON.stringify(created), file: undefined as Record<string, unknown> | undefined, status: "behind", moved: {} as Record<string, string> };
   const ids: Record<string, number> = { "example/tasks": 7, "example/tracker": 8 };
@@ -72,8 +72,8 @@ function mock(o = offer()) {
     if (path === "/user") return Response.json({ login: viewer });
     if (path === "/graphql") {
       if (body.query.includes("comments(first")) return Response.json({ data: { repository: { issue: { state: closed ? "CLOSED" : "OPEN", comments: { nodes: all, pageInfo: { hasNextPage: more } } } } } });
-      if (body.query.includes("updateProject")) { field.value = "P1"; return Response.json({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "item" } } } }); }
-      return Response.json({ data: { node: { projectItems: { nodes: [{ id: "item", project: { id: "PVT_1", url: project, field: { id: "field", options: [{ id: "option", name: "P1" }] } }, fieldValueByName: field.value === null ? null : { name: field.value } }], pageInfo: { hasNextPage: field.more } } } } });
+      if (body.query.includes("updateProject")) { field.value = field.options.find((o) => o.id === body.variables.option)!.name; return Response.json({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: field.item } } } }); }
+      return Response.json({ data: { node: { projectItems: { nodes: [{ id: field.item, project: { id: field.project, url: project, field: { id: field.id, options: field.options } }, fieldValueByName: field.value === null ? null : { name: field.value } }], pageInfo: { hasNextPage: field.more } } } } });
     }
     const variable = /^\/orgs\/example\/actions\/variables(\/\w+)?(\/repositories\?per_page=100)?$/.exec(path);
     if (variable) {
@@ -391,6 +391,40 @@ it("executes every action type as its exact typed mutation", async () => {
     if (expected.body) assert.deepEqual(call.body, expected.body);
     if (action.type === "set_project_field") assert.deepEqual(call.body.variables, { project: "PVT_1", item: "item", field: "field", option: "option" });
   }
+});
+
+it("refuses replaced project targets before reservation and again before mutation", async () => {
+  const action: Action = { ...base, type: "set_project_field", project, field: "Priority", value: "P1" };
+  for (const change of [
+    (m: ReturnType<typeof mock>) => { m.field.project = "replacement"; },
+    (m: ReturnType<typeof mock>) => { m.field.item = "replacement"; },
+    (m: ReturnType<typeof mock>) => { m.field.id = "replacement"; },
+    (m: ReturnType<typeof mock>) => { m.field.options[0]!.id = "replacement"; },
+  ]) for (const afterReservation of [false, true]) {
+    const o = offer([action, close]); const m = mock(o);
+    const shown = await plan(m.gh, c, o.proposal.actions);
+    assert.equal(shown.states[0], '<script>target</script> · now "P2" → "P1"');
+    if (afterReservation) m.intercept(() => {
+      if (m.calls.at(-1)?.path === `/repos/${c.tracker}/issues/9/comments`) change(m);
+    });
+    else change(m);
+    await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /Stale/);
+    assert.deepEqual(targetWrites(m), []);
+    if (afterReservation) assert.match(writes(m).at(-1)!.body.body, /1\. failed or uncertain/);
+    else assert.deepEqual(writes(m), []);
+  }
+});
+
+it("keeps sequential project changes and option reordering usable", async () => {
+  const actions: Action[] = ["P1", "P2"].map((value) => ({ ...base, type: "set_project_field", project, field: "Priority", value }));
+  const o = offer(actions); const m = mock(o);
+  m.field.options.push({ id: "option2", name: "P2" });
+  const shown = await plan(m.gh, c, actions);
+  assert.equal(shown.states[1], '<script>target</script> · now "P1" after the earlier actions → "P2"');
+  m.field.options.reverse();
+  await execute(m.gh, c, o, shown.expected, () => {});
+  assert.deepEqual(targetWrites(m).map((v) => v.body.variables.option), ["option", "option2"]);
+  assert.equal(m.field.value, "P2");
 });
 
 it("plans actions on one target in order, each against the state the earlier ones leave", async () => {

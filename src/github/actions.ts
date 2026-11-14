@@ -186,8 +186,11 @@ export async function loadOffer(gh: GitHub, c: ActionConfig, ref: { repository: 
 interface Issue { id: number; node_id: string; title: string; state: string; pull_request?: unknown; labels: { name: string }[]; parent_issue_url?: string | null }
 /** An org variable as read: its selected repositories are lower case and sorted, null unless selected. */
 export interface Variable { value: string; visibility: string; repositories: string[] | null }
+
+interface ProjectField { value: string | null; project: string; item: string; field: string; options: { id: string; name: string }[] }
+
 /** The live fact an action depends on: issue state, label membership, PR state and head, parent, field value, variable, or ruleset digest. */
-export type Fact = string | boolean | null | Variable;
+export type Fact = string | boolean | null | Variable | ProjectField;
 /** An org action's exact request; for a ruleset, also the normalised live ruleset ("(none)") and source body, indented, to diff. */
 export interface Mutation { method: string; path: string; body: unknown; diff?: { live: string; source: string } }
 /** `next` is the fact an org action leaves, which the proposal alone does not give. */
@@ -404,7 +407,10 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
       const field = item?.project.field;
       const option = field?.options?.find((v) => v.name === a.value);
       if (!list || list.pageInfo.hasNextPage || !item || !field?.id || !option) throw new Error("Project item, field or option is unavailable");
-      return { title: i.title, fact: item.fieldValueByName?.name ?? null, apply: async () => {
+      // Bind approval to the same objects, not replacements with identical display names.
+      const fact: ProjectField = { value: item.fieldValueByName?.name ?? null, project: item.project.id, item: item.id, field: field.id,
+        options: [...field.options!].sort((a, b) => a.id.localeCompare(b.id)) };
+      return { title: i.title, fact, apply: async () => {
         await gh.graphql(`mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}`, { project: item.project.id, item: item.id, field: field.id, option: option.id });
       } };
     }
@@ -447,7 +453,7 @@ function step(a: Action, fact: Fact, next: Fact | undefined): Fact {
       const previous = ref(a.previous_parent_repo, a.previous_parent_number);
       want(fact === previous, `parent ${previous}`); return ref(a.parent_repo, a.parent_number);
     }
-    case "set_project_field": return a.value;
+    case "set_project_field": return { ...fact as ProjectField, value: a.value };
   }
 }
 
@@ -469,7 +475,8 @@ export async function plan(gh: GitHub, c: ActionConfig, actions: Action[]): Prom
     try { model.set(k, step(a, fact, live.next)); } catch (e) { throw new Error(`Action ${index + 1}: ${(e as Error).message}`); }
     out.expected.push(fact);
     out.mutations.push(live.mutation);
-    out.states.push(`${live.title} · now ${JSON.stringify(fact)}${earlier ? " after the earlier actions" : ""} → ${JSON.stringify(model.get(k))}`);
+    const display = (f: Fact): string => JSON.stringify(a.type === "set_project_field" ? (f as ProjectField).value : f);
+    out.states.push(`${live.title} · now ${display(fact)}${earlier ? " after the earlier actions" : ""} → ${display(model.get(k)!)}`);
   }
   return out;
 }
