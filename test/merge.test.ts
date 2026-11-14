@@ -13,7 +13,7 @@ const ready = () => ({
   viewerCanUpdate: true, mergeStateStatus: "CLEAN", isMergeQueueEnabled: false, mergeQueueEntry: null,
 });
 
-function client(over = {}, login = "cgwalters", mutation: "ok" | "error" | "network" | "http" = "ok", repository = {}, mergeResponse: unknown = { merged: mutation !== "error", message: "refused" }) {
+function client(over = {}, login = "cgwalters", mutation: "ok" | "error" | "network" | "http" = "ok", repository = {}, mergeResponse: unknown = { merged: mutation !== "error", message: "refused" }, queueEntry: unknown = { id: "MQ_1" }) {
   const f = scriptedFetch((method, url) => {
     const body = f.calls.at(-1)!.body;
     if (url.endsWith("/user")) return { body: { login } };
@@ -22,7 +22,7 @@ function client(over = {}, login = "cgwalters", mutation: "ok" | "error" | "netw
     } } } };
     if (mutation === "network") throw new Error("connection lost");
     if (mutation === "http") return { status: 403, body: { message: "Policy refused" } };
-    if (url.endsWith("/graphql")) return { body: mutation === "error" ? { errors: [{ message: "head moved" }] } : { data: { enqueuePullRequest: { mergeQueueEntry: { id: "MQ_1" } } } } };
+    if (url.endsWith("/graphql")) return { body: mutation === "error" ? { errors: [{ message: "head moved" }] } : { data: { enqueuePullRequest: { mergeQueueEntry: queueEntry } } } };
     if (method === "PUT" && url.endsWith("/merge")) return { body: mergeResponse };
     return undefined;
   });
@@ -82,6 +82,33 @@ describe("head-bound Merge / enqueue", () => {
     const { gh, calls } = client({ isMergeQueueEnabled: true, mergeQueueEntry: { id: "MQ_1" } });
     assert.equal((await mergeOrEnqueue(gh, ref, HEAD, () => {})).state, "enqueued");
     assert.equal(calls.length, 2);
+  });
+
+  for (const entry of [{}, [], true, "MQ_1", { id: true }, { id: 1 }, { id: {} }, { id: [] }, { id: null }, { id: "" }, { id: "  " }]) {
+    it(`refuses malformed existing queue evidence ${JSON.stringify(entry)} before writing`, async () => {
+      const { gh, calls } = client({ isMergeQueueEnabled: true, mergeQueueEntry: entry });
+      await assert.rejects(mergeOrEnqueue(gh, ref, HEAD, () => {}), /Cannot read current queue entry; nothing sent/);
+      assert.equal(calls.length, 2);
+    });
+
+    it(`keeps malformed queue admission ${JSON.stringify(entry)} uncertain without retrying`, async () => {
+      const { gh, calls } = client({ isMergeQueueEnabled: true }, "cgwalters", "ok", {}, undefined, entry);
+      await assert.rejects(mergeOrEnqueue(gh, ref, HEAD, () => {}), MaybeSentError);
+      assert.equal(calls.length, 3);
+      assert.equal(calls.some((c) => c.method === "PUT"), false);
+    });
+  }
+
+  it("refuses an omitted queue entry rather than assuming it is absent", async () => {
+    const { gh, calls } = client({ mergeQueueEntry: undefined });
+    await assert.rejects(mergeOrEnqueue(gh, ref, HEAD, () => {}), /Cannot read current queue entry/);
+    assert.equal(calls.length, 2);
+  });
+
+  it("keeps a null queue admission uncertain", async () => {
+    const { gh, calls } = client({ isMergeQueueEnabled: true }, "cgwalters", "ok", {}, undefined, null);
+    await assert.rejects(mergeOrEnqueue(gh, ref, HEAD, () => {}), MaybeSentError);
+    assert.equal(calls.length, 3);
   });
 
   for (const queue of [false, true]) for (const failure of ["error", "network", "http"] as const) {
