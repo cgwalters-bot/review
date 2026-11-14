@@ -131,6 +131,35 @@ describe("shared service decisions", () => {
     assert.equal(requests, 1);
   });
 
+  for (const command of ["needs-you", "act-now"]) {
+    for (const sectionComplete of [false, true]) for (const decisionComplete of [false, true]) for (const listComplete of [false, true]) {
+      it(`CLI ${command} combines section=${sectionComplete}, decision=${decisionComplete}, list=${listComplete} coverage`, async () => {
+        const d = snapshot();
+        d.complete = decisionComplete;
+        (d.needs_you as Record<string, unknown>).complete = listComplete;
+        const replay = document(d);
+        replay.decision.complete = sectionComplete;
+        let out = "", err = "";
+        const code = await run([command], {
+          serviceUrl: "https://control.example", token: async () => { throw new Error("token forbidden"); },
+          fetch: async () => Response.json(replay), stdout: (s) => { out += s; }, stderr: (s) => { err += s; },
+          now: () => new Date(NOW), isTty: false,
+        });
+        assert.equal(code, 0, err);
+        const body = JSON.parse(out);
+        assert.equal(body.complete, sectionComplete && decisionComplete && listComplete);
+        assert.equal(body.listComplete, listComplete);
+        assert.equal(body.generation, 7);
+        const items = command === "needs-you" ? body.cards : body.rows;
+        assert.deepEqual(items.map((r: { key: string }) => r.key), ["example/work#2", "example/work#1"]);
+        if (command === "needs-you" && !(sectionComplete && decisionComplete)) {
+          assert.equal(body.settled, false);
+          assert.match(body.note, /incomplete/i);
+        }
+      });
+    }
+  }
+
   for (const command of [["needs-you"], ["act-now"], ["status"], ["repo", "example/work"], ["changes", "--since", "2026-11-12T00:00:00Z"]]) it(`CLI ${command[0]} reads the same generation without token or GitHub polling`, async () => {
     let out = "", err = "", calls = 0;
     const code = await run(command, {

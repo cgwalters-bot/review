@@ -217,6 +217,14 @@ and a 2 MiB body bound. Schema validation reuses the publication readers and
 their inventory bounds. Service failure never silently switches to GitHub.
 Queue reads and act commands deliberately retain their independent GitHub path.
 
+For CLI `needs-you` and `act-now`, `complete` requires both the service decision
+and its nested needs-you list to be complete. `listComplete` separately reports
+the nested list's coverage (null when unavailable); a complete list cannot hide
+a partial preview. Partial decisions retain known cards/rows in producer order,
+but `needs-you` never reports them as settled. Freshness and read failures remain
+separate from coverage: inspect `unavailable` as well as `complete`. This changes
+only the existing opt-in CLI reads, not static reads or write authorization.
+
 The service decision contract supplies holds, needs-you, shortlist, work, WIP
 and pool evidence; missing candidate/usage readings remain unknown. It does not
 supply pass history or run receipts: these are explicitly unavailable, and
