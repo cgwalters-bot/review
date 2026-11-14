@@ -938,6 +938,13 @@ npx control-app changes --since 2026-11-07T08:00:00Z
 `control-plane/v1` for compatibility. The repository and Pages URL remain
 `review`; this is an application rename, not a repository move.
 
+With the existing opt-in `CONTROL_APP_SERVICE`, `needs-you` labels its read as
+received from the service, not freshly checked on GitHub. Receipt does not
+advance the producer's validation clock. Its note retains list age, source
+shortfalls, omitted/unreadable counts and missing-list explanations alongside
+service coverage or refresh errors; partial or unavailable decisions never
+report `settled: true`. Without this setting, direct GitHub reads are unchanged.
+
 Its read commands send only GET requests. Its act commands run the code
 behind the app's buttons, with the same checks, and write only with `--yes`;
 `--dry-run` makes the same reads and prints the writes it would send. Only
