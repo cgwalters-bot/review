@@ -96,6 +96,39 @@ describe("needs-human direct read", () => {
     assert.equal(calls.length, 1);
   });
 
+  for (const bad of [null, 0, "bad", [], {}, { html_url: 42 }, { ...issue(BOARD, 2), title: {} }]) {
+    for (const page of [1, 2]) it(`keeps decisions around a malformed record on page ${page}: ${JSON.stringify(bad)}`, async () => {
+      const { gh, calls } = client((n) => ({ body: { items: n < page
+        ? Array.from({ length: 100 }, (_, i) => issue(BOARD, i + 10))
+        : [issue(BOARD, 1), bad, issue(BOARD, 3)], total_count: 103 } }));
+      const read = await loadNeedsHuman(gh);
+      assert.equal(read.issues.length, page === 1 ? 2 : 102);
+      assert.ok(read.issues.some((i) => i.key === `${BOARD}#1`));
+      assert.ok(read.issues.some((i) => i.key === `${BOARD}#3`));
+      assert.match(read.partial!, /Some search records could not be read/);
+      assert.equal(calls.length, page);
+      const slot = draw({ asks: [], unavailable: false, error: "down" }, read);
+      assert.match(slot.textContent!, /Partial:.*Some search records could not be read/);
+      assert.doesNotMatch(slot.textContent!, /No open needs-human issue found/);
+    });
+  }
+
+  it("does not claim no decisions when every record is malformed", async () => {
+    const { gh } = client(() => ({ body: { items: [null, {}] } }));
+    const read = await loadNeedsHuman(gh);
+    assert.deepEqual(read.issues, []);
+    assert.equal(read.partial, "Some search records could not be read");
+    assert.doesNotMatch(draw({ asks: [], unavailable: false, error: "down" }, read).textContent!, /No open needs-human issue found/);
+  });
+
+  it("counts malformed records toward pagination and keeps other coverage warnings", async () => {
+    const { gh, calls } = client((page) => ({ body: { items: Array.from({ length: 100 }, (_, i) => i ? null : issue(BOARD, page)), total_count: 450, incomplete_results: true } }));
+    const read = await loadNeedsHuman(gh);
+    assert.equal(calls.length, NEEDS_HUMAN_PAGES);
+    assert.deepEqual(read.issues.map((i) => i.key), [1, 2, 3].map((n) => `${BOARD}#${n}`));
+    assert.equal(read.partial, "GitHub's search returned incomplete results; read the first 300 of 450; Some search records could not be read");
+  });
+
   for (const failure of [
     { name: "unauthorized", response: { status: 401, body: { message: "Bad credentials" } } },
     { name: "malformed", response: { body: {} } },
