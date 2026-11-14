@@ -215,6 +215,13 @@ the caller's repository/file and real route/secret provisioning were not supplie
 
 ## Board decision preview (tracker#1456 phase 1)
 
+A growing or special config file can report a misleading size and exhaust memory
+before a preview's request limits apply. Both preview modes read at most 1 MiB
+plus one detection byte of board configuration, rejecting oversized input before
+parsing rather than using a truncated config. This enforces the existing byte
+limit without a new setting; previews remain opt-in. It is not a filesystem I/O
+timeout: configuration should still be a local regular file.
+
 ### One-shot preview for on-demand jobs
 
 An on-demand preview must not accidentally start a credential-bearing listener
