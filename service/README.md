@@ -379,6 +379,12 @@ read may be needed for the supplied board, but do not broaden a deployed
 token's permissions as part of enabling this preview. `poll.yml` remains
 the sole writer; preview starts are proposals, never execution receipts.
 
+The credential is checked again after each response body, within the same
+ten-second request timeout. This catches rotation during the final request,
+when there is no next request to reject the old credential's evidence. It is
+an observation boundary, not an atomic guarantee against rotation after the
+check; it adds no polling loop or network retry.
+
 When enabled, `/api/v1/state`, `/api/state` and the `state` SSE payload
 include an additional `decision` section. Its `items` has zero entries
 before observation, then one `agent-board/decision/v1` snapshot. The
