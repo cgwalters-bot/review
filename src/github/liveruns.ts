@@ -180,7 +180,7 @@ export function liveAgentsView(data: LiveRuns | undefined, view: PassView | unde
   const running = runs.filter((r) => r.status === "in_progress").length;
   el.append(h("h3", {}, "Live agents ", h("span", { class: "count" }, String(runs.length))));
   const queued = runs.length - running;
-  el.append(h("p", { class: "note" }, `${running} running${queued ? `, ${queued} queued or waiting` : ""} · from ${LIVE_SOURCES.map((s) => `${s.repository.split("/")[1]} ${s.workflow}`).join(", ")} · read `, agoLabel(new Date(data.at).toISOString(), now)));
+  el.append(h("p", { class: "note" }, `${running} running${queued ? `, ${queued} queued or waiting` : ""} · from ${LIVE_SOURCES.map((s) => `${s.repository.split("/")[1]} ${s.workflow}`).join(", ")} · read `, Number.isFinite(data.at) ? agoLabel(new Date(data.at).toISOString(), now) : "unknown"));
   for (const e of data.errors) el.append(h("p", { class: "warn" }, `Incomplete: ${e}`));
   el.append(runs.length ? h("ul", { class: "live-runs" }, ...runs.map((r) => row(r, now, cancel))) : h("p", {}, data.errors.length ? "No runs read; see above." : "No agent runs in flight."));
   return el;

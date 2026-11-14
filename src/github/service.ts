@@ -4,6 +4,7 @@ import type { Fetch } from "./api.ts";
 import { isObject, time } from "./heartbeat.ts";
 import { HOLDS_MARKER, type Holds, parseHolds } from "./holds.ts";
 import { stale } from "./passes.ts";
+import { LIVE_SOURCES, parseRunName, type LiveRuns } from "./liveruns.ts";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const count = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
@@ -42,6 +43,70 @@ export interface ServiceDecision {
   candidates: number | null;
 }
 
+export interface ServiceRun {
+  repository: string;
+  workflow: string;
+  id: number;
+  url: string;
+  title: string;
+  status: string;
+  createdAt: string;
+  startedAt: string | null;
+}
+
+export interface ServiceRuns {
+  items: ServiceRun[];
+  complete: boolean;
+  readAt: string | null;
+  error: string | null;
+}
+
+export interface ServiceState {
+  generation: number;
+  runs?: ServiceRuns;
+  runsError?: string;
+  decision?: ServiceDecision;
+  decisionError?: string;
+}
+
+/** Sections are independently unavailable, but always belong to one envelope. */
+export function parseServiceState(raw: unknown): ServiceState {
+  if (!isObject(raw) || raw.schema !== "review-service/v1" || !count(raw.generation)) throw new Error("Unsupported service state");
+  const state: ServiceState = { generation: raw.generation };
+  try { state.decision = parseService(raw); } catch { state.decisionError = "Service decision unavailable or malformed"; }
+  const r = raw.runs;
+  const repository = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+  if (!isObject(r) || !Array.isArray(r.items) || r.items.length > 6000 || typeof r.complete !== "boolean" || (r.readAt !== null && !time(r.readAt)) || (r.error !== null && (typeof r.error !== "string" || r.error.length > 16384))) {
+    state.runsError = "Service runs unavailable or malformed";
+    return state;
+  }
+  for (const item of r.items) {
+    if (!isObject(item) || !text(item.repository) || !repository.test(item.repository) || item.repository.split("/").some((s) => s === "." || s === "..") || !text(item.workflow) || !/^[A-Za-z0-9_.-]+\.ya?ml$/.test(item.workflow) || !count(item.id) || item.id === 0 || item.url !== `https://github.com/${item.repository}/actions/runs/${item.id}` || typeof item.title !== "string" || item.title.length > 4096 || !["in_progress", "queued", "pending", "waiting", "requested"].includes(item.status as string) || !time(item.createdAt) || (item.startedAt !== null && !time(item.startedAt))) {
+      state.runsError = "Service runs unavailable or malformed";
+      return state;
+    }
+  }
+  state.runs = r as unknown as ServiceRuns;
+  return state;
+}
+
+/** Delivery never supplies a read clock, nor promotes incomplete reads to idle. */
+export function serviceLiveRuns(state: ServiceState | undefined, now: number, error?: string): LiveRuns {
+  const r = state?.runs;
+  const problems = [error, state?.runsError, !r ? "Service runs unavailable" : undefined,
+    r?.error, r && !r.complete ? "Service runs partial; runs may be missing" : undefined,
+    r && (!r.readAt || stale(r.readAt, now)) ? "Service runs unread, stale or have a future clock" : undefined].filter((s): s is string => !!s);
+  const runs = (r?.items ?? []).flatMap((item) => {
+    const source = LIVE_SOURCES.find((s) => s.repository.toLowerCase() === item.repository.toLowerCase() && s.workflow === item.workflow);
+    const startedAt = item.startedAt ?? item.createdAt;
+    if (!source || now - Date.parse(startedAt) > 6 * 60 * 60 * 1000) return [];
+    const named = parseRunName(item.title);
+    return [{ item: named?.item ?? null, kind: named?.kind ?? null, pool: named?.pool ?? null,
+      title: item.title, status: item.status, startedAt, run: { repository: item.repository, id: item.id }, source, listed: false }];
+  }).sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.run.id - b.run.id);
+  return { at: r?.readAt ? Date.parse(r.readAt) : NaN, runs, errors: problems };
+}
+
 /** Reject unsupported/malformed documents as a whole, without mixing generations. */
 export function parseService(raw: unknown): ServiceDecision {
   if (!isObject(raw) || raw.schema !== "review-service/v1" || !count(raw.generation) || !isObject(raw.decision)) throw new Error("Service decision unavailable or unsupported");
@@ -77,7 +142,7 @@ export function serviceProblem(d: ServiceDecision, now: number): string | undefi
 }
 
 /** No GitHub token, cookies, redirects or unbounded response bodies. */
-export async function readService(base: string, fetchImpl: Fetch, now: number): Promise<ServiceDecision> {
+async function readServiceDocument(base: string, fetchImpl: Fetch): Promise<unknown> {
   const url = new URL(base);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Invalid service URL");
   let response: Response;
@@ -108,7 +173,16 @@ export async function readService(base: string, fetchImpl: Fetch, now: number): 
   for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.length; }
   let raw: unknown;
   try { raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); } catch { throw new Error("Malformed service JSON"); }
-  const decision = parseService(raw);
+  return raw;
+}
+
+export async function readServiceState(base: string, fetchImpl: Fetch): Promise<ServiceState> {
+  return parseServiceState(await readServiceDocument(base, fetchImpl));
+}
+
+/** Compatibility adapter for decision-only CLI callers. */
+export async function readService(base: string, fetchImpl: Fetch, now: number): Promise<ServiceDecision> {
+  const decision = parseService(await readServiceDocument(base, fetchImpl));
   const problem = serviceProblem(decision, now);
   if (problem) decision.error = problem;
   return decision;
@@ -119,17 +193,34 @@ export async function readService(base: string, fetchImpl: Fetch, now: number): 
  * with the document; generations can reset when the server restarts. A quiet
  * stream is normal (refreshes may be an hour apart, and keep-alive comments are
  * invisible here): callers re-check serviceProblem's clocks instead of a timer. */
-export function watchService(changed: (decision: ServiceDecision | undefined, error?: string) => void, open: (url: string) => EventSource = (url) => new EventSource(url)): () => void {
+function watch<T extends { generation: number }>(parse: (raw: unknown) => T, changed: (state: T | undefined, error?: string) => void, open: (url: string) => EventSource): () => void {
   const stream = open("/api/events");
+  let closed = false;
+  let generation: number | undefined;
+  stream.onopen = () => { generation = undefined; };
   stream.addEventListener("state", (event) => {
+    if (closed) return;
     try {
       const e = event as MessageEvent<string>;
-      if (new TextEncoder().encode(e.data).length > MAX_BYTES) throw new Error("Service state exceeds size bound");
-      const d = parseService(JSON.parse(e.data));
-      if (e.lastEventId !== String(d.generation)) throw new Error("Service generation mismatch");
-      changed(d, serviceProblem(d, Date.now()));
+      if (e.data.length > MAX_BYTES || new TextEncoder().encode(e.data).length > MAX_BYTES) throw new Error("Service state exceeds size bound");
+      const d = parse(JSON.parse(e.data));
+      if (e.lastEventId !== String(d.generation) || (generation !== undefined && d.generation < generation)) throw new Error("Service generation mismatch");
+      generation = d.generation;
+      changed(d);
     } catch { changed(undefined, "Unsupported or malformed service resync"); }
   });
-  stream.onerror = () => changed(undefined, "Service stream unavailable; waiting for full resync");
-  return () => stream.close();
+  stream.onerror = () => {
+    if (closed) return;
+    generation = undefined;
+    changed(undefined, "Service stream unavailable; waiting for full resync");
+  };
+  return () => { closed = true; stream.close(); };
+}
+
+export function watchService(changed: (decision: ServiceDecision | undefined, error?: string) => void, open: (url: string) => EventSource = (url) => new EventSource(url)): () => void {
+  return watch(parseService, (d, error) => changed(d, error ?? (d ? serviceProblem(d, Date.now()) : undefined)), open);
+}
+
+export function watchServiceState(changed: (state: ServiceState | undefined, error?: string) => void, open: (url: string) => EventSource = (url) => new EventSource(url)): () => void {
+  return watch(parseServiceState, changed, open);
 }

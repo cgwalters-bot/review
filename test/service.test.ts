@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { JSDOM } from "jsdom";
-import { parseService, readService, serviceProblem, watchService } from "../src/github/service.ts";
+import { parseService, parseServiceState, readService, serviceProblem, watchService } from "../src/github/service.ts";
 import { serviceDecisionView } from "../src/github/serviceview.ts";
 import { firstPublished, inboxCards } from "../src/github/inbox.ts";
 import { actNowRows } from "../src/github/actnow.ts";
@@ -13,6 +13,14 @@ const snapshot = () => fixture<Record<string, unknown>>("service-decision.json")
 const document = (d: unknown = snapshot(), generation = 7) => ({ schema: "review-service/v1", generation, decision: { items: [d], complete: false, readAt: "2026-11-13T12:00:00Z", error: null } });
 
 describe("shared service decisions", () => {
+  it("keeps decisions independently available when runs are missing or malformed", () => {
+    for (const runs of [undefined, { items: [null], complete: true, readAt: null, error: null }]) {
+      const state = parseServiceState({ ...document(), runs });
+      assert.deepEqual(state.decision, parseService(document()));
+      assert.equal(state.runs, undefined);
+      assert.match(state.runsError!, /unavailable/);
+    }
+  });
   it("preserves producer identities, shortlist order, reasons and unknowns", () => {
     const d = parseService(document());
     const p = firstPublished(d.holds, NOW);

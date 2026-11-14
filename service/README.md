@@ -279,6 +279,47 @@ define dispatch inputs, result retention/access and browser result discovery;
 do not publish potentially private preview data to public Pages or workflow logs.
 The static app and optional persistent deployment are unchanged.
 
+### Opt-in browser Status runs (#281)
+
+The concrete threat is a public/static app accidentally reading a private
+service's run inventory. Runs reads are **off by default**. Build a private,
+same-origin app with `npm run build -- --hosted --service-runs`; `--service-runs`
+requires `--hosted` and adds only the runs opt-in marker. It does not enable
+board previews or require `--board-config`, a decision section, or a browser
+GitHub token. Keep this build behind the operator-only proxy/ACL, not on Pages.
+Neither the default container build (`--hosted` alone) nor Pages enables it.
+
+Add `--service-decisions` to that command to consume both sections through one
+`/api/events` subscription. Decision-only builds retain their existing behavior;
+runs-only builds with a viewer token retain static decision/publication reads.
+Without a viewer token, other GitHub-only observations remain unavailable.
+Missing/unread decisions do not prevent runs from rendering, and missing runs
+do not invalidate a decision. Every accepted full resync replaces its generation,
+with matching SSE id; backwards generations on a connected stream are rejected,
+while reconnects may reset after a service restart. Page suspension/sign-out
+closes the stream; return from suspension opens a new full-resync subscription.
+
+Status uses the existing Live agents presentation, workflow allowlist, six-hour
+run-age filter and run-name interpretation, not every tracker workflow in the
+service inventory. Only the service-runs opt-in suppresses the otherwise enabled
+direct GitHub live-run poll; a failed service read does not silently fall back.
+Section `complete`, `error` and original `readAt` survive validation. Partial,
+failed, unread, malformed, disconnected and stale/future-clock reads are visibly
+unknown/incomplete, never healthy idle. Payloads are bounded to 2 MiB before JSON
+parsing, 6,000 run items and bounded fields. HTTP/SSE delivery never freshens a
+source clock. Service runs have no Cancel control and supply no write authority;
+independent GitHub actions retain their fresh viewer-token checks. No service
+token is sent to the browser.
+
+Offline tests replay `service/fixtures/state.json`, checked by the Rust state
+tests against `service/fixtures/github.json`. Browser tests shift all recorded
+clocks together for freshness; mutations are failure/update scenarios, not claims
+of additional observed producer facts. Broader PR/waiting and per-repository
+board integration, actual pass-summary decisions and producer
+[agent-board#794](https://github.com/cgwalters-forge/agent-board/issues/794)'s
+reusable warm-cache API remain follow-ups. This does not retire the comment
+store, enable a deployment, or complete #281.
+
 ### App and CLI decision reads (#292)
 
 The concrete threats are accidentally exposing a private service's data in the
