@@ -91,8 +91,9 @@ export async function loadLiveRuns(gh: GitHub, sources: readonly LiveSource[] = 
   const byRun = new Map<string, LiveRun>();
   await Promise.all(sources.flatMap((source) => LISTED_STATUSES.map(async (status) => {
     try {
-      const { data } = await gh.get<{ workflow_runs?: RawLiveRun[] }>(runsPath(source, status));
-      const runs = Array.isArray(data.workflow_runs) ? data.workflow_runs : [];
+      const { data } = await gh.get<{ workflow_runs?: RawLiveRun[] } | null>(runsPath(source, status));
+      if (!Array.isArray(data?.workflow_runs)) throw new Error("invalid workflow runs response");
+      const runs = data.workflow_runs;
       // total_count and the returned status-filtered list can disagree, even
       // on a short page. Only a full page reaches this reader's request bound.
       if (runs.length >= PAGE_SIZE) errors.push(`${source.repository} ${source.workflow}: first ${PAGE_SIZE} ${status} runs read; more may exist`);

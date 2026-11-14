@@ -100,7 +100,11 @@ and pool parsed from the run-name (`KIND OWNER/REPO#N[ HEAD] (POOL[, …])`; a
 name that doesn't parse shows as is), the elapsed time, a link to the run and,
 for the operator, **Cancel**, which reads the run fresh and refuses one that
 finished or isn't of that workflow. Where the pass view lists a run, it fills
-in a pool the name lacks. Then the panel summarizes the optional `pass_view`
+in a pool the name lacks. A missing or non-array workflow run list is an
+incomplete read, not evidence that no agents are running, including after a
+304 revalidation. Valid lists from the other statuses remain visible; this
+does not add retries or discovery requests.
+Then the panel summarizes the optional `pass_view`
 publication, as Status does: pool usage
 bars against published allowed percentages and reset clocks, and the latest
 pass's starts. When it started nothing, the panel groups identical reason
