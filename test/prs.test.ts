@@ -529,6 +529,44 @@ describe("loadFileLines and loadRangeFiles", () => {
 });
 
 describe("submitReview with line comments", () => {
+  for (const failure of ["network", "server", "invalid JSON"] as const) {
+    for (const failAt of [0, 1]) {
+      it(`reports an uncertain ${failure} response after ${failAt} confirmed reviews without retrying`, async () => {
+        const reviews = composeReviews("approve", "", HEAD, {
+          comments: [{ path: "a.rs", line: 2, side: "RIGHT", body: "old", commit: MOVED }],
+        });
+        let posts = 0;
+        const { fetchImpl } = scriptedFetch((method, url) => {
+          if (method === "GET" && url === PULL) return { body: pull() };
+          if (method === "POST" && url === `${PULL}/reviews`) {
+            posts++;
+            return { body: { html_url: `https://github.com/review/${posts}` } };
+          }
+          return undefined;
+        });
+        const gh = new GitHub(token, async (url, init) => {
+          const response = await fetchImpl(url, init);
+          if (init?.method === "POST" && posts === failAt + 1) {
+            // The server received the write; its outcome cannot be inferred
+            // from the response lost or damaged on its way back.
+            if (failure === "network") throw new TypeError("connection lost");
+            return new Response(failure === "server" ? "unavailable" : "{", { status: failure === "server" ? 502 : 201 });
+          }
+          return response;
+        });
+        const sent: number[] = [];
+        await assert.rejects(submitReview(gh, ref, reviews, (i) => sent.push(i)), (e: Error) => {
+          assert.match(e.message, /may have been sent; check GitHub before trying again/);
+          assert.doesNotMatch(e.message, /nothing was sent|the rest didn't/);
+          if (failAt) assert.match(e.message, /1 earlier commit went out/);
+          return true;
+        });
+        assert.deepEqual(sent, failAt ? [0] : []);
+        assert.equal(posts, failAt + 1);
+      });
+    }
+  }
+
   it("posts earlier commits' comments first, then the head's review, and says what went out on failure", async () => {
     const reviews = composeReviews("approve", "", HEAD, {
       comments: [
@@ -550,7 +588,7 @@ describe("submitReview with line comments", () => {
     assert.deepEqual(await run(-1), { out: "https://github.com/review/2", sent: [0, 1], posts: [MOVED, HEAD] });
     const failed = await run(1);
     assert.deepEqual(failed.sent, [0]);
-    assert.match(failed.out, /Line could not be resolved.*the comments on 1 earlier commit went out, the rest didn't/);
+    assert.match(failed.out, /Line could not be resolved.*the comments on 1 earlier commit went out; the rest didn't/);
     assert.match((await run(0)).out, /nothing was sent/);
   });
 });

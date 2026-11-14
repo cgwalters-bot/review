@@ -159,7 +159,10 @@ it.
   `OWNER/REPO#N` at `<sha>`: `<review URL>` ``) so the bot sees it; the
   PR and URL are in code spans, since bare in a public issue they would
   put a "mentioned this" entry on the upstream PR. A plain comment review
-  settles nothing and posts nothing.
+  settles nothing and posts nothing. If a review POST loses its response,
+  returns a server error, or returns unreadable JSON, its outcome is unknown:
+  check GitHub before trying again. The error lists earlier confirmed reviews
+  separately; only a definite rejection says the failed review was not sent.
 - **A chore** has `Ask: <one line>` and zero or more `` Rerun:
   `https://github.com/OWNER/REPO/actions/runs/ID` `` lines. With reruns,
   the app lists each run's failed jobs (`GET .../actions/runs/{id}` and
