@@ -19,6 +19,19 @@ Run and PR reads are conditional on the last answer's ETag, so an unchanged
 answer costs no rate budget; the three searches have no ETags and are what
 bounds the interval (search allows 30 a minute).
 
+The existing conditional-response cache is scoped to both request path and a
+SHA-256 digest of the credential actually sent. This prevents a rotated token
+with different visibility from reusing the previous token's validator or body,
+even when both representations have the same ETag. Tokens themselves are not
+stored in cache keys. A new token starts with cold reads, including an Octo STS
+renewal; unchanged credentials retain conditional reads. Late responses to old
+requests stay in their original credential's scope. This also applies to the
+Forgejo and Kubernetes clients. The cache remains memory-only and drops entries
+not used across refreshes; losing it only causes full reads. No new option,
+cache, deployment setting or write authority is added. It does not purge the
+last published state on rotation or make retained failure-state facts current;
+those keep the section freshness/error contract below.
+
 Each section has `items`, `complete`, `readAt` and `error`. `complete` is
 false when a list was longer than the one page of 100 that is read, GitHub
 reported incomplete search results, the total count was unavailable, or
