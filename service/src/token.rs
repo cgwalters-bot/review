@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -19,6 +19,10 @@ const OCTO_STS_REFRESH: Duration = Duration::from_secs(45 * 60);
 
 /// Give up on an exchange Octo STS hasn't answered in this long.
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+
+// Token acquisition is part of a preview's read budget too. A faulty STS
+// response must not exhaust memory before the bounded forge reads even start.
+const MAX_EXCHANGE_BODY: usize = 64 * 1024;
 
 pub enum TokenSource {
     /// A token read once at startup, from `gh auth token`.
@@ -132,7 +136,7 @@ impl OctoSts {
             [("scope", &self.scope), ("identity", &self.identity)],
         )
         .context("building the exchange URL")?;
-        let resp = self
+        let mut resp = self
             .http
             .get(url)
             .header(AUTHORIZATION, format!("Bearer {oidc}"))
@@ -140,14 +144,25 @@ impl OctoSts {
             .send()
             .await?;
         let status = resp.status();
-        let body = resp.text().await.context("reading the answer")?;
-        let answer = serde_json::from_str::<Exchanged>(&body).ok();
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.context("reading the answer")? {
+            ensure!(
+                chunk.len() <= MAX_EXCHANGE_BODY - body.len(),
+                "Octo STS response exceeds {MAX_EXCHANGE_BODY} bytes"
+            );
+            body.extend_from_slice(&chunk);
+        }
+        let answer = serde_json::from_slice::<Exchanged>(&body).ok();
         match answer {
             Some(Exchanged { token: Some(t), .. }) if status.is_success() && !t.is_empty() => Ok(t),
             Some(Exchanged {
                 message: Some(m), ..
             }) => bail!("HTTP {}: {m}", status.as_u16()),
-            _ => bail!("HTTP {}: no token in {body:?}", status.as_u16()),
+            _ => bail!(
+                "HTTP {}: no token in {:?}",
+                status.as_u16(),
+                String::from_utf8_lossy(&body)
+            ),
         }
     }
 }
@@ -249,6 +264,60 @@ mod tests {
         let err = format!("{:#}", expiring.token().await.unwrap_err());
         assert!(err.ends_with("holds no token"), "{err}");
         std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn octo_sts_bounds_streamed_answers_before_caching() {
+        use axum::body::Body;
+        use futures_util::stream;
+
+        for status in [StatusCode::OK, StatusCode::BAD_GATEWAY] {
+            for streamed in [false, true] {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let seen = calls.clone();
+                let app = Router::new().route(
+                    "/sts/exchange",
+                    get(move || {
+                        let attempt = seen.fetch_add(1, Ordering::SeqCst);
+                        async move {
+                            // A valid token followed by JSON whitespace: parsing
+                            // before counting the entire body would cache it.
+                            let mut body = br#"{"token":"installation-bounded"}"#.to_vec();
+                            body.resize(MAX_EXCHANGE_BODY + usize::from(attempt == 0), b' ');
+                            let body = if streamed {
+                                Body::from_stream(stream::iter(
+                                    body.chunks(1024)
+                                        .map(|c| Ok::<_, std::io::Error>(c.to_vec()))
+                                        .collect::<Vec<_>>(),
+                                ))
+                            } else {
+                                Body::from(body)
+                            };
+                            (if attempt == 0 { status } else { StatusCode::OK }, body)
+                        }
+                    }),
+                );
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let root = format!("http://{}", listener.local_addr().unwrap());
+                let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+                let dir = tempfile::tempdir().unwrap();
+                let file = dir.path().join("token");
+                std::fs::write(&file, "fixture-oidc").unwrap();
+                let sts = OctoSts::new(&root, "example".into(), "preview".into(), file).unwrap();
+                let error = format!("{:#}", sts.token().await.unwrap_err());
+                assert!(
+                    error.contains("Octo STS response exceeds 65536 bytes"),
+                    "{error}"
+                );
+                assert!(!error.contains("installation-bounded"));
+                assert!(sts.current.lock().await.is_none());
+                // The exact bound is accepted on recovery, then cached normally.
+                assert_eq!(sts.token().await.unwrap(), "installation-bounded");
+                assert_eq!(sts.token().await.unwrap(), "installation-bounded");
+                assert_eq!(calls.load(Ordering::SeqCst), 2);
+                server.abort();
+            }
+        }
     }
 
     #[tokio::test]
