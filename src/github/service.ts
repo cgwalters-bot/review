@@ -90,13 +90,19 @@ export async function readService(base: string, fetchImpl: Fetch, now: number): 
   let bytes = 0;
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      // A body can fail after fetch has returned headers. Transport errors may
+      // contain private connection details, just like errors from fetch itself.
+      const { done, value } = await reader.read().catch(() => { throw new Error("Service decision unavailable"); });
       if (done) break;
       bytes += value.length;
       if (bytes > MAX_BYTES) throw new Error("Service state exceeds size bound");
       chunks.push(value);
     }
-  } finally { await reader.cancel(); }
+  } finally {
+    // An errored stream rejects cancel with its original error. Cleanup must
+    // not replace the sanitized read error or the explicit size-bound error.
+    await reader.cancel().catch(() => {});
+  }
   const body = new Uint8Array(bytes);
   let offset = 0;
   for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.length; }
