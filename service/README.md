@@ -32,6 +32,16 @@ cache, deployment setting or write authority is added. It does not purge the
 last published state on rotation or make retained failure-state facts current;
 those keep the section freshness/error contract below.
 
+One oversized upstream item or error response could otherwise exhaust the
+optional service's memory despite its page-count bounds. GitHub, Forgejo and
+Kubernetes REST bodies are limited to 2 MiB per response, counting streamed
+bytes even without `Content-Length`, before JSON parsing or cache insertion.
+Oversized responses fail the read rather than truncating JSON or caching a
+partial answer. Existing section failure handling retains prior facts with
+their original read timestamps. This fixed bound adds no setting or caller
+change and does not enable the service in the static app. It bounds response
+bytes, not total process memory or the size of parsed JSON across all reads.
+
 Each section has `items`, `complete`, `readAt` and `error`. `complete` is
 false when a list was longer than the one page of 100 that is read, GitHub
 reported incomplete search results, the total count was unavailable, or
