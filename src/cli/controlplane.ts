@@ -417,11 +417,16 @@ export async function run(argv: readonly string[], io: Io & { serviceUrl?: strin
       const problem = serviceProblem(d, now);
       const holds = d.holds;
       const body = command === "status" ? { snapshotAt: holds.at, wip: holds.wip, candidates: d.candidates, pools: d.pools, holds: holds.holds, holdsOmitted: d.holdsOmitted, poolsOmitted: d.poolsOmitted, passes: null, live: null }
-        : command === "needs-you" ? { ...needsYou(holds, now), ...(problem ? { settled: false, unavailable: true, note: problem } : {}) }
+        : command === "needs-you" ? { ...needsYou(holds, now), ...(!d.complete ? { settled: false, note: "Service decision is incomplete; listed cards are partial evidence." } : {}), ...(problem ? { settled: false, unavailable: true, note: problem } : {}) }
           : command === "act-now" ? (problem ? { rows: [], unavailable: problem } : actNow(holds, now))
             : command === "repo" ? repo(holds, opts.repo!, now)
               : { since: new Date(opts.since!).toISOString(), passes: null, asks: null, error: "Service decision contract does not supply pass history" };
-      io.stdout(`${JSON.stringify({ ...head, source: "service", generation: d.generation, complete: d.complete, unavailable: problem ?? null, ...body }, null, 2)}\n`);
+      // A complete nested list cannot certify the enclosing preview's coverage.
+      // Keep its own coverage visible without letting the body overwrite ours.
+      const listCommand = command === "needs-you" || command === "act-now";
+      const listComplete = typeof holds.needsYou === "object" ? holds.needsYou.complete : null;
+      io.stdout(`${JSON.stringify({ ...head, source: "service", generation: d.generation, unavailable: problem ?? null, ...body,
+        ...(listCommand ? { listComplete } : {}), complete: d.complete && (!listCommand || listComplete === true) }, null, 2)}\n`);
       return 0;
     }
     const gh = new GitHub(io.token, readOnly(io.fetch));
