@@ -429,6 +429,15 @@ final request. A later preview may recover after the existing cooldown. Other
 HTTP failures retain their existing partial-read or rate-limit behavior; a 403
 alone does not establish credential revocation.
 
+A token change between previews must not let a throttled new identity retain
+the old identity's decision evidence. The reader keeps an in-memory SHA-256
+credential fingerprint, never published or persisted, to scope fallback items,
+`readAt` and last-success age. A fresh observation under a new token is accepted,
+but a throttled or failed attempt cannot carry the previous token's snapshot.
+Same-token failures still retain stale evidence. Detection happens on the next
+admitted token read, not during cooldown skips; this is not a revocation watcher.
+Restart loses this binding along with the in-memory publication and pacing.
+
 When enabled, `/api/v1/state`, `/api/state` and the `state` SSE payload
 include an additional `decision` section. Its `items` has zero entries
 before observation, then one `agent-board/decision/v1` snapshot. The
