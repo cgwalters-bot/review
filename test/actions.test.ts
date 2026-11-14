@@ -65,6 +65,7 @@ function mock(o = offer()) {
   const reasonReceipt = { value: { id: 30, issue_url: "https://api.github.com/repos/example/tasks/issues/1", body: "Superseded" } as unknown };
   const mergeReceipt = { value: { merged: true } as unknown };
   const projectReceipt = { value: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "item" } } } as unknown };
+  const approvalReceipt = { value: { id: 31, state: "APPROVED", commit_id: head, pull_request_url: "https://api.github.com/repos/example/tasks/pulls/1" } as unknown };
   const gh = new GitHub(async () => "viewer-secret", async (url, init) => {
     assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer viewer-secret");
     const path = url.replace("https://api.github.com", "");
@@ -103,7 +104,7 @@ function mock(o = offer()) {
     }
     if (method === "GET" && /\/pulls\/\d+$/.test(path)) return Response.json(pr);
     if (method === "PUT" && path.endsWith("/merge")) { pr.merged = true; return Response.json(mergeReceipt.value); }
-    if (method === "POST" && path.endsWith("/reviews")) return Response.json({});
+    if (method === "POST" && path.endsWith("/reviews")) return Response.json(approvalReceipt.value);
     const m = /^(\/repos\/[^/]+\/[^/]+\/issues\/\d+)(.*)$/.exec(path);
     if (m && !m[1]!.startsWith(`/repos/${c.tracker}/issues/9`)) {
       const i = issue(m[1]!);
@@ -116,7 +117,7 @@ function mock(o = offer()) {
     }
     return Response.json({});
   });
-  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, projectReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
+  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
 }
 
 const writes = (m: ReturnType<typeof mock>) => m.calls.filter((v) => v.method !== "GET" && !(v.path === "/graphql" && !v.body.query.includes("mutation")));
@@ -418,6 +419,33 @@ it("continues after a project update confirms the exact item", async () => {
   const { m } = await run([{ ...base, type: "set_project_field", project, field: "Priority", value: "P1" }, close]);
   assert.equal(m.field.value, "P1");
   assert.equal(m.issue("/repos/example/tasks/issues/1").state, "closed");
+  assert.match(writes(m).at(-1)!.body.body, /1\. done\n2\. done/);
+});
+
+it("stops proposal approvals without a matching approved review receipt and never replays them", async () => {
+  const valid = { id: 31, state: "APPROVED", commit_id: head, pull_request_url: "https://api.github.com/repos/example/tasks/pulls/1" };
+  for (const receipt of [null, {}, [], true, { ...valid, id: 0 }, { ...valid, id: "31" },
+    { ...valid, id: 1.5 }, { ...valid, id: Number.MAX_SAFE_INTEGER + 1 },
+    { ...valid, state: "PENDING" }, { ...valid, state: "COMMENTED" }, { ...valid, state: null },
+    { ...valid, commit_id: "b".repeat(40) }, { ...valid, commit_id: null },
+    { ...valid, pull_request_url: "https://api.github.com/repos/example/tasks/pulls/2" }, { ...valid, pull_request_url: null }]) {
+    const o = offer([{ ...base, type: "approve_pull_request", head_sha: head }, { ...base, type: "add_label", label: "done" }]);
+    const m = mock(o); m.approvalReceipt.value = receipt;
+    const shown = await plan(m.gh, c, o.proposal.actions);
+    const progress: string[] = [];
+    await assert.rejects(execute(m.gh, c, o, shown.expected, (_, result) => progress.push(result)), /Approval not confirmed/);
+    assert.deepEqual(progress, ["Failed or uncertain; stopped"]);
+    assert.deepEqual(targetWrites(m).map(({ method, path }) => [method, path]), [["POST", "/repos/example/tasks/pulls/1/reviews"]]);
+    assert.match(writes(m).at(-1)!.body.body, /1\. failed or uncertain/);
+    const count = writes(m).length;
+    await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /execution record/);
+    assert.equal(writes(m).length, count);
+  }
+});
+
+it("continues the proposal after a confirmed approval", async () => {
+  const { m } = await run([{ ...base, type: "approve_pull_request", head_sha: head }, { ...base, type: "add_label", label: "done" }]);
+  assert.equal(targetWrites(m).length, 2);
   assert.match(writes(m).at(-1)!.body.body, /1\. done\n2\. done/);
 });
 
