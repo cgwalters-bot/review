@@ -224,6 +224,10 @@ a partial preview. Partial decisions retain known cards/rows in producer order,
 but `needs-you` never reports them as settled. Freshness and read failures remain
 separate from coverage: inspect `unavailable` as well as `complete`. This changes
 only the existing opt-in CLI reads, not static reads or write authorization.
+The `needs-you` note leads with any service failure or partial-preview warning,
+then retains the list's own diagnostics: age, unread sources, omitted entries,
+missing summaries, or why it is falling back to operator holds. A service warning
+does not replace those explanations or advance the list's validation clock.
 
 The service decision contract supplies holds, needs-you, shortlist, work, WIP
 and pool evidence; missing candidate/usage readings remain unknown. It does not
