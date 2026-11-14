@@ -65,6 +65,7 @@ function mock(o = offer()) {
   const reasonReceipt = { value: { id: 30, issue_url: "https://api.github.com/repos/example/tasks/issues/1", body: "Superseded" } as unknown };
   const mergeReceipt = { value: { merged: true } as unknown };
   const stateReceipt = { value: undefined as unknown };
+  const labelReceipt = { value: undefined as unknown };
   const projectReceipt = { value: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "item" } } } as unknown };
   const approvalReceipt = { value: { id: 31, state: "APPROVED", commit_id: head, pull_request_url: "https://api.github.com/repos/example/tasks/pulls/1" } as unknown };
   const gh = new GitHub(async () => "viewer-secret", async (url, init) => {
@@ -113,12 +114,13 @@ function mock(o = offer()) {
       if (method === "PATCH" && !m[2]) { i.state = body.state; return Response.json(stateReceipt.value === undefined ? i : stateReceipt.value); }
       if (method === "POST" && m[2] === "/labels") i.labels.push({ name: body.labels[0] });
       if (method === "DELETE" && m[2]!.startsWith("/labels/")) i.labels = i.labels.filter((l: { name: string }) => l.name !== decodeURIComponent(m[2]!.slice(8)));
+      if (m[2]!.startsWith("/labels") && method !== "GET") return Response.json(labelReceipt.value === undefined ? i.labels : labelReceipt.value);
       if (method === "POST" && m[2] === "/sub_issues") issue(`/repos/example/tasks/issues/1`).parent_issue_url = `https://api.github.com${m[1]}`;
       return Response.json(method === "GET" ? i : {});
     }
     return Response.json({});
   });
-  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, stateReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
+  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, stateReceipt, labelReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
 }
 
 const writes = (m: ReturnType<typeof mock>) => m.calls.filter((v) => v.method !== "GET" && !(v.path === "/graphql" && !v.body.query.includes("mutation")));
@@ -421,6 +423,41 @@ it("continues after a project update confirms the exact item", async () => {
   assert.equal(m.field.value, "P1");
   assert.equal(m.issue("/repos/example/tasks/issues/1").state, "closed");
   assert.match(writes(m).at(-1)!.body.body, /1\. done\n2\. done/);
+});
+
+it("stops unconfirmed label changes without continuing or replaying the proposal", async () => {
+  for (const type of ["add_label", "remove_label"] as const) {
+    for (const receipt of [null, {}, true, "done", [null], [{}], [{ name: null }], [{ name: 1 }], [{ name: "" }],
+      [{ name: "other" }, {}], type === "add_label" ? [] : [{ name: "DoNe" }],
+      type === "add_label" ? [{ name: "other" }] : [{ name: "other" }, { name: "done" }]]) {
+      const o = offer([{ ...base, type, label: "done" }, close]);
+      const m = mock(o); m.labelReceipt.value = receipt;
+      if (type === "remove_label") m.issue("/repos/example/tasks/issues/1").labels = [{ name: "done" }];
+      const shown = await plan(m.gh, c, o.proposal.actions);
+      const progress: string[] = [];
+      await assert.rejects(execute(m.gh, c, o, shown.expected, (_, result) => progress.push(result)), /Label change not confirmed/);
+      assert.deepEqual(progress, ["Failed or uncertain; stopped"]);
+      assert.deepEqual(targetWrites(m).map(({ method, path }) => [method, path]),
+        [[type === "add_label" ? "POST" : "DELETE", `/repos/example/tasks/issues/1/labels${type === "add_label" ? "" : "/done"}`]]);
+      assert.match(writes(m).at(-1)!.body.body, /1\. failed or uncertain/);
+      const count = writes(m).length;
+      await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /execution record/);
+      assert.equal(writes(m).length, count);
+    }
+  }
+});
+
+it("continues after label receipts confirm membership case-insensitively", async () => {
+  for (const type of ["add_label", "remove_label"] as const) {
+    for (const other of [[], [{ name: "other" }]]) {
+      const { m } = await run([{ ...base, type, label: "done" }, close], (m) => {
+        if (type === "remove_label") m.issue("/repos/example/tasks/issues/1").labels = [{ name: "done" }];
+        m.labelReceipt.value = type === "add_label" ? [...other, { name: "DoNe" }] : other;
+      });
+      assert.equal(targetWrites(m).length, 3);
+      assert.match(writes(m).at(-1)!.body.body, /1\. done\n2\. done/);
+    }
+  }
 });
 
 it("stops proposal approvals without a matching approved review receipt and never replays them", async () => {

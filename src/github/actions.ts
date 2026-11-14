@@ -396,7 +396,10 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
     case "add_label": case "remove_label": {
       const i = await gh.send<Issue>("GET", path);
       return { title: i.title, fact: i.labels.some((l) => l.name.toLowerCase() === a.label.toLowerCase()),
-        apply: () => a.type === "add_label" ? send("POST", `${path}/labels`, { labels: [a.label] }) : send("DELETE", `${path}/labels/${encodeURIComponent(a.label)}`) };
+        apply: async () => {
+          const labels = a.type === "add_label" ? await gh.send<unknown>("POST", `${path}/labels`, { labels: [a.label] }) : await gh.send<unknown>("DELETE", `${path}/labels/${encodeURIComponent(a.label)}`);
+          if (!Array.isArray(labels) || !labels.every((l) => l && typeof l.name === "string" && l.name.length > 0) || labels.some((l) => l.name.toLowerCase() === a.label.toLowerCase()) !== (a.type === "add_label")) throw new Error("Label change not confirmed; check GitHub before proposing another label change");
+        } };
     }
     case "add_sub_issue": case "move_sub_issue": {
       const i = await issue(gh, a.repo, a.number);
