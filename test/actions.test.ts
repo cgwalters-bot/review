@@ -67,6 +67,7 @@ function mock(o = offer()) {
   const stateReceipt = { value: undefined as unknown };
   const labelReceipt = { value: undefined as unknown };
   const subIssueReceipt = { value: undefined as unknown };
+  const rulesetReceipt = { value: undefined as unknown };
   const projectReceipt = { value: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "item" } } } as unknown };
   const approvalReceipt = { value: { id: 31, state: "APPROVED", commit_id: head, pull_request_url: "https://api.github.com/repos/example/tasks/pulls/1" } as unknown };
   const gh = new GitHub(async () => "viewer-secret", async (url, init) => {
@@ -98,7 +99,7 @@ function mock(o = offer()) {
       if (method === "POST") org.rulesets.push({ ...body, id: 43 });
       // GitHub keeps the fields an update omits.
       else org.rulesets = org.rulesets.map((r) => r.id === Number(rs[1]) ? { ...r, ...body } : r);
-      return Response.json({});
+      return Response.json(rulesetReceipt.value === undefined ? { ...org.rulesets.find((r) => r.id === Number(rs[1] ?? 43)), source: "example", source_type: "Organization" } : rulesetReceipt.value);
     }
     if (path.includes("?state=open")) return Response.json([{ number: 9 }]);
     if (method === "POST" && path === `/repos/${c.tracker}/issues/9/comments`) {
@@ -125,7 +126,7 @@ function mock(o = offer()) {
     }
     return Response.json({});
   });
-  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, stateReceipt, labelReceipt, subIssueReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
+  return { gh, all, calls, issue, pr, field, org, reasonReceipt, mergeReceipt, stateReceipt, labelReceipt, subIssueReceipt, rulesetReceipt, projectReceipt, approvalReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
 }
 
 const writes = (m: ReturnType<typeof mock>) => m.calls.filter((v) => v.method !== "GET" && !(v.path === "/graphql" && !v.body.query.includes("mutation")));
@@ -256,6 +257,31 @@ it("creates or updates org variables and rulesets with IDs from live reads", asy
     const m = mock(offer(actions));
     await assert.rejects(plan(m.gh, c, actions), new RegExp(`Action ${actions.length}: one action per organisation variable or ruleset per proposal`));
     assert.deepEqual(writes(m), []);
+  }
+});
+
+it("requires ruleset receipts to confirm identity and the submitted writable fields", async () => {
+  for (const update of [false, true]) {
+    const setup = (m: ReturnType<typeof mock>) => {
+      if (update) { m.org.rulesets = [structuredClone(live)]; m.org.source = JSON.stringify(body); }
+    };
+    const action = ruleset(update ? liveDigest : null);
+    const good = { ...(update ? body : created), id: update ? 42 : 43, source: "EXAMPLE", source_type: "Organization", created_at: stamp };
+    for (const receipt of [null, {}, [], { ...good, id: 0 }, { ...good, id: 1.5 }, { ...good, id: "42" }, { ...good, id: Number.MAX_SAFE_INTEGER + 1 },
+      { ...good, source: "other" }, { ...good, source_type: "Repository" }, { ...good, name: "other" }, { ...good, enforcement: "disabled" },
+      { ...good, target: "tag" }, { ...good, rules: [] }, { ...good, conditions: null }, ...(update ? [{ ...good, id: 43 }, { ...good, bypass_actors: [] }] : [])]) {
+      const o = offer([action, close]); const m = mock(o); setup(m); m.rulesetReceipt.value = receipt;
+      const shown = await plan(m.gh, c, o.proposal.actions);
+      const progress: string[] = [];
+      await assert.rejects(execute(m.gh, c, o, shown.expected, (_, result) => progress.push(result)), /Ruleset update not confirmed/);
+      assert.deepEqual(progress, ["Failed or uncertain; stopped"]);
+      assert.equal(targetWrites(m).length, 1);
+      assert.match(writes(m).at(-1)!.body.body, /1\. failed or uncertain/);
+      await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /execution record/);
+      assert.equal(targetWrites(m).length, 1);
+    }
+    // Server metadata and defaults for omitted fields do not change the submitted body.
+    await run([action, close], (m) => { setup(m); m.rulesetReceipt.value = { bypass_actors: [], ...good }; });
   }
 });
 
