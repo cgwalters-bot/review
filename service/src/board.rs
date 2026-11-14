@@ -83,10 +83,14 @@ impl Pacing {
         self.limit = Some(evidence);
     }
 
-    fn finished(&mut self, success: bool, requests: usize) {
+    fn finished(&mut self, success: bool, complete: bool, requests: usize) {
         self.requests = requests;
         if success && !self.waiting() {
-            self.last_success = Some(tokio::time::Instant::now());
+            // Error-free reads can still omit coverage (for example, usage or
+            // needs-you evidence). Do not call that a fresh complete preview.
+            if complete {
+                self.last_success = Some(tokio::time::Instant::now());
+            }
             self.failures = 0;
             self.until = None;
             self.limit = None;
@@ -215,12 +219,12 @@ impl Reader {
             })();
             if !transport.work.cancelled.load(Ordering::SeqCst) {
                 let success = result.as_ref().is_ok_and(|s| s["failures"] == 0);
-                transport
-                    .reader
-                    .pacing
-                    .lock()
-                    .unwrap()
-                    .finished(success, transport.requests.get());
+                let complete = result.as_ref().is_ok_and(|s| s["complete"] == true);
+                transport.reader.pacing.lock().unwrap().finished(
+                    success,
+                    complete,
+                    transport.requests.get(),
+                );
             }
             result
         })
@@ -667,6 +671,30 @@ mod tests {
     const PRODUCER_REPLAY: &str = "../test/fixtures/service-decision-producer.json";
 
     #[tokio::test(start_paused = true)]
+    async fn incomplete_reads_do_not_freshen_last_complete_preview() {
+        let reader = reader(None, TokenSource::Fixed("fixture".into()));
+        reader.pacing.lock().unwrap().finished(true, false, 3);
+        assert_eq!(reader.status().last_success_age_seconds, None);
+        assert_eq!(reader.status().retry_in_seconds, 0);
+
+        reader.pacing.lock().unwrap().finished(true, true, 4);
+        tokio::time::advance(Duration::from_secs(60)).await;
+        reader.pacing.lock().unwrap().finished(false, false, 1);
+        tokio::time::advance(BACKOFF).await;
+        reader.pacing.lock().unwrap().finished(true, false, 3);
+        let status = reader.status();
+        assert_eq!(status.last_success_age_seconds, Some(90));
+        // Missing coverage is not a transport failure: don't back off forever
+        // when a configured preview cannot supply every optional projection.
+        assert_eq!(status.consecutive_failures, 0);
+        assert_eq!(status.retry_in_seconds, 0);
+        assert_eq!(status.requests, 3);
+
+        reader.pacing.lock().unwrap().finished(true, true, 4);
+        assert_eq!(reader.status().last_success_age_seconds, Some(0));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn pacing_preserves_evidence_caps_backoff_and_recovers_without_freshening_sources() {
         let reader = reader(None, TokenSource::Fixed("fixture".into()));
         let previous = observed(
@@ -674,9 +702,9 @@ mod tests {
             None,
             AT,
         );
-        reader.pacing.lock().unwrap().finished(true, 7);
+        reader.pacing.lock().unwrap().finished(true, true, 7);
         for (n, wait) in [30, 60, 120, 240, 480, 900, 900].into_iter().enumerate() {
-            reader.pacing.lock().unwrap().finished(false, 1);
+            reader.pacing.lock().unwrap().finished(false, false, 1);
             assert_eq!(reader.status().retry_in_seconds, wait);
             assert_eq!(reader.status().consecutive_failures, n as u32 + 1);
             for _ in 0..10 {
@@ -700,7 +728,7 @@ mod tests {
         );
         assert_eq!(reader.status().retry_in_seconds, 3600);
         tokio::time::advance(MAX_RETRY).await;
-        reader.pacing.lock().unwrap().finished(true, 7);
+        reader.pacing.lock().unwrap().finished(true, true, 7);
         let status = reader.status();
         assert_eq!(status.last_success_age_seconds, Some(0));
         assert_eq!(status.consecutive_failures, 0);
@@ -856,7 +884,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn graphql_hints_survive_ticks_and_natural_expiry_recovers_success_clock() {
+    async fn graphql_hints_survive_ticks_and_natural_expiry_recovers_read_pacing() {
         use axum::response::IntoResponse;
         // Keep virtual time under explicit control while the blocking library
         // waits for real loopback I/O; auto-advance would expire request timers.
@@ -915,7 +943,8 @@ mod tests {
             reader.config = Arc::new(config.to_string());
             let first = reader.refresh(None, AT).await;
             assert_eq!(first.items[0]["failures"], 0, "{first:?}");
-            assert_eq!(reader.status().last_success_age_seconds, Some(0));
+            assert!(!first.complete);
+            assert_eq!(reader.status().last_success_age_seconds, None);
             let cold = calls.load(Ordering::SeqCst);
             throttle.store(true, Ordering::SeqCst);
             let limited = reader.refresh(Some(&first), AT).await;
@@ -934,14 +963,14 @@ mod tests {
             tokio::time::advance(Duration::from_secs(599)).await;
             reader.refresh(Some(&limited), AT).await;
             assert_eq!(calls.load(Ordering::SeqCst), cold + 1);
-            assert_eq!(reader.status().last_success_age_seconds, Some(599));
+            assert_eq!(reader.status().last_success_age_seconds, None);
             tokio::time::advance(Duration::from_secs(1)).await;
             throttle.store(false, Ordering::SeqCst);
             let recovered = reader.refresh(Some(&limited), AT).await;
             assert_eq!(recovered.items, first.items);
             assert_eq!(calls.load(Ordering::SeqCst), 2 * cold + 1);
             let status = reader.status();
-            assert_eq!(status.last_success_age_seconds, Some(0));
+            assert_eq!(status.last_success_age_seconds, None);
             assert_eq!(status.consecutive_failures, 0);
             assert_eq!(status.retry_in_seconds, 0);
             assert!(status.rate_limit.is_none());
