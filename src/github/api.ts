@@ -399,8 +399,9 @@ export class GitHub {
    * or fills the cache, so a GET here is always the server's current
    * answer: guards before a write (the approve's head check) use it. A
    * successful write drops the cached responses it may have changed.
+   * `expectedStatus` requires an endpoint's completion acknowledgment, not just any 2xx.
    */
-  async send<T>(method: string, path: string, body?: unknown): Promise<T> {
+  async send<T>(method: string, path: string, body?: unknown, expectedStatus?: number): Promise<T> {
     if (this.#cacheOnly) throw new Error(`cache-only client: not sending ${method} ${path}`);
     const url = this.#url(path);
     // A GraphQL query is a read: invalidating would also stop GETs sharing a request.
@@ -416,6 +417,7 @@ export class GitHub {
     if (!res.ok) throw new GitHubError(res.status, await errorMessage(res, `${method} ${path}`));
     // And again: a GET that raced the write may have cached the old state.
     if (stale) this.cache.invalidate(stale);
+    if (expectedStatus !== undefined && res.status !== expectedStatus) throw new Error(`Write not confirmed (expected HTTP ${expectedStatus}, received ${res.status}); check GitHub before retrying`);
     // Some writes succeed with no body: 204, and 205 from marking a
     // notification thread read. Parse only what is there.
     const text = await res.text();

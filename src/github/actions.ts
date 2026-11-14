@@ -346,7 +346,7 @@ async function observe(gh: GitHub, c: ActionConfig, a: Action): Promise<Observed
       const mutation = { method: live ? "PATCH" : "POST", path: live ? `${base}/${a.name}` : base,
         body: { name: a.name, value: a.value, visibility: a.visibility, ...(a.repositories ? { selected_repository_ids: ids } : {}) } };
       return { title: `Organisation variable ${a.name}`, fact, next: { value: a.value, visibility: a.visibility, repositories: a.repositories ? lowerSorted(a.repositories) : null },
-        mutation, apply: () => send(mutation.method, mutation.path, mutation.body) };
+        mutation, apply: async () => { await gh.send(mutation.method, mutation.path, mutation.body, live ? 204 : 201); } };
     }
     case "apply_org_ruleset": {
       const { repo, path, sha } = a.source;

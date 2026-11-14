@@ -102,7 +102,15 @@ compute that digest for an update: the stale-action message gives the live diges
 for the operator to hand back. A wrong expectation only makes the action stale.
 
 Both kinds create or update: a variable is POSTed when unset and PATCHed
-when set. Repository IDs are read from `GET /repos/OWNER/NAME` at plan time
+when set. To prevent an accepted-but-unfinished variable write from marking the
+action done and starting later actions, creation requires HTTP 201 and update
+requires HTTP 204, GitHub's documented completion acknowledgments. Other successful
+statuses stop the batch as failed or uncertain and retain the replay reservation.
+Check GitHub before proposing a repair: the write may have succeeded. This checks
+only the existing response, adds no requests or settings, and leaves proposal
+opt-in unchanged; it does not claim a read-back verification of the stored value.
+
+Repository IDs are read from `GET /repos/OWNER/NAME` at plan time
 and again just before the write (a renamed or transferred repository is
 refused), never from the proposal. A ruleset is POSTed when none has its name
 and PUT to the live ruleset's ID otherwise. The site refuses to proceed if more

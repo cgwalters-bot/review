@@ -55,7 +55,7 @@ function mock(o = offer()) {
   const pr: Record<string, any> = { title: "<script>target</script>", state: "open", merged: false, draft: false, head: { sha: head } };
   const field = { value: "P2" as string | null, more: false, project: "PVT_1", item: "item", id: "field", options: [{ id: "option", name: "P1" }] };
   // Org state: one variable, the org's rulesets, the source file's text (or a whole contents response), the compare status.
-  const org = { variable: null as { value: string; visibility: string; repositories: string[] } | null, rulesets: [] as Record<string, any>[], source: JSON.stringify(created), file: undefined as Record<string, unknown> | undefined, status: "behind", moved: {} as Record<string, string> };
+  const org = { variable: null as { value: string; visibility: string; repositories: string[] } | null, variableStatus: undefined as number | undefined, rulesets: [] as Record<string, any>[], source: JSON.stringify(created), file: undefined as Record<string, unknown> | undefined, status: "behind", moved: {} as Record<string, string> };
   const ids: Record<string, number> = { "example/tasks": 7, "example/tracker": 8 };
   let viewer = c.operator;
   let failPath = "";
@@ -86,7 +86,7 @@ function mock(o = offer()) {
     if (variable) {
       if (method === "GET") return org.variable ? Response.json(variable[2] ? { total_count: org.variable.repositories.length, repositories: org.variable.repositories.map((full_name) => ({ full_name })) } : org.variable) : Response.json({ message: "Not Found" }, { status: 404 });
       org.variable = { value: body.value, visibility: body.visibility, repositories: (body.selected_repository_ids ?? []).map((id: number) => Object.keys(ids).find((k) => ids[k] === id)) };
-      return new Response(null, { status: 204 });
+      return new Response(null, { status: org.variableStatus ?? (method === "POST" ? 201 : 204) });
     }
     const repo = /^\/repos\/([^/]+\/[^/]+)$/.exec(path);
     if (repo) return Response.json({ id: ids[repo[1]!.toLowerCase()], full_name: org.moved[repo[1]!] ?? repo[1]!.toLowerCase(), default_branch: "main" });
@@ -137,6 +137,37 @@ async function run(actions: Action[], setup: (m: ReturnType<typeof mock>) => voi
   await execute(m.gh, c, o, shown.expected, () => {});
   return { m, shown };
 }
+
+it("stops variable batches on unexpected successful acknowledgments without replaying", async () => {
+  for (const existing of [false, true]) {
+    for (const status of [200, 202, 203, 205, 206, existing ? 201 : 204]) {
+      const actions = [variable(existing ? "old" : null), close];
+      const o = offer(actions); const m = mock(o);
+      if (existing) m.org.variable = { value: "old", visibility: "all", repositories: [] };
+      m.org.variableStatus = status;
+      const shown = await plan(m.gh, c, actions);
+      const progress: string[] = [];
+      await assert.rejects(execute(m.gh, c, o, shown.expected, (_, result) => progress.push(result)), /not confirmed.*check GitHub/);
+      assert.deepEqual(progress, ["Failed or uncertain; stopped"]);
+      assert.equal(targetWrites(m).length, 1);
+      assert.match(writes(m).at(-1)!.body.body, /1\. failed or uncertain/);
+      const count = writes(m).length;
+      await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /execution record/);
+      assert.equal(writes(m).length, count);
+    }
+  }
+});
+
+it("continues variable batches after the documented create and update acknowledgments", async () => {
+  for (const existing of [false, true]) {
+    const { m } = await run([variable(existing ? "old" : null), close], (m) => {
+      if (existing) m.org.variable = { value: "old", visibility: "all", repositories: [] };
+    });
+    assert.equal(targetWrites(m).length, 3);
+    assert.match(writes(m).at(-1)!.body.body, /1\. done\n2\. done/);
+    assert.equal(m.calls.filter((v) => v.method === "GET" && v.path === "/orgs/example/actions/variables/REVIEW_WORKFLOW").length, 3);
+  }
+});
 
 it("vendors agent-board's schema and fixtures unmodified at the pinned commit", () => {
   // Git blob IDs at the pinned commit; `gh api repos/cgwalters-forge/agent-board/contents/SOURCE?ref=COMMIT --jq .sha` prints them.
