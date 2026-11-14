@@ -408,11 +408,16 @@ including its rate-limit breaker, without exposing upstream error bodies.
 Throttled, skipped and coalesced previews likewise retain the prior snapshot
 and its `readAt` with an explicit incomplete/error state. The additive
 `decisionRefresh` sibling reports `lastSuccessAgeSeconds` (null until a
-preview has no read failures), `retryInSeconds`, `consecutiveFailures`, the
-last parsed `rateLimit` evidence, and `requests` admitted in the last attempted
-preview. Ages/countdowns are sampled at publication, not on HTTP reads. A
-successful computation can still have incomplete coverage; this metadata
-never changes the snapshot's source clocks, completeness or confirmed effects.
+preview has complete coverage and no read failures), `retryInSeconds`,
+`consecutiveFailures`, the last parsed `rateLimit` evidence, and `requests`
+admitted in the last attempted preview. Ages/countdowns are sampled at
+publication, not on HTTP reads. A
+successful computation can still have incomplete coverage. Such a computation
+does not reset the last-success age: otherwise repeatedly missing usage or
+needs-you evidence could look like a newly successful complete preview. It
+still clears read-failure backoff, since missing coverage is not a transport
+failure and can persist by configuration. This metadata never changes the
+snapshot's source clocks, completeness or confirmed effects.
 Restart discards pacing and success age, not authority or writer state.
 
 One watch-channel replacement publishes the legacy sections and decision
