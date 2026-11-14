@@ -139,9 +139,22 @@ pub struct Reader {
 
 impl Reader {
     pub async fn new(path: &Path, token: Arc<TokenSource>) -> Result<Self> {
-        let file = tokio::fs::File::open(path)
+        // A FIFO can block open itself, before any preview deadline applies.
+        // Check the opened descriptor, not the path, to avoid replacement races
+        // while still allowing symlinks used by mounted configuration files.
+        let file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+            .open(path)
             .await
             .context("opening board config")?;
+        ensure!(
+            file.metadata()
+                .await
+                .context("checking board config")?
+                .is_file(),
+            "board config must be a regular file"
+        );
         let config = read_config(file).await?;
         // Configuration errors can quote prompts or broker addresses. Do not
         // print them, or pass them into a public section error.
@@ -996,6 +1009,34 @@ mod tests {
         assert_eq!(error.to_string(), "board config too large");
         assert_eq!(bytes.len() - input.len(), MAX_CONFIG as usize + 1);
         assert!(read_config(&b"\xff"[..]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn config_requires_regular_file_and_allows_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.json");
+        let link = dir.path().join("mounted.json");
+        tokio::fs::write(&path, config()).await.unwrap();
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        let token = Arc::new(TokenSource::Fixed("fixture".into()));
+        assert_eq!(
+            Reader::new(&link, token.clone())
+                .await
+                .unwrap()
+                .config
+                .as_str(),
+            config()
+        );
+        for path in [dir.path(), Path::new("/dev/null")] {
+            let result =
+                tokio::time::timeout(Duration::from_secs(2), Reader::new(path, token.clone()))
+                    .await
+                    .expect("special config input must not block");
+            assert_eq!(
+                result.err().unwrap().to_string(),
+                "board config must be a regular file"
+            );
+        }
     }
 
     #[tokio::test]
