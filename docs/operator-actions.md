@@ -59,6 +59,15 @@ project field's current value. Actions run in order, so an action on a target
 an earlier action changed is checked against that earlier action's result.
 Any failed or unavailable check disables the batch.
 
+To avoid marking an unconfirmed label change done and running later actions,
+both label mutations must return a list of named labels. The added label must
+be present, or the removed label absent, compared case-insensitively. An empty
+list confirms removal, not addition; malformed entries cannot prove absence.
+An unusable or contradictory receipt stops the batch as failed or uncertain
+and retains its replay reservation. Check GitHub before proposing a repair:
+the write may have succeeded. This uses only the mutation response, with no
+extra requests or settings; the existing proposal opt-in is unchanged.
+
 An approval must return a positive safe-integer review ID, `APPROVED` state,
 the requested commit and the same PR's API URL before the action is marked done.
 This prevents an unconfirmed or wrong-head review response from claiming success
