@@ -41,6 +41,39 @@ function world(lists: Record<string, unknown[] | number>) {
 }
 
 describe("loadLiveRuns", () => {
+  for (const [name, body] of Object.entries({ missing: {}, null: null, scalar: "unexpected", array: [], nullRuns: { workflow_runs: null }, objectRuns: { workflow_runs: {} } })) {
+    it(`reports a malformed list (${name}) as incomplete, including on conditional rereads`, async () => {
+      const { fetchImpl, calls } = scriptedFetch((_, url, headers) => {
+        if (!url.includes("in_progress")) return { body: { workflow_runs: [] } };
+        return headers["If-None-Match"] ? { status: 304 } : { body, headers: { etag: '"malformed"' } };
+      });
+      const gh = new GitHub(token, async (url, init) => {
+        const response = await fetchImpl(url, init);
+        return body === null && url.includes("in_progress") && response.status === 200
+          ? new Response("null", { headers: response.headers }) : response;
+      });
+      for (let poll = 0; poll < 2; poll++) {
+        const data = await loadLiveRuns(gh, [TRACKER], now + poll);
+        assert.deepEqual(data.runs, []);
+        assert.deepEqual(data.errors, [`${TRACKER.repository} ${TRACKER.workflow} (in_progress): invalid workflow runs response`]);
+        const text = liveAgentsView(data, undefined, now).textContent!;
+        assert.match(text, /Incomplete:.*invalid workflow runs response/);
+        assert.match(text, /No runs read; see above/);
+        assert.doesNotMatch(text, /No agent runs in flight/);
+      }
+      assert.equal(calls.length, 6, "no retries or additional discovery requests");
+    });
+  }
+
+  it("keeps valid runs from other statuses when one list is malformed", async () => {
+    const { fetchImpl } = scriptedFetch((_, url) => ({ body: url.includes("in_progress") ? {}
+      : { workflow_runs: url.includes("queued") ? [raw(TRACKER.repository, 1, "implement o/r#1", "queued")] : [] } }));
+    const data = await loadLiveRuns(new GitHub(token, fetchImpl), [TRACKER], now);
+    assert.deepEqual(data.runs.map((r) => r.run.id), [1]);
+    assert.equal(data.errors.length, 1);
+    assert.match(data.errors[0]!, /\(in_progress\): invalid workflow runs response/);
+  });
+
   it("lists every source's unfinished runs, conditionally, oldest first, a run caught twice once", async () => {
     const moving = raw(TRACKER.repository, 3, "fix o/r#3 (openai)", "queued", "2026-11-07T16:50:00Z");
     const { fetchImpl, calls } = world({
