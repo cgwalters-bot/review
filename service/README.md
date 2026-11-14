@@ -375,6 +375,14 @@ resets pacing; missing coverage alone is not success or authority. Concurrent
 wakes coalesce without queuing work. Slow refreshes wait a whole interval
 after completion rather than spending a second budget on an overdue tick.
 
+A stalled throttle error body could otherwise occupy the preview until its
+request timeout and hide the typed rate-limit failure. Once HTTP status and
+headers identify a refusal (429, rate-limited 403, or 503 with valid Retry-After),
+the reader drops the body without consuming it. It still rechecks the credential
+before returning the refusal, and retains the same bounded cooldown. Successful
+responses with zero remaining budget and body-only GraphQL throttles still need
+their bodies read. This adds no option; both preview modes remain opt-in.
+
 Aborting a refresh must not leave its synchronous library worker issuing
 detached requests. Cancellation closes that worker's admission and aborts its
 active async request, including token acquisition. Its permit remains held
