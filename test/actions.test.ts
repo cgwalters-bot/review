@@ -62,6 +62,7 @@ function mock(o = offer()) {
   let more = false;
   let closed = false;
   let intercept: (() => void) | undefined;
+  const reasonReceipt = { value: { id: 30, issue_url: "https://api.github.com/repos/example/tasks/issues/1", body: "Superseded" } as unknown };
   const gh = new GitHub(async () => "viewer-secret", async (url, init) => {
     assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer viewer-secret");
     const path = url.replace("https://api.github.com", "");
@@ -104,6 +105,7 @@ function mock(o = offer()) {
     const m = /^(\/repos\/[^/]+\/[^/]+\/issues\/\d+)(.*)$/.exec(path);
     if (m && !m[1]!.startsWith(`/repos/${c.tracker}/issues/9`)) {
       const i = issue(m[1]!);
+      if (method === "POST" && m[2] === "/comments") return Response.json(reasonReceipt.value);
       if (method === "PATCH" && !m[2]) i.state = body.state;
       if (method === "POST" && m[2] === "/labels") i.labels.push({ name: body.labels[0] });
       if (method === "DELETE" && m[2]!.startsWith("/labels/")) i.labels = i.labels.filter((l: { name: string }) => l.name !== decodeURIComponent(m[2]!.slice(8)));
@@ -112,7 +114,7 @@ function mock(o = offer()) {
     }
     return Response.json({});
   });
-  return { gh, all, calls, issue, pr, field, org, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
+  return { gh, all, calls, issue, pr, field, org, reasonReceipt, setViewer: (v: string) => { viewer = v; }, fail: (v: string) => { failPath = v; }, more: () => { more = true; }, close: () => { closed = true; }, intercept: (v: () => void) => { intercept = v; } };
 }
 
 const writes = (m: ReturnType<typeof mock>) => m.calls.filter((v) => v.method !== "GET" && !(v.path === "/graphql" && !v.body.query.includes("mutation")));
@@ -390,6 +392,25 @@ it("executes every action type as its exact typed mutation", async () => {
     assert.equal(new URL(new Request(`https://api.github.com${call.path}`).url).pathname, expected.path);
     if (expected.body) assert.deepEqual(call.body, expected.body);
     if (action.type === "set_project_field") assert.deepEqual(call.body.variables, { project: "PVT_1", item: "item", field: "field", option: "option" });
+  }
+});
+
+it("does not close or continue a proposal without a confirmed reason comment", async () => {
+  const valid = { id: 30, issue_url: "https://api.github.com/repos/example/tasks/issues/1", body: "Superseded" };
+  for (const receipt of [null, {}, [], { ...valid, id: 0 }, { ...valid, id: "30" },
+    { ...valid, id: 1.5 }, { ...valid, id: Number.MAX_SAFE_INTEGER + 1 },
+    { ...valid, issue_url: "https://api.github.com/repos/example/tasks/issues/2" },
+    { ...valid, issue_url: null }, { ...valid, body: "Different reason" }]) {
+    const o = offer([close, { ...base, type: "add_label", label: "done" }]);
+    const m = mock(o); m.reasonReceipt.value = receipt;
+    const shown = await plan(m.gh, c, o.proposal.actions);
+    await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /did not confirm the reason comment/);
+    assert.equal(m.issue("/repos/example/tasks/issues/1").state, "open");
+    assert.deepEqual(targetWrites(m).map(({ method, path }) => [method, path]), [["POST", "/repos/example/tasks/issues/1/comments"]]);
+    assert.match(writes(m).at(-1)!.body.body, /1\. failed or uncertain/);
+    const count = writes(m).length;
+    await assert.rejects(execute(m.gh, c, o, shown.expected, () => {}), /execution record/);
+    assert.equal(writes(m).length, count, "reservation prevents reposting the reason");
   }
 });
 

@@ -162,7 +162,11 @@ GitHub offers no compare-and-swap for issue, label, project-field, sub-issue,
 org variable or org ruleset writes, so a change racing the final read remains possible. A read that lags
 an earlier write in the same batch stops the batch as stale. PR merge uses the
 server-side SHA guard; approval is explicitly bound to the reviewed SHA.
-Closing has two writes (reason comment then state); if the second fails, the
-reason may already exist and the receipt says failed or uncertain. The inbox
+Closing has two writes (reason comment then state). Before closing, execution
+requires a positive safe-integer comment ID, the same issue URL and the exact
+reason text in GitHub's response. An absent or mismatched confirmation stops
+the batch as failed or uncertain, without closing or retrying the comment;
+check GitHub manually before making a new proposal. If the second write fails,
+the reason may already exist and the receipt says failed or uncertain. The inbox
 does not implement rollback, tailnet changes, or live write tests against real
 repositories.
