@@ -857,6 +857,32 @@ test("main resolves only an ask-created board question; never closes arbitrary h
   assert.deepEqual(r.writes()[1]!.body, { state: "closed", state_reason: "completed" });
 });
 
+for (const receipt of [null, {}, { html_url: 42 }, { html_url: "" }, { html_url: url },
+  { html_url: `${url}#issuecomment-0` }, { html_url: `${url}#issuecomment-1/extra` },
+  { html_url: `${url.replace("github.com", "example.com")}#issuecomment-1` },
+  { html_url: `${url.replace("/50", "/999")}#issuecomment-1` }]) {
+  test(`main does not release a hold after an unconfirmed comment receipt ${JSON.stringify(receipt)}`, async () => {
+    const r = setup((method, p) => {
+      if (p === path) return { body: shown() };
+      if (method === "POST" && p === `${path}/comments`) return { status: 201, body: receipt };
+      if (method === "DELETE") return { status: 204 };
+      return undefined;
+    });
+    const card = answerCard();
+    r.paint(card); await settle();
+    const form = r.list.querySelector("form")!;
+    form.querySelector("textarea")!.value = "Go left.";
+    form.dispatchEvent(new dom.window.Event("submit", { cancelable: true })); await settle();
+    assert.match(form.textContent!, /Comment failed or uncertain/);
+    assert.deepEqual(r.writes().map((c) => c.method), ["POST"]);
+    r.paint(card, true, true); await settle();
+    assert.equal(r.list.querySelector("form"), form);
+    assert.equal(form.querySelector("button")!.disabled, true);
+    form.dispatchEvent(new dom.window.Event("submit", { cancelable: true })); await settle();
+    assert.equal(r.writes().length, 1);
+  });
+}
+
 for (const fail of ["comment", "release"] as const) test(`main keeps ${fail} failure across forced refresh and never offers another comment`, async () => {
   const { r, card, form } = await answer({ fail });
   const count = r.writes().length;

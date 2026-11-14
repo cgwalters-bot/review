@@ -328,7 +328,12 @@ export async function answerHold(gh: GitHub, item: string, text: string, shown: 
     if (!board.items.some((i) => i.ref && refKey(i.ref).toLowerCase() === item.toLowerCase())) throw new Error("The question is no longer on the board; not resolving it");
   }
   let posted: Posted;
-  try { posted = await comment(gh, ref, body); }
+  try {
+    posted = await comment(gh, ref, body);
+    const receipt = typeof posted.url === "string" ? /^(.*)#issuecomment-[1-9][0-9]*$/.exec(posted.url) : null;
+    const target = receipt ? parseIssueUrl(receipt[1]!) : undefined;
+    if (!target || refKey(target).toLowerCase() !== item.toLowerCase()) throw new Error("GitHub did not confirm a comment on this item");
+  }
   catch (e) {
     if (e instanceof ReadOnlyError) throw e;
     throw new MaybeSentError(`Comment failed or uncertain: ${String(e)}. Check GitHub; do not repost.`);
