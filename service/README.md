@@ -59,6 +59,15 @@ the rejected input. Replacing the file with a valid token allows the next read
 to recover. This is a byte bound, not a timeout for filesystem operations; it
 adds no option and leaves previews and STS opt-in.
 
+A token path accidentally mounted as a FIFO can also block filesystem open and
+keep an on-demand preview alive at runtime shutdown, even after its request
+timeout. Both token-file sources open nonblocking and require the opened
+descriptor to be a regular file before reading. Directories, devices and FIFOs
+(including symlinks to them) are rejected; mounted-secret symlinks to regular
+files and rotation remain supported. This adds no setting and does not enable
+previews or STS. Slow regular filesystems are still not time-bounded; use local
+token files.
+
 Each section has `items`, `complete`, `readAt` and `error`. `complete` is
 false when a list was longer than the one page of 100 that is read, GitHub
 reported incomplete search results, the total count was unavailable, or

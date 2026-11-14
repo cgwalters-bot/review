@@ -92,3 +92,59 @@ async fn one_shot_exits_with_json_without_a_token_or_server() {
         "the preview must not persist state or create output files itself"
     );
 }
+
+#[tokio::test]
+async fn one_shot_rejects_token_fifos_without_blocking_shutdown() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("board.json");
+    std::fs::write(
+        &config,
+        json!({
+            "operator":"operator", "bot":"robot", "dispatchRepo":"example/runner",
+            "dispatchWorkflow":"dispatch.yml", "dispatchRef":"main",
+            "board":{"owner":"example", "project":1}, "wip":8,
+            "usage":{"repository":"example/ops", "issue":1},
+            "pools":{"test":{"target":0.9,"burst":3}}, "planPools":["test"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let fifo = dir.path().join("token.pipe");
+    let link = dir.path().join("mounted-token");
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&fifo, &link).unwrap();
+    // A subprocess keeps a regressed blocking open from hanging the test's
+    // runtime shutdown. No writer ever opens either FIFO path.
+    for option in ["--github-token-file", "--octo-sts-token-file"] {
+        for path in [&fifo, &link] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_control-app"));
+            command
+                .arg("--board-once")
+                .arg(&config)
+                .arg(option)
+                .arg(path);
+            if option == "--octo-sts-token-file" {
+                command.args(["--octo-sts-scope=example", "--octo-sts-identity=preview"]);
+            }
+            let output =
+                tokio::time::timeout(Duration::from_secs(5), command.kill_on_drop(true).output())
+                    .await
+                    .expect("token FIFO must not block preview or runtime shutdown")
+                    .unwrap();
+            assert!(!output.status.success());
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["decision"]["complete"], false);
+            assert_eq!(value["decision"]["items"], json!([]));
+            assert!(
+                String::from_utf8(output.stderr)
+                    .unwrap()
+                    .contains("board preview incomplete")
+            );
+        }
+    }
+}

@@ -62,9 +62,22 @@ impl TokenSource {
 
 /// A token file's bounded, trimmed UTF-8 contents, which must not be empty.
 async fn read_token(path: &PathBuf) -> Result<String> {
-    let file = tokio::fs::File::open(path)
+    // A FIFO open can outlive cancellation of the async read and keep Tokio's
+    // blocking pool alive at shutdown. Check the opened descriptor so mounted
+    // secret symlinks work without a path-replacement race.
+    let file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .open(path)
         .await
         .with_context(|| format!("reading the token from {}", path.display()))?;
+    ensure!(
+        file.metadata()
+            .await
+            .context("checking token file")?
+            .is_file(),
+        "token file must be a regular file"
+    );
     let mut bytes = Vec::new();
     file.take((MAX_TOKEN_FILE + 1) as u64)
         .read_to_end(&mut bytes)
@@ -235,6 +248,29 @@ mod tests {
             std::env::temp_dir().join(format!("review-service-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("token")
+    }
+
+    #[tokio::test]
+    async fn token_files_require_regular_files_and_follow_rotated_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        let link = dir.path().join("mounted-token");
+        std::fs::write(&file, "fixture-one\n").unwrap();
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        let source = TokenSource::File(link.clone());
+        assert_eq!(source.token().await.unwrap(), "fixture-one");
+        let replacement = dir.path().join("rotated-token");
+        std::fs::write(&replacement, "fixture-two\n").unwrap();
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&replacement, &link).unwrap();
+        assert_eq!(source.token().await.unwrap(), "fixture-two");
+
+        for path in [dir.path().to_path_buf(), PathBuf::from("/dev/null")] {
+            assert_eq!(
+                read_token(&path).await.unwrap_err().to_string(),
+                "token file must be a regular file"
+            );
+        }
     }
 
     #[tokio::test]
