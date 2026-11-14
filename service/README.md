@@ -219,8 +219,13 @@ A growing or special config file can report a misleading size and exhaust memory
 before a preview's request limits apply. Both preview modes read at most 1 MiB
 plus one detection byte of board configuration, rejecting oversized input before
 parsing rather than using a truncated config. This enforces the existing byte
-limit without a new setting; previews remain opt-in. It is not a filesystem I/O
-timeout: configuration should still be a local regular file.
+limit without a new setting; previews remain opt-in. A mis-mounted FIFO could
+also block startup before any preview deadline applies. Configuration is now
+opened nonblocking and the opened descriptor must be a regular file: directories,
+FIFOs and devices are rejected before reading or parsing. Symlinks to regular
+files remain supported for mounted configuration; checking the descriptor avoids
+a path replacement race. This is not a timeout for a slow regular filesystem;
+use a local configuration file. Both preview modes share these checks.
 
 ### One-shot preview for on-demand jobs
 

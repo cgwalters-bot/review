@@ -4,6 +4,46 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 
 #[tokio::test]
+async fn preview_modes_reject_fifos_without_waiting_for_a_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("board.pipe");
+    let link = dir.path().join("mounted.pipe");
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&fifo, &link).unwrap();
+    // Isolate the process: a regression to blocking filesystem open must not
+    // leave a Tokio blocking worker preventing the test runtime from exiting.
+    for mode in ["--board-once", "--board-config"] {
+        for path in [&fifo, &link] {
+            let output = tokio::time::timeout(
+                Duration::from_secs(5),
+                Command::new(env!("CARGO_BIN_EXE_control-app"))
+                    .arg(mode)
+                    .arg(path)
+                    .arg("--github-token-file")
+                    .arg(dir.path().join("missing-token"))
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await
+            .expect("FIFO config must not block startup or runtime shutdown")
+            .unwrap();
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert!(
+                String::from_utf8(output.stderr)
+                    .unwrap()
+                    .contains("board config must be a regular file")
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn one_shot_exits_with_json_without_a_token_or_server() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("board.json");
