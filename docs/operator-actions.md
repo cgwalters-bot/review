@@ -196,6 +196,13 @@ batch as failed or uncertain, even if the write actually took effect. Check
 GitHub before proposing another change; the reservation prevents replay.
 This checks the mutation response, not a later read that could race another edit.
 
+Adding or moving a sub-issue requires the mutation response to identify the
+intended child (positive safe-integer ID and API URL), not a pull request, and
+its requested `parent_issue_url`. Missing, malformed or mismatched evidence
+stops the batch as failed or uncertain, even if the relationship changed.
+The reservation prevents replay; check GitHub before proposing another parent
+change. This validates the existing response without an extra read or retry.
+
 Closing has two writes (reason comment then state). Before closing, execution
 requires a positive safe-integer comment ID, the same issue URL and the exact
 reason text in GitHub's response. An absent or mismatched confirmation stops
