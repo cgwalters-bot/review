@@ -33,8 +33,8 @@ export interface NeedsHumanRead {
 }
 
 interface SearchIssue {
-  html_url?: string;
-  title?: string;
+  html_url?: unknown;
+  title?: unknown;
   pull_request?: unknown;
 }
 
@@ -44,6 +44,7 @@ export const issueKey = (repository: string, number: number): string => `${repos
 export async function loadNeedsHuman(gh: GitHub): Promise<NeedsHumanRead> {
   const issues = new Map<string, LabelledIssue>();
   const notes: string[] = [];
+  let malformed = false;
   let total = 0;
   for (let page = 1; page <= NEEDS_HUMAN_PAGES; page++) {
     let data: { items?: SearchIssue[]; total_count?: number; incomplete_results?: boolean };
@@ -60,6 +61,11 @@ export async function loadNeedsHuman(gh: GitHub): Promise<NeedsHumanRead> {
     total = Math.max(total, data.total_count ?? 0);
     if (data.incomplete_results && !notes.length) notes.push("GitHub's search returned incomplete results");
     for (const raw of items) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)
+        || typeof raw.html_url !== "string" || (raw.title != null && typeof raw.title !== "string")) {
+        malformed = true;
+        continue;
+      }
       const url = raw.html_url;
       const ref = raw.pull_request || !url?.includes("/issues/") ? undefined : parseIssueUrl(url);
       // Only issues, and only in the configured organization.
@@ -70,5 +76,6 @@ export async function loadNeedsHuman(gh: GitHub): Promise<NeedsHumanRead> {
     if (items.length < PAGE_SIZE) break;
     if (page === NEEDS_HUMAN_PAGES && total > page * PAGE_SIZE) notes.push(`read the first ${page * PAGE_SIZE} of ${total}`);
   }
+  if (malformed) notes.push("Some search records could not be read");
   return { issues: [...issues.values()].sort((a, b) => a.key.localeCompare(b.key, "en", { numeric: true })), ...(notes.length ? { partial: notes.join("; ") } : {}) };
 }

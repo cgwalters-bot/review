@@ -258,7 +258,10 @@ organization, cannot be found this way. A response with a missing or non-array
 (including a malformed response), decisions from earlier pages stay visible
 with a partial-read warning naming the failed page. The search stops there;
 it does not retry or claim those decisions are the whole list. A first-page
-failure still reports the source unavailable.
+failure still reports the source unavailable. Malformed individual records are
+skipped with a partial-read warning rather than discarding readable decisions
+on the same or earlier pages. They still count toward the page size, so this
+does not widen the three-page search bound.
 
 **Published activity** sits immediately after Act now, keeping decisions first.
 It derives at most 12 rows from the existing needs-you context snapshot and
