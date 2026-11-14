@@ -1126,6 +1126,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn one_shot_emits_existing_envelope_and_reports_partial_reads() {
+        let fake = Fake::default();
+        let root = serve(fake.clone()).await;
+        let mut reader = reader(Some(root), TokenSource::Fixed("fixture".into()));
+        let mut config: Value = serde_json::from_str(&reader.config).unwrap();
+        config["usage"].as_object_mut().unwrap().remove("url");
+        reader.config = Arc::new(config.to_string());
+        for partial in [false, true] {
+            fake.partial.store(partial, Ordering::SeqCst);
+            let state = crate::preview_once(&reader, || AT.into()).await;
+            let mut output = Vec::new();
+            let result = crate::write_preview(&state, &mut output);
+            // This minimal config omits needs-you and usage evidence, so even
+            // failure-free reads must not be advertised as complete coverage.
+            assert!(result.is_err());
+            let value: Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(value["schema"], crate::state::SCHEMA);
+            assert_eq!(value["generation"], 1);
+            assert_eq!(value["refreshedAt"], AT);
+            assert_eq!(value["decision"]["readAt"], AT);
+            assert_eq!(value["decision"]["complete"], false);
+            assert_eq!(value["decision"]["items"][0]["failures"] == 0, !partial);
+            assert_eq!(value["decision"]["items"][0]["schema"], decision::SCHEMA);
+            assert_eq!(
+                value["decision"]["items"][0]["confirmed_effects"]["comments_created"],
+                0
+            );
+            for section in ["runs", "prs", "waiting"] {
+                assert_eq!(value[section]["complete"], false);
+                assert_eq!(value[section]["readAt"], Value::Null);
+                assert_eq!(value[section]["items"], json!([]));
+            }
+            assert!(fake.calls.load(Ordering::SeqCst) <= 2 * MAX_REQUESTS);
+        }
+        // An unavailable observation is still a JSON document, not empty stdout
+        // or an invented successful result. It does not retry the failed pass.
+        reader.config = Arc::new("{}".into());
+        *reader.pacing.lock().unwrap() = Pacing::default();
+        let calls = fake.calls.load(Ordering::SeqCst);
+        let state = crate::preview_once(&reader, || AT.into()).await;
+        let mut output = Vec::new();
+        assert!(crate::write_preview(&state, &mut output).is_err());
+        let value: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["decision"]["items"], json!([]));
+        assert_eq!(value["decision"]["readAt"], Value::Null);
+        assert_eq!(fake.calls.load(Ordering::SeqCst), calls);
+    }
+
+    #[tokio::test]
     async fn redirect_and_oversized_response_are_not_consumed() {
         use axum::{http::StatusCode, response::IntoResponse};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
