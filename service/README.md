@@ -198,6 +198,40 @@ the caller's repository/file and real route/secret provisioning were not supplie
 
 ## Board decision preview (tracker#1456 phase 1)
 
+### One-shot preview for on-demand jobs
+
+An on-demand preview must not accidentally start a credential-bearing listener
+or keep polling after its result is ready. `--board-once PATH` is an opt-in
+alternative to `--board-config PATH`: it uses the same read-only board reader
+once, prints one `review-service/v1` JSON document to stdout, and exits. It
+accepts only the GitHub token options alongside it; server, ACP, Forgejo and
+Kubernetes options are rejected. For example, from the repository root:
+
+```sh
+cargo run --manifest-path service/Cargo.toml -- --board-once /run/board.json --github-token-file /run/secrets/github-read > preview.json
+```
+
+The document has generation 1, `decision`, `decisionRefresh` and `refreshedAt`,
+using the same section and snapshot schemas as HTTP/SSE. Runs, PRs and waiting
+sections stay unread (`complete: false`, `readAt: null`), not successful empty
+lists. The existing preview limits apply: at most 128 admitted reads, a 45-second
+read-admission deadline, a ten-second per-request timeout capped by that deadline,
+and 2 MiB per response. No retry loop, cache persistence or forge writes are added.
+SIGTERM/Ctrl-C cancels the preview using the existing request cancellation guard.
+
+Exit 0 means the decision section is complete and has no read error. Partial,
+throttled and unavailable previews still emit their JSON evidence, then exit
+nonzero with a generic stderr diagnostic; callers must preserve that output
+without treating it as a successful complete view. Invalid arguments/configuration
+fail before emitting a document. Output write failures also exit nonzero.
+
+This is only the compute seam for tracker#1456's serverless direction, not a
+dispatch or publication protocol. No workflow is enabled or changed, no caller
+is migrated, and poll.yml remains the automated board writer. A later slice must
+define dispatch inputs, result retention/access and browser result discovery;
+do not publish potentially private preview data to public Pages or workflow logs.
+The static app and optional persistent deployment are unchanged.
+
 ### App and CLI decision reads (#292)
 
 The concrete threats are accidentally exposing a private service's data in the

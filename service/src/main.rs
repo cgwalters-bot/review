@@ -12,6 +12,7 @@ mod state;
 mod token;
 mod version;
 
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,6 +38,8 @@ seconds and serve it read-only: /api/state, /api/repos/OWNER/REPO,
   --static DIR             the built app to serve (default dist)
   --interval SECONDS       refresh period, 30 to 3600 (default 60)
   --board-config PATH      opt in to one bounded board-forge preview per refresh
+  --board-once PATH        print one board preview as state JSON and exit;
+                           accepts only token options, never starts a server
   --acp-config PATH        opt in to configured session WebSocket attachments
 
 The GitHub token, which needs only read access, comes from one of:
@@ -98,6 +101,7 @@ struct Args {
     interval: Duration,
     token: TokenConfig,
     board_config: Option<PathBuf>,
+    board_once: bool,
     acp_config: Option<PathBuf>,
     forgejo: Option<forgejo::Config>,
     kubernetes: Option<kubernetes::Config>,
@@ -114,6 +118,8 @@ fn parse_args(
     let mut interval = DEFAULT_INTERVAL_SECS;
     let mut token_file = token_file_env.filter(|f| !f.is_empty());
     let mut board_config = None;
+    let mut board_once = false;
+    let mut service_options = false;
     let mut acp_config = None;
     let (mut forgejo_url, mut forgejo_token_file, mut forgejo_reviewer) = (None, None, None);
     let (mut forgejo_orgs, mut forgejo_labels) = (Vec::new(), Vec::new());
@@ -130,11 +136,23 @@ fn parse_args(
         let Some(value) = inline.or_else(|| args.next()) else {
             bail!("{flag} needs a value");
         };
+        service_options |= !matches!(
+            flag.as_str(),
+            "--board-once"
+                | "--github-token-file"
+                | "--octo-sts-scope"
+                | "--octo-sts-identity"
+                | "--octo-sts-token-file"
+        );
         match flag.as_str() {
             "--listen" => listen = value,
             "--allow-host" => allowed_hosts.push(value),
             "--static" => static_dir = value.into(),
             "--board-config" => board_config = Some(value.into()),
+            "--board-once" => {
+                board_once = true;
+                board_config = Some(value.into());
+            }
             "--acp-config" => acp_config = Some(value.into()),
             "--interval" => {
                 interval = value
@@ -153,6 +171,9 @@ fn parse_args(
             "--kubernetes-namespace" => kubernetes_namespaces.push(value),
             _ => bail!("unknown option {flag:?}"),
         }
+    }
+    if board_once && service_options {
+        bail!("--board-once accepts only GitHub token options");
     }
     if !INTERVAL_SECS.contains(&interval) {
         bail!(
@@ -212,6 +233,7 @@ fn parse_args(
         interval: Duration::from_secs(interval),
         token,
         board_config,
+        board_once,
         acp_config,
         forgejo,
         kubernetes,
@@ -237,6 +259,31 @@ fn token_source(config: TokenConfig) -> Result<TokenSource> {
 
 fn now() -> String {
     humantime::format_rfc3339_seconds(SystemTime::now()).to_string()
+}
+
+/// The same decision envelope as HTTP/SSE, without unrelated source reads or
+/// a listener. Unread sections remain explicitly incomplete, not empty success.
+async fn preview_once(reader: &board::Reader, clock: impl Fn() -> String) -> State {
+    let mut state = State::empty();
+    state.generation = 1;
+    state.decision = Some(reader.refresh(None, &clock()).await);
+    state.decision_refresh = Some(reader.status());
+    state.refreshed_at = Some(clock());
+    state
+}
+
+fn write_preview(state: &State, mut output: impl Write) -> Result<()> {
+    serde_json::to_writer(&mut output, state).context("writing board preview")?;
+    writeln!(output).context("writing board preview")?;
+    output.flush().context("writing board preview")?;
+    if !state
+        .decision
+        .as_ref()
+        .is_some_and(|d| d.complete && d.error.is_none())
+    {
+        bail!("board preview incomplete; inspect the emitted decision section");
+    }
+    Ok(())
 }
 
 /// Compute one whole generation before the watch channel exposes any of it.
@@ -365,6 +412,17 @@ async fn main() -> Result<()> {
         Some(path) => Some(board::Reader::new(&path, token.clone()).await?),
         None => None,
     };
+    if args.board_once {
+        let reader = board.context("--board-once requires board configuration")?;
+        let state = tokio::select! {
+            state = preview_once(&reader, now) => state,
+            result = terminated() => {
+                result?;
+                bail!("board preview interrupted");
+            }
+        };
+        return write_preview(&state, std::io::stdout().lock());
+    }
     let client = Client::new(token, github::API_ROOT)?;
     let forgejo = match args.forgejo {
         Some(config) => {
@@ -499,6 +557,7 @@ mod tests {
         assert_eq!(a.token, TokenConfig::Gh);
         assert!(a.allowed_hosts.is_empty());
         assert!(a.board_config.is_none(), "board reads are off by default");
+        assert!(!a.board_once);
         assert!(a.acp_config.is_none(), "ACP attachments are off by default");
         assert_eq!(
             parse(&["--acp-config=sessions.json"])
@@ -562,6 +621,56 @@ mod tests {
                 Some(why)
             );
         }
+    }
+
+    #[test]
+    fn board_once_accepts_only_its_config_and_token_options() {
+        let a = parse(&["--board-once=board.json", "--github-token-file", "token"])
+            .unwrap()
+            .unwrap();
+        assert!(a.board_once);
+        assert_eq!(a.board_config, Some("board.json".into()));
+        assert_eq!(a.token, TokenConfig::File("token".into()));
+        for flag in [
+            "--listen",
+            "--static",
+            "--interval",
+            "--board-config",
+            "--acp-config",
+            "--forgejo-url",
+            "--kubernetes-namespace",
+            "--allow-host",
+        ] {
+            let value = if flag == "--interval" { "60" } else { "unused" };
+            for args in [
+                vec!["--board-once", "board.json", flag, value],
+                vec![flag, value, "--board-once", "board.json"],
+            ] {
+                assert_eq!(
+                    parse(&args).err().unwrap().to_string(),
+                    "--board-once accepts only GitHub token options"
+                );
+            }
+        }
+        assert!(parse(&["--board-once"]).is_err());
+    }
+
+    #[test]
+    fn preview_output_requires_complete_error_free_evidence_and_successful_write() {
+        let mut state = State::empty();
+        state.decision = Some(state::Section {
+            complete: true,
+            ..Default::default()
+        });
+        let mut bytes = Vec::new();
+        write_preview(&state, &mut bytes).unwrap();
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_ok());
+        assert!(write_preview(&state, &mut [0u8; 1][..]).is_err());
+        state.decision.as_mut().unwrap().error = Some("unavailable".into());
+        assert!(write_preview(&state, Vec::new()).is_err());
+        state.decision = None;
+        assert!(write_preview(&state, Vec::new()).is_err());
     }
 
     #[test]
