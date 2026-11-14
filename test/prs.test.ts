@@ -13,6 +13,7 @@ import {
   OTHER_QUERY,
   refreshVerdicts,
   REQUESTED_QUERY,
+  searchBotPrs,
   submitReview,
   type VerdictEntry,
 } from "../src/github/prs.ts";
@@ -47,6 +48,38 @@ function pull(over: Record<string, unknown> = {}) {
 }
 
 describe("loadForgePrs", () => {
+  for (const body of [null, {}, { items: null }, { items: {} }, { items: "" }]) {
+    it(`rejects a malformed PR search instead of reporting an empty queue: ${JSON.stringify(body)}`, async () => {
+      const { fetchImpl, calls } = scriptedFetch(() => ({ body }));
+      await assert.rejects(searchBotPrs(new GitHub(token, fetchImpl)), /no valid items array/);
+      assert.equal(calls.length, 1);
+    });
+  }
+
+  it("rejects incomplete results even when the search reports no matches", async () => {
+    const { fetchImpl } = scriptedFetch(() => ({ body: { items: [], total_count: 0, incomplete_results: true } }));
+    await assert.rejects(searchBotPrs(new GitHub(token, fetchImpl)), /incomplete results/);
+  });
+
+  it("accepts a genuinely empty search", async () => {
+    const { fetchImpl } = scriptedFetch(() => ({ body: { items: [], total_count: 0, incomplete_results: false } }));
+    assert.deepEqual(await searchBotPrs(new GitHub(token, fetchImpl)), []);
+  });
+
+  for (const total_count of [501, undefined]) {
+    it(`refuses a truncated search after five pages (total ${total_count})`, async () => {
+      const { fetchImpl, calls } = scriptedFetch(() => ({ body: { items: Array.from({ length: 100 }, () => ({ html_url: "https://github.com/x/y/issues/1" })), total_count } }));
+      await assert.rejects(searchBotPrs(new GitHub(token, fetchImpl)), /500-result read limit/);
+      assert.equal(calls.length, 5);
+    });
+  }
+
+  it("counts fetched items, not filtered PRs, at the exact search bound", async () => {
+    const { fetchImpl, calls } = scriptedFetch(() => ({ body: { items: Array.from({ length: 100 }, () => ({ html_url: "https://github.com/x/y/issues/1" })), total_count: 500 } }));
+    assert.deepEqual(await searchBotPrs(new GitHub(token, fetchImpl)), []);
+    assert.equal(calls.length, 5);
+  });
+
   it("searches the bot's open PRs, page by page, and keeps the forge's drafts", async () => {
     const item = (n: number) => ({ html_url: `https://github.com/cgwalters-forge/r/pull/${n}`, pull_request: {}, title: `#${n}`, draft: true, user: { login: "cgwalters-bot" } });
     const { fetchImpl, calls } = scriptedFetch((_m, url) => {
