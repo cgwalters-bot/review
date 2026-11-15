@@ -314,11 +314,48 @@ token is sent to the browser.
 Offline tests replay `service/fixtures/state.json`, checked by the Rust state
 tests against `service/fixtures/github.json`. Browser tests shift all recorded
 clocks together for freshness; mutations are failure/update scenarios, not claims
-of additional observed producer facts. Broader PR/waiting and per-repository
-board integration, actual pass-summary decisions and producer
+of additional observed producer facts. PR/waiting and per-repository board
+integration follow in the next section; actual pass-summary decisions and producer
 [agent-board#794](https://github.com/cgwalters-forge/agent-board/issues/794)'s
 reusable warm-cache API remain follow-ups. This does not retire the comment
 store, enable a deployment, or complete #281.
+
+### Opt-in browser service board (#281)
+
+The concrete threat is the same: a public/static app reading a private service's
+lists of the operator's PRs and waiting items. The board is **off by default**.
+Build with `npm run build -- --hosted --service-board`; `--service-board`
+requires `--hosted` and adds only the `service-board` marker. The default
+container build, Pages and existing opt-in builds are unchanged.
+
+The board adds three read-only lists to Status: the service's runs (every
+workflow the service reads, not the Live agents allowlist), Bot PRs
+(repository#number, title, draft, merge state, updated) and Waiting on you
+(repository#number, title, issue/PR, reasons, updated). Each shows its
+section's original `readAt`, Current/Stale/Future clock, Complete/Incomplete and
+error. A missing, malformed, unread, partial, failed, stale or disconnected
+section is visibly unknown, never an empty healthy list, and each section is
+parsed independently: a malformed `prs` hides neither runs, waiting nor the
+decision. Items are bounded (6,000 runs, 1,000 PRs or waiting items, field
+lengths), repositories and URLs must match their GitHub shape, and merge states
+and reasons must come from known sets.
+
+A repository filter narrows all three lists client-side from the same full-state
+generation, so it sends no request and cannot mix generations. As with
+`GET /api/repos/OWNER/REPO`, which is unchanged for other clients, a filtered
+section's `complete`, `readAt` and `error` still describe the whole section.
+
+Combine it freely with `--service-decisions` and `--service-runs`: every enabled
+consumer shares the one `/api/events` subscription, each event is a full resync
+whose SSE id must match its generation, a connected stream rejects backwards
+generations, a reconnect resyncs fully (generations may reset after a service
+restart), and page suspension or sign-out closes the stream. These thin
+sections lack check runs, DCO, verdicts and write authority, so they do not
+replace the token-backed PR queue or Needs you, and the board has no Cancel,
+approve or merge controls. No service token reaches the browser.
+`CONTROL_APP_SERVICE=… control-app repo OWNER/REPO` reports the same
+repository's PRs and waiting items from the same parser, with the same coverage
+notes, and works without a decision section.
 
 ### App and CLI decision reads (#292)
 
