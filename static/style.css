@@ -592,5 +592,8 @@ nav.views a[aria-current="page"] { color: var(--accent); border-bottom-color: va
   textarea, select, input:not([type]), input[type=text], input[type=password], input[type=search], input[type=url], input[type=email] { font-size: 16px !important; }
 }
 /* Hosted-only markup; long resource names must wrap on phones. */
-.personal-infra { overflow-wrap: anywhere; }
-.personal-infra li { margin-block: 1rem; }
+.personal-infra, .service-board { overflow-wrap: anywhere; }
+.personal-infra li, .service-board li { margin-block: 1rem; }
+.service-board { margin-block-end: 12px; }
+.service-board li p { margin-block: 0; color: var(--muted); }
+.service-board h3 .count { font-size: var(--type-meta); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; vertical-align: middle; }

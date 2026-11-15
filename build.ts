@@ -21,6 +21,8 @@ const serviceDecisions = process.argv.includes("--service-decisions");
 if (serviceDecisions && !hosted) throw new Error("--service-decisions requires --hosted (private same-origin service)");
 const serviceRuns = process.argv.includes("--service-runs");
 if (serviceRuns && !hosted) throw new Error("--service-runs requires --hosted (private same-origin service)");
+const serviceBoard = process.argv.includes("--service-board");
+if (serviceBoard && !hosted) throw new Error("--service-board requires --hosted (private same-origin service)");
 const CLIS = { "dist-cli/review-queue.js": "src/cli/main.ts", "dist-cli/control-app.js": "src/cli/controlplanemain.ts" };
 const STATIC_FILES = ["index.html", "style.css"];
 const DEV_HOST = "127.0.0.1";
@@ -60,6 +62,10 @@ if (serviceDecisions) {
 if (serviceRuns) {
   const html = await readFile(`${OUT_DIR}/index.html`, "utf8");
   await writeFile(`${OUT_DIR}/index.html`, html.replace("</head>", '<meta name="service-runs" content="enabled">\n</head>'));
+}
+if (serviceBoard) {
+  const html = await readFile(`${OUT_DIR}/index.html`, "utf8");
+  await writeFile(`${OUT_DIR}/index.html`, html.replace("</head>", '<meta name="service-board" content="enabled">\n</head>'));
 }
 
 if (process.argv.includes("--serve")) {

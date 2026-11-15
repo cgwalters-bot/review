@@ -93,6 +93,7 @@ import { stale } from "./passes.ts";
 import { ago } from "../time.ts";
 import { type ServiceDecision, type ServiceState, serviceLiveRuns, serviceProblem, watchServiceState } from "./service.ts";
 import { serviceDecisionView } from "./serviceview.ts";
+import { serviceBoardView } from "./serviceboard.ts";
 import { type Delay, Poller, pollDelay, pollNote } from "./poller.ts";
 import { saveMine } from "./mine.ts";
 import { MINE_CLASS } from "./mineview.ts";
@@ -122,10 +123,14 @@ const render = createRenderer(window);
 // Only the explicit private hosted build inserts this marker. Pages stays static.
 const serviceMode = document.querySelector('meta[name="service-decisions"]')?.getAttribute("content") === "enabled";
 const serviceRunsMode = document.querySelector('meta[name="service-runs"]')?.getAttribute("content") === "enabled";
+const serviceBoardMode = document.querySelector('meta[name="service-board"]')?.getAttribute("content") === "enabled";
+const serviceStream = serviceMode || serviceRunsMode || serviceBoardMode;
 
 interface State {
   service?: ServiceDecision;
   serviceState?: ServiceState | undefined;
+  /** The service board's repository filter; undefined shows every repository. */
+  serviceRepository?: string | undefined;
   serviceStreamError?: string | undefined;
   serviceError?: string | undefined;
   serviceOnly?: boolean;
@@ -334,6 +339,10 @@ function cachedSince(state: State): number | undefined {
  * who is signed in, the people and bot counts, and the rate budget.
  */
 function renderMeta(state: State): void {
+  if (state.serviceOnly && !serviceMode && !serviceRunsMode) {
+    byId("meta").textContent = `Service generation ${state.serviceState?.generation ?? "unknown"} · ${state.serviceStreamError ?? (state.serviceState ? "received" : "unavailable")} · read-only`;
+    return;
+  }
   if (state.serviceOnly && !serviceMode) {
     const live = serviceLiveRuns(state.serviceState, Date.now(), state.serviceStreamError);
     byId("meta").textContent = `Service runs generation ${state.serviceState?.generation ?? "unknown"} · ${live.errors.join("; ") || "complete"} · read-only`;
@@ -945,6 +954,12 @@ function paintActive(state: State): void {
   const missing = pass === undefined && at ? `Pass view not in the pass's snapshot, written ${ago(at, Date.now())}${stale(at, Date.now()) ? ": the pass may have stopped publishing it." : " (off or older producer)."}` : pass;
   state.home.slots.active.replaceChildren(serviceMode || state.serviceOnly ? serviceDecisionView(state.service, Date.now(), state.serviceError) : activePassView(missing, Date.now(), passUnavailable, actions, runPassControl(state.gh, facts, state.passControl ??= {}), live));
   state.home.slots.passes.replaceChildren(serviceMode || state.serviceOnly ? h("section", {}, h("h2", {}, "Scheduler passes"), h("p", { class: "note" }, "Pass history is not supplied by the service decision contract; unknown, not an empty history.")) : schedulerPassView(state.passes, pass, Date.now(), passUnavailable));
+  if (serviceBoardMode) state.home.slots.passes.prepend(serviceBoardView(state.serviceState, Date.now(), state.serviceStreamError, state.serviceRepository, (repository) => {
+    state.serviceRepository = repository;
+    paintActive(state);
+    // The repaint replaces the select; keep keyboard users on it.
+    state.home?.el.querySelector<HTMLSelectElement>(".service-board select")?.focus();
+  }));
   if (serviceRunsMode) state.home.slots.passes.prepend(live);
   state.home.slots.activity.replaceChildren(activityView(state.published, state.passes, Date.now(), passUnavailable));
   if (state.active?.repositories) state.repositories = state.active.repositories;
@@ -979,7 +994,7 @@ function newLayer(get: () => State): SourceLayer<ViewId> {
         paintActive(state);
         return status !== undefined;
       } },
-      { name: "live", path: "the agent workflows' unfinished runs (Actions API)", cadence: LIVE_POLL_MS, views: ["inbox"], when: () => !serviceMode && !serviceRunsMode, read: () => refreshLive(get()) },
+      { name: "live", path: "the agent workflows' unfinished runs (Actions API)", cadence: LIVE_POLL_MS, views: ["inbox"], when: () => !serviceMode && !serviceRunsMode && !get().serviceOnly, read: () => refreshLive(get()) },
       { name: "people", path: "search of issues and PRs asking for you", cadence: POLL_INTERVAL_MS, views: [SECTION_VIEW.needs], read: () => refreshPeople(get()), when: () => !get().serviceOnly && !!get().home?.el.querySelector<HTMLDetailsElement>("#sec-people")?.open },
       { name: NEEDS_HUMAN_LABEL, path: `search: ${NEEDS_HUMAN_QUERY}`, cadence: POLL_INTERVAL_MS, views: ["inbox"], read: () => refreshNeedsHuman(get()), when: () => !serviceMode && !get().serviceOnly && actNowGap(get().published, Date.now()) !== undefined },
     ],
@@ -1970,7 +1985,7 @@ async function start(source: TokenSource, serviceOnly = false): Promise<void> {
     state.serviceStreamError = "Service stream unavailable; waiting for full resync";
     if (serviceMode) state.serviceError = state.serviceStreamError;
     if (serviceMode || serviceOnly) applyService(state);
-    else if (serviceRunsMode) paintActive(state);
+    else if (serviceRunsMode || serviceBoardMode) paintActive(state);
   });
   for (const ev of ["pageshow", "focus"]) window.addEventListener(ev, () => { subscribeService(); state.poller.wake(frozenSince(state)); });
   state.metaTicker = setInterval(() => {
@@ -1979,12 +1994,13 @@ async function start(source: TokenSource, serviceOnly = false): Promise<void> {
       renderChrome(state);
       // Waiting ages move on without a redraw of the rows.
       tickAges(document.body, Date.now());
-      if (serviceRunsMode) paintActive(state);
+      // Clocks age without a push; don't redraw a filter the viewer is choosing in.
+      if ((serviceRunsMode || serviceBoardMode) && !document.activeElement?.closest(".service-board")) paintActive(state);
     }
   }, META_TICK_MS);
   await cached;
   function subscribeService(): void {
-    if (state.closed || state.stopService || (!serviceMode && !serviceRunsMode)) return;
+    if (state.closed || state.stopService || !serviceStream) return;
     state.stopService = watchServiceState((full, error) => {
       if (state.closed) return;
       if (full) state.serviceState = full;
@@ -2190,7 +2206,7 @@ async function main(): Promise<void> {
   }
   const saved = savedToken();
   if (saved) await start(saved);
-  else if (serviceMode || serviceRunsMode) await start({ get: async () => "", signOut: async () => {}, persistence: "session" }, true);
+  else if (serviceStream) await start({ get: async () => "", signOut: async () => {}, persistence: "session" }, true);
   else showSignIn("none");
 }
 

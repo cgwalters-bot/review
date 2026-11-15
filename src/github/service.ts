@@ -54,40 +54,115 @@ export interface ServiceRun {
   startedAt: string | null;
 }
 
-export interface ServiceRuns {
-  items: ServiceRun[];
+/** A section as published: complete, readAt and error describe the whole
+ * section, including when a caller narrows its items to one repository. */
+export interface ServiceSection<T> {
+  items: T[];
   complete: boolean;
   readAt: string | null;
   error: string | null;
+}
+
+export type ServiceRuns = ServiceSection<ServiceRun>;
+
+/** GitHub's documented mergeable_state values; null when the service couldn't read it. */
+export const MERGE_STATES = ["behind", "blocked", "clean", "dirty", "draft", "has_hooks", "unknown", "unstable"] as const;
+
+export interface ServicePr {
+  repository: string;
+  number: number;
+  url: string;
+  title: string;
+  draft: boolean;
+  mergeState: (typeof MERGE_STATES)[number] | null;
+  updatedAt: string;
+}
+
+export const WAITING_REASONS = ["review-requested", "assigned"] as const;
+
+export interface ServiceWaiting {
+  repository: string;
+  number: number;
+  url: string;
+  title: string;
+  pullRequest: boolean;
+  reasons: (typeof WAITING_REASONS)[number][];
+  updatedAt: string;
 }
 
 export interface ServiceState {
   generation: number;
   runs?: ServiceRuns;
   runsError?: string;
+  prs?: ServiceSection<ServicePr>;
+  prsError?: string;
+  waiting?: ServiceSection<ServiceWaiting>;
+  waitingError?: string;
   decision?: ServiceDecision;
   decisionError?: string;
 }
+
+const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const repository = (v: unknown): v is string => text(v) && REPOSITORY_RE.test(v) && !v.split("/").some((s) => s === "." || s === "..");
+const title = (v: unknown): v is string => typeof v === "string" && v.length <= 4096;
+const number = (v: unknown): v is number => count(v) && v > 0;
+// The service reads one page of 100 per search; leave room without trusting it.
+const MAX_LISTED = 1000;
+
+/** The whole section, or undefined if it or any item is malformed. */
+function section<T>(raw: unknown, max: number, valid: (item: Record<string, unknown>) => boolean): ServiceSection<T> | undefined {
+  if (!isObject(raw) || !Array.isArray(raw.items) || raw.items.length > max || typeof raw.complete !== "boolean" || (raw.readAt !== null && !time(raw.readAt)) || (raw.error !== null && (typeof raw.error !== "string" || raw.error.length > 16384))) return undefined;
+  if (!raw.items.every((item) => isObject(item) && valid(item))) return undefined;
+  return { items: raw.items as T[], complete: raw.complete, readAt: raw.readAt as string | null, error: raw.error as string | null };
+}
+
+const SECTIONS = {
+  runs: (r: unknown) => section<ServiceRun>(r, 6000, (item) => repository(item.repository) && text(item.workflow) && /^[A-Za-z0-9_.-]+\.ya?ml$/.test(item.workflow) && number(item.id) && item.url === `https://github.com/${item.repository}/actions/runs/${item.id}` && title(item.title) && ["in_progress", "queued", "pending", "waiting", "requested"].includes(item.status as string) && !!time(item.createdAt) && (item.startedAt === null || !!time(item.startedAt))),
+  prs: (r: unknown) => section<ServicePr>(r, MAX_LISTED, (item) => repository(item.repository) && number(item.number) && item.url === `https://github.com/${item.repository}/pull/${item.number}` && title(item.title) && typeof item.draft === "boolean" && (item.mergeState === null || MERGE_STATES.includes(item.mergeState as never)) && !!time(item.updatedAt)),
+  waiting: (r: unknown) => section<ServiceWaiting>(r, MAX_LISTED, (item) => repository(item.repository) && number(item.number) && typeof item.pullRequest === "boolean" && item.url === `https://github.com/${item.repository}/${item.pullRequest ? "pull" : "issues"}/${item.number}` && title(item.title) && Array.isArray(item.reasons) && item.reasons.length > 0 && new Set(item.reasons).size === item.reasons.length && item.reasons.every((v) => WAITING_REASONS.includes(v as never)) && !!time(item.updatedAt)),
+};
 
 /** Sections are independently unavailable, but always belong to one envelope. */
 export function parseServiceState(raw: unknown): ServiceState {
   if (!isObject(raw) || raw.schema !== "review-service/v1" || !count(raw.generation)) throw new Error("Unsupported service state");
   const state: ServiceState = { generation: raw.generation };
   try { state.decision = parseService(raw); } catch { state.decisionError = "Service decision unavailable or malformed"; }
-  const r = raw.runs;
-  const repository = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-  if (!isObject(r) || !Array.isArray(r.items) || r.items.length > 6000 || typeof r.complete !== "boolean" || (r.readAt !== null && !time(r.readAt)) || (r.error !== null && (typeof r.error !== "string" || r.error.length > 16384))) {
-    state.runsError = "Service runs unavailable or malformed";
-    return state;
-  }
-  for (const item of r.items) {
-    if (!isObject(item) || !text(item.repository) || !repository.test(item.repository) || item.repository.split("/").some((s) => s === "." || s === "..") || !text(item.workflow) || !/^[A-Za-z0-9_.-]+\.ya?ml$/.test(item.workflow) || !count(item.id) || item.id === 0 || item.url !== `https://github.com/${item.repository}/actions/runs/${item.id}` || typeof item.title !== "string" || item.title.length > 4096 || !["in_progress", "queued", "pending", "waiting", "requested"].includes(item.status as string) || !time(item.createdAt) || (item.startedAt !== null && !time(item.startedAt))) {
-      state.runsError = "Service runs unavailable or malformed";
-      return state;
-    }
-  }
-  state.runs = r as unknown as ServiceRuns;
+  const runs = SECTIONS.runs(raw.runs);
+  if (runs) state.runs = runs;
+  else state.runsError = "Service runs unavailable or malformed";
+  const prs = SECTIONS.prs(raw.prs);
+  if (prs) state.prs = prs;
+  else state.prsError = "Service PRs unavailable or malformed";
+  const waiting = SECTIONS.waiting(raw.waiting);
+  if (waiting) state.waiting = waiting;
+  else state.waitingError = "Service waiting items unavailable or malformed";
   return state;
+}
+
+/** One repository's items, case-insensitively as the service's /api/repos
+ * endpoint; the section's complete, readAt and error stay the whole section's. */
+export function onlyRepository<T extends { repository: string }>(s: ServiceSection<T>, name: string): ServiceSection<T> {
+  const lower = name.toLowerCase();
+  return { ...s, items: s.items.filter((i) => i.repository.toLowerCase() === lower) };
+}
+
+/** The section's own read clock; delivery never freshens it. */
+export function sectionClock(readAt: string | null, now: number): "Unavailable" | "Current" | "Stale" | "Future clock" {
+  if (!readAt) return "Unavailable";
+  if (!stale(readAt, now)) return "Current";
+  return Date.parse(readAt) > now ? "Future clock" : "Stale";
+}
+
+/** Only a complete, current, error-free read makes an empty list a fact. */
+export const sectionTrusted = (s: ServiceSection<unknown>, now: number): boolean =>
+  s.complete && s.error === null && sectionClock(s.readAt, now) === "Current";
+
+/** A section narrowed to one repository, with the same coverage the app shows. */
+export function repositorySection<T extends { repository: string }>(s: ServiceSection<T> | undefined, unavailable: string | undefined, name: string, now: number) {
+  if (!s) return { items: null, complete: false, readAt: null, error: null, clock: "Unavailable", note: `${unavailable ?? "Service section unavailable"}; coverage is unknown.` };
+  const trusted = sectionTrusted(s, now);
+  return { ...onlyRepository(s, name), clock: sectionClock(s.readAt, now),
+    note: `${trusted ? "" : "Incomplete, failed, stale or unread section: this repository's items may be missing. "}complete, readAt and error describe the whole section, not only this repository.` };
 }
 
 /** Delivery never supplies a read clock, nor promotes incomplete reads to idle. */

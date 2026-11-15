@@ -28,7 +28,7 @@ import { enrich, LIVE_SOURCES, type LiveRun, type LiveRuns, loadLiveRuns } from 
 import { redactAddresses, stale } from "../github/passes.ts";
 import type { AgentRun, PassView } from "../github/passview.ts";
 import { startPass } from "../github/runpass.ts";
-import { readService, serviceProblem, type ServiceDecision } from "../github/service.ts";
+import { readService, readServiceState, repositorySection, sectionTrusted, serviceProblem, type ServiceDecision } from "../github/service.ts";
 import { type Io, readOnly, run as runQueue } from "./queue.ts";
 
 export const PROG = "control-app";
@@ -52,7 +52,8 @@ The old command name control-plane remains an alias for one release.
                        and complete the pass's list is
   act-now              the pass's Act now shortlist, as Home shows it
   queue [ARGS]         the review queue; ARGS as for review-queue (--help)
-  repo OWNER/REPO      the pass's dispatchable work, live runs and asks on a repository
+  repo OWNER/REPO      the pass's dispatchable work, live runs and asks on a repository;
+                       from a service, also its bot PRs and waiting items
   changes --since TIME passes, starts and new asks since an ISO time
   -h, --help           this text
 
@@ -75,7 +76,8 @@ RUN is a run's URL or ID. The token comes from $GH_TOKEN, else $GITHUB_TOKEN,
 else \`gh auth token --hostname github.com\`. The read commands send only GET
 requests.
 Set CONTROL_APP_SERVICE to a private service's HTTP(S) base URL to read its
-decision generation instead, without a GitHub token. Failures never fall back
+decision generation instead, without a GitHub token (repo reports its PRs and
+waiting items even without a decision). Failures never fall back
 to GitHub decision reads. Queue and act commands retain their existing policy.
 `;
 
@@ -420,6 +422,20 @@ export async function run(argv: readonly string[], io: Io & { serviceUrl?: strin
       io.stdout(`${JSON.stringify({ ...head, ...body }, null, 2)}\n`);
       return 0;
     }
+    if (io.serviceUrl && command === "repo") {
+      // The decision section is optional on the service; PRs and waiting
+      // items are independent sections of the same generation.
+      const s = await readServiceState(io.serviceUrl, io.fetch);
+      const d = s.decision;
+      const problem = d ? serviceProblem(d, now) : s.decisionError;
+      const name = opts.repo!;
+      io.stdout(`${JSON.stringify({ ...head, source: "service", generation: s.generation, unavailable: problem ?? null,
+        ...(d ? repo(d.holds, name, now) : { repository: name, work: null, live: null, asks: null }),
+        prs: repositorySection(s.prs, s.prsError, name, now), waiting: repositorySection(s.waiting, s.waitingError, name, now),
+        // Whole only if the decision and both lists are complete, current reads.
+        complete: !!d && d.complete && !problem && [s.prs, s.waiting].every((x) => !!x && sectionTrusted(x, now)) }, null, 2)}\n`);
+      return 0;
+    }
     if (io.serviceUrl) {
       const d = await readService(io.serviceUrl, io.fetch, now);
       const problem = serviceProblem(d, now);
@@ -427,8 +443,7 @@ export async function run(argv: readonly string[], io: Io & { serviceUrl?: strin
       const body = command === "status" ? { snapshotAt: holds.at, wip: holds.wip, candidates: d.candidates, pools: d.pools, holds: holds.holds, holdsOmitted: d.holdsOmitted, poolsOmitted: d.poolsOmitted, passes: null, live: null }
         : command === "needs-you" ? serviceNeedsYou(d, now, problem)
           : command === "act-now" ? (problem ? { rows: [], unavailable: problem } : actNow(holds, now))
-            : command === "repo" ? repo(holds, opts.repo!, now)
-              : { since: new Date(opts.since!).toISOString(), passes: null, asks: null, error: "Service decision contract does not supply pass history" };
+            : { since: new Date(opts.since!).toISOString(), passes: null, asks: null, error: "Service decision contract does not supply pass history" };
       // A complete nested list cannot certify the enclosing preview's coverage.
       // Keep its own coverage visible without letting the body overwrite ours.
       const listCommand = command === "needs-you" || command === "act-now";
