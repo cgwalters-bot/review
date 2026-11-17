@@ -20,6 +20,7 @@ const list = (v: unknown, check: (v: unknown) => boolean): boolean => Array.isAr
 
 interface Pull { repository: string; number: number; head: string; action: string; reason: string; ran: boolean }
 interface Need { repository: string; number: number; head: string; kind: string; reason: string }
+interface QueueEntry { number: number | null; head: string | null; position: number | null; state: string | null }
 export interface MaintainerReport {
   schema: typeof REPORT_SCHEMA;
   generated_at: string;
@@ -29,6 +30,8 @@ export interface MaintainerReport {
   needs_human: Need[];
   undecided_repositories: string[];
   errors: number;
+  /** Absent from older producers; a repository's queue is null where it was unread. */
+  merge_queues?: Record<string, QueueEntry[] | null>;
 }
 export interface ReportBlock { report: MaintainerReport | string; commentUrl?: string }
 
@@ -49,6 +52,16 @@ export function parseMaintainerReport(raw: unknown): MaintainerReport | string {
     || !list(raw.needs_human, (v) => isObject(v) && member(v.repository) && positive(v.number) && text(v.head) && text(v.kind) && text(v.reason))
     || !list(raw.merge_queue_events, (v) => isObject(v) && member(v.repository) && positive(v.number) && pull(v.step) && isObject(v.event)
       && (v.event.id === null || text(v.event.id)) && (v.event.created_at === null || date(v.event.created_at)) && (v.event.reason === null || text(v.event.reason)))) return invalid;
+  if (raw.merge_queues !== undefined) {
+    if (!isObject(raw.merge_queues)) return invalid;
+    const queues = Object.entries(raw.merge_queues);
+    const entry = (v: unknown): boolean => isObject(v) && (v.number === null || positive(v.number)) && (v.head === null || text(v.head))
+      && (v.position === null || Number.isSafeInteger(v.position)) && (v.state === null || text(v.state));
+    // Keys are looked up case-insensitively, so two spellings of one repository would be ambiguous.
+    if (queues.some(([k, v]) => !member(k) || (v !== null && !list(v, entry)))
+      || new Set(queues.map(([k]) => k.toLowerCase())).size !== queues.length
+      || queues.reduce((n, [, v]) => n + ((v as unknown[] | null)?.length ?? 0), 0) > MAX_RECORDS) return invalid;
+  }
   return raw as unknown as MaintainerReport;
 }
 
@@ -73,6 +86,15 @@ export function findMaintainerReports(comments: readonly RawComment[]): ReportBl
     }
     return blocks.length ? blocks : [{ report: "Invalid maintainer report: missing block or oversized comment.", ...(commentUrl ? { commentUrl } : {}) }];
   });
+}
+
+/** A count only for a published queue; merge_queue_events are removals, never current entries. */
+function queueDepth(report: MaintainerReport, repository: string, unread: boolean): string {
+  if (!report.merge_queues) return "unknown (not published by this producer).";
+  if (unread) return "unknown (repository undecided this pass).";
+  const queue = Object.entries(report.merge_queues).find(([k]) => k.toLowerCase() === repository);
+  if (!queue) return "unknown (not published for this repository).";
+  return queue[1] ? `${queue[1].length}` : "unknown (queue unread; counted in poll errors).";
 }
 
 export function repositoriesView(blocks: readonly ReportBlock[], now = Date.now(), unavailable?: string, board: BoardPublication = {}): HTMLElement {
@@ -111,7 +133,7 @@ export function repositoriesView(blocks: readonly ReportBlock[], now = Date.now(
     const needs = report.needs_human.filter((n) => n.repository.toLowerCase() === repository);
     const details = h("details", {}, h("summary", {}, "Maintainer observations"),
       h("p", { class: age > STALE_MS || age < -60_000 ? "warn" : "note" }, `Last run ${report.generated_at} · ${report.mode}${age > STALE_MS ? " · stale (over two hours)" : age < -60_000 ? " · clock is in the future" : ""}`),
-      h("p", {}, "Merge-queue depth: unknown (not published by v1)."),
+      h("p", {}, `Merge-queue depth: ${queueDepth(report, repository, unread)}`),
       h("p", {}, `Open PRs by poll state: ${states.join(" · ") || (unread ? "unknown" : "0")}${unread ? " · inventory unread/undecided; listed counts may be incomplete" : ""}`),
       h("p", {}, `Needs you: ${needs.length}${unread ? " listed; coverage unknown" : ""}`),
       h("ul", {}, ...needs.map((n) => h("li", {}, h("a", { href: `https://github.com/${n.repository}/pull/${n.number}` }, `#${n.number}`), ` · ${n.kind}: ${n.reason}`))),

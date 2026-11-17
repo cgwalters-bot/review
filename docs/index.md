@@ -764,13 +764,15 @@ future clocks and unavailable/cached reads are labelled separately. Undecided
 repositories have unknown coverage, not an empty inventory.
 
 The producer's [published schema](https://github.com/cgwalters-forge/agent-board/blob/main/docs/maintainer-report.schema.json)
-does **not** include merge-queue depth: the row says unknown, never counts
-queue-removal events as current queue entries. This remains a producer gap.
-The consumer ignores unknown fields, renders prose as text, and shows invalid
+has optional `merge_queues`. The row shows a merge-queue depth only for a
+repository the run decided whose queue it published, `0` for an empty queue.
+It says unknown, with the reason, for an older producer without the field, a
+repository without a key, an unread (`null`) queue and an undecided repository,
+and never counts queue-removal events as current queue entries. The consumer ignores unknown fields, renders prose as text, and shows invalid
 blocks as error rows without losing valid reports or the pass view. To prevent
 unbounded DOM and publisher-address navigation, it bounds comments to 60,000
 characters, blocks per comment to 8, displayed repositories, records per array
-and total PR inventory to 1,000, state groups to 100 and strings to 4,096
+and total PR inventory and queue entries to 1,000 each, state groups to 100 and strings to 4,096
 characters; links use validated typed components. Overflow is labelled.
 `test/fixtures/maintainer-report.json` is synthetic offline replay of the
 published v1 schema, not live publication evidence.
