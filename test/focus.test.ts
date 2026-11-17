@@ -119,6 +119,34 @@ describe("Focus section", () => {
     assert.match(el.querySelector(".focus-card > summary")!.textContent!, /Waiting on operator — Ship it\?/);
   });
 
+  it("links epic-owned and child-owned runs without replacing an epic blocker", () => {
+    const data = sample();
+    const epic = data.epics[0]!;
+    epic.runs.push({ ...epic.runs[0]!, item: epic.item, run: { repository: "other/runner", id: 42 } });
+    epic.blocker = epic.children[0]!.blocker;
+    const parsed = snapshot(data).epicFocus;
+    assert.deepEqual(parsed, data);
+    const card = focusView(parsed, now).querySelector(".focus-card")!;
+    const runs = card.querySelectorAll(".focus-runs li");
+    assert.equal(runs.length, 2);
+    for (const [i, item, run] of [[0, "o/t/issues/3", "o/runner/actions/runs/41"], [1, "o/t/issues/1", "other/runner/actions/runs/42"]] as const) {
+      assert.equal(runs[i]!.querySelector("a")!.getAttribute("href"), `https://github.com/${item}`);
+      assert.equal(runs[i]!.querySelector("a:last-child")!.getAttribute("href"), `https://github.com/${run}`);
+    }
+    assert.match(card.querySelector("summary")!.textContent!, /Waiting on operator — Ship it\?/);
+  });
+
+  it("labels stale and future observations without replacing the producer clock", () => {
+    const data = sample();
+    const observed = Date.parse(data.observed_at);
+    const text = (at: number) => focusView(data, at).textContent!;
+    assert.doesNotMatch(text(observed + 3_600_000), /stale|clock is in the future/);
+    assert.match(text(observed + 3_600_001), /stale \(over an hour\); facts are last observed, not current/);
+    assert.doesNotMatch(text(observed - 60_000), /clock is in the future/);
+    assert.match(text(observed - 60_001), /clock is in the future; current state unknown/);
+    assert.equal(data.observed_at, "2026-11-08T12:00:00Z");
+  });
+
   it("starts collapsed with only the overview in its summary", () => {
     const el = focusView(sample(), now);
     const card = el.querySelector<HTMLDetailsElement>(".focus-card")!;

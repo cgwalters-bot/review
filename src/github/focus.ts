@@ -97,10 +97,12 @@ export function focusView(data: Focus | string | undefined, now: number, unavail
   const el = h("section", { class: "focus", "aria-label": "Focus" }, h("h2", {}, "Focus"));
   if (unavailable) el.append(h("p", { class: "note" }, `Focus unavailable: ${unavailable}; published facts below are not confirmed current.`));
   if (!data || typeof data === "string") {
-    el.append(h("p", { class: "note" }, data ?? "Focus is not published (tracker's holds.epicFocus is still being turned on)."));
+    el.append(h("p", { class: "note" }, data ?? "Focus is not published (holds.epicFocus is off or unavailable); work and blockers are unknown."));
     return el;
   }
+  const age = now - Date.parse(data.observed_at);
   el.append(h("p", { class: "note" }, "P0 · Observed ", agoLabel(data.observed_at, now),
+    age > 3_600_000 ? " · stale (over an hour); facts are last observed, not current" : age < -60_000 ? " · clock is in the future; current state unknown" : "",
     ` · complete:${data.complete} · ${Object.entries(data.sources).map(([k, v]) => `${k}: ${v}`).join(" · ")} · ${data.omitted} epics omitted · ${data.unread_epics} unread epics`));
   for (const e of data.epics) {
     const open = e.children.filter((c) => c.state === "open");

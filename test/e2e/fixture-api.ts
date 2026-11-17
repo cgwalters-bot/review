@@ -121,6 +121,8 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
     today.observed_at = at;
     today.cost.day = new Date(Date.parse(`${today.day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
     const epic_focus = { ...fixture("epic-focus.json"), observed_at: at };
+    // Exercise epic-owned runs too without changing the shared producer fixture.
+    epic_focus.epics[0].runs.push({ item: epic_focus.epics[0].item, kind: "triage", pool: "openai", run: { repository: "o/runner", id: 42 } });
     const holds = JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: publishedTestHolds(list), needs_you: list, pass_view, dispatchable_work, today, epic_focus });
     const passes = fixture("passes.json");
     passes.published_at = at;

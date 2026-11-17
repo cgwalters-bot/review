@@ -178,6 +178,8 @@ test("Needs you and Status render without errors", async ({ page }) => {
     await card.locator(":scope > summary").click();
     await expect(openChild).toBeVisible();
     await expect(doneChild).toBeHidden();
+    await expect(card.getByRole("link", { name: "o/runner/42", exact: true })).toHaveAttribute("href", "https://github.com/o/runner/actions/runs/42");
+    await expect(card.locator(".focus-runs li").nth(1).getByRole("link", { name: "o/t#1", exact: true })).toHaveAttribute("href", "https://github.com/o/t/issues/1");
     await focus.screenshot({ path: `${SCREENSHOT_DIR}/focus-expanded-${test.info().project.name}.png` });
     await card.locator(".focus-done > summary").click();
     await expect(doneChild).toBeVisible();
