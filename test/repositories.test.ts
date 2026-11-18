@@ -20,7 +20,7 @@ describe("maintainer report publication", () => {
     assert.equal(result.holds, undefined);
     const el = repositoriesView(result.repositories, now);
     assert.equal(el.querySelectorAll("article").length, 2);
-    for (const s of ["example/project", "2026-11-05T12:00:00Z", "preview", "wait: 1", "merge: 1", "Needs you: 1", "Please review", "Merge-queue depth: unknown", "inventory unread/undecided"]) assert.ok(el.textContent?.includes(s), s);
+    for (const s of ["example/project", "2026-11-05T12:00:00Z", "preview", "wait: 1", "merge: 1", "Needs you: 1", "Please review", "Merge-queue depth: 2", "inventory unread/undecided"]) assert.ok(el.textContent?.includes(s), s);
     assert.ok(el.querySelector("a[href$='#issuecomment-42']"));
     assert.ok(el.querySelector("a[href='https://github.com/example/project/pull/12']"));
     assert.equal(el.querySelector("button, input"), null);
@@ -44,8 +44,11 @@ describe("maintainer report publication", () => {
     const raw = snapshot();
     raw.needs_human[0].reason = '<img src=x onerror="alert(1)">';
     raw.url = "https://invalid.example/";
+    raw.merge_queues["example/project"][0].state = "<script>queue state</script>";
+    raw.merge_queues["example/project"][0].head = raw.url;
     const el = repositoriesView(findMaintainerReports([comment(raw)]), now);
     assert.match(el.textContent!, /<img/);
+    assert.doesNotMatch(el.textContent!, /queue state|invalid\.example/);
     assert.equal(el.querySelector("img, script, [onerror], a[href*='invalid']"), null);
     assert.deepEqual(findMaintainerReports([{ ...comment(), user: { login: "stranger" } }]), []);
   });
@@ -58,6 +61,22 @@ describe("maintainer report publication", () => {
       assert.equal(el.querySelectorAll("article").length, 3);
     }
     assert.match(repositoriesView([], now).textContent!, /not published/);
+  });
+
+  it("distinguishes empty queues from unavailable coverage and ignores removal events", () => {
+    const cases = [
+      [undefined, "unknown (not published by this producer)"],
+      [{}, "unknown (not published for this repository)"],
+      [{ "example/project": null }, "unknown (queue unread)"],
+      [{ "example/project": [], "example/unread": [] }, "0"],
+    ] as const;
+    for (const [queues, expected] of cases) {
+      const raw = snapshot();
+      raw.merge_queues = queues;
+      const rows = repositoriesView(findMaintainerReports([comment(raw)]), now).querySelectorAll("article");
+      assert.ok([...rows[0]!.querySelectorAll("p")].some((p) => p.textContent === `Merge-queue depth: ${expected}.`));
+      assert.match(rows[1]!.textContent!, /Merge-queue depth: unknown \(repository undecided this pass\)/);
+    }
   });
 
   it("rejects malformed required fields and bounded inventories", () => {
@@ -74,6 +93,22 @@ describe("maintainer report publication", () => {
       (r: any) => { r.needs_human[0].repository = "elsewhere/project"; },
       (r: any) => { r.merge_queue_events[0].event.created_at = "invalid"; },
       (r: any) => { r.errors = -1; },
+      (r: any) => { r.merge_queues = []; },
+      (r: any) => { r.merge_queues = null; },
+      (r: any) => { r.merge_queues["elsewhere/project"] = []; },
+      (r: any) => { r.repositories.push("Example/Project"); r.merge_queues["Example/Project"] = []; },
+      (r: any) => { r.merge_queues["example/project"] = {}; },
+      (r: any) => { r.merge_queues["example/project"][0].number = 0; },
+      (r: any) => { r.merge_queues["example/project"][0].head = 1; },
+      (r: any) => { r.merge_queues["example/project"][0].position = 1.5; },
+      (r: any) => { r.merge_queues["example/project"][0].state = "x".repeat(4097); },
+      (r: any) => { r.merge_queues["example/project"][0] = null; },
+      (r: any) => {
+        r.repositories.push("example/other");
+        const entry = r.merge_queues["example/project"][0];
+        r.merge_queues["example/project"] = Array(600).fill(entry);
+        r.merge_queues["example/other"] = Array(401).fill(entry);
+      },
     ];
     for (const mutate of mutations) {
       const raw = snapshot();

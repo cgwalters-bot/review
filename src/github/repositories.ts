@@ -20,6 +20,8 @@ const list = (v: unknown, check: (v: unknown) => boolean): boolean => Array.isAr
 
 interface Pull { repository: string; number: number; head: string; action: string; reason: string; ran: boolean }
 interface Need { repository: string; number: number; head: string; kind: string; reason: string }
+interface QueueEntry { number: number | null; head: string | null; position: number | null; state: string | null }
+
 export interface MaintainerReport {
   schema: typeof REPORT_SCHEMA;
   generated_at: string;
@@ -29,10 +31,12 @@ export interface MaintainerReport {
   needs_human: Need[];
   undecided_repositories: string[];
   errors: number;
+  /** Absent from older producers; null means a repository's queue was unread. */
+  merge_queues?: Record<string, QueueEntry[] | null>;
 }
 export interface ReportBlock { report: MaintainerReport | string; commentUrl?: string }
 
-/** Validate the published docs/maintainer-report.schema.json, ignoring extensions.
+/** Validate the published docs/maintainer-report.schema.json, ignoring unknown fields.
  * Local bounds limit the producer's otherwise unbounded arrays and strings. */
 export function parseMaintainerReport(raw: unknown): MaintainerReport | string {
   const invalid = "Invalid maintainer report: malformed or over its publication bounds.";
@@ -49,6 +53,20 @@ export function parseMaintainerReport(raw: unknown): MaintainerReport | string {
     || !list(raw.needs_human, (v) => isObject(v) && member(v.repository) && positive(v.number) && text(v.head) && text(v.kind) && text(v.reason))
     || !list(raw.merge_queue_events, (v) => isObject(v) && member(v.repository) && positive(v.number) && pull(v.step) && isObject(v.event)
       && (v.event.id === null || text(v.event.id)) && (v.event.created_at === null || date(v.event.created_at)) && (v.event.reason === null || text(v.event.reason)))) return invalid;
+  if (raw.merge_queues !== undefined) {
+    if (!isObject(raw.merge_queues)) return invalid;
+    const queues = Object.entries(raw.merge_queues);
+    // Bound the total inventory before doing more work; reject ambiguous case variants.
+    if (queues.length > MAX_RECORDS || new Set(queues.map(([k]) => k.toLowerCase())).size !== queues.length) return invalid;
+    let entries = 0;
+    for (const [k, v] of queues) {
+      if (!member(k)) return invalid;
+      if (v === null) continue;
+      if (!Array.isArray(v) || (entries += v.length) > MAX_RECORDS || !v.every((e) => isObject(e)
+        && (e.number === null || positive(e.number)) && (e.head === null || text(e.head))
+        && (e.position === null || Number.isSafeInteger(e.position)) && (e.state === null || text(e.state)))) return invalid;
+    }
+  }
   return raw as unknown as MaintainerReport;
 }
 
@@ -73,6 +91,15 @@ export function findMaintainerReports(comments: readonly RawComment[]): ReportBl
     }
     return blocks.length ? blocks : [{ report: "Invalid maintainer report: missing block or oversized comment.", ...(commentUrl ? { commentUrl } : {}) }];
   });
+}
+
+/** Removals in merge_queue_events are not current queue entries. */
+function queueDepth(report: MaintainerReport, repository: string, undecided: boolean): string {
+  if (undecided) return "unknown (repository undecided this pass)";
+  if (!report.merge_queues) return "unknown (not published by this producer)";
+  const queue = Object.entries(report.merge_queues).find(([key]) => key.toLowerCase() === repository)?.[1];
+  if (queue === undefined) return "unknown (not published for this repository)";
+  return queue === null ? "unknown (queue unread)" : String(queue.length);
 }
 
 export function repositoriesView(blocks: readonly ReportBlock[], now = Date.now(), unavailable?: string, board: BoardPublication = {}): HTMLElement {
@@ -111,7 +138,7 @@ export function repositoriesView(blocks: readonly ReportBlock[], now = Date.now(
     const needs = report.needs_human.filter((n) => n.repository.toLowerCase() === repository);
     const details = h("details", {}, h("summary", {}, "Maintainer observations"),
       h("p", { class: age > STALE_MS || age < -60_000 ? "warn" : "note" }, `Last run ${report.generated_at} · ${report.mode}${age > STALE_MS ? " · stale (over two hours)" : age < -60_000 ? " · clock is in the future" : ""}`),
-      h("p", {}, "Merge-queue depth: unknown (not published by v1)."),
+      h("p", {}, `Merge-queue depth: ${queueDepth(report, repository, unread)}.`),
       h("p", {}, `Open PRs by poll state: ${states.join(" · ") || (unread ? "unknown" : "0")}${unread ? " · inventory unread/undecided; listed counts may be incomplete" : ""}`),
       h("p", {}, `Needs you: ${needs.length}${unread ? " listed; coverage unknown" : ""}`),
       h("ul", {}, ...needs.map((n) => h("li", {}, h("a", { href: `https://github.com/${n.repository}/pull/${n.number}` }, `#${n.number}`), ` · ${n.kind}: ${n.reason}`))),

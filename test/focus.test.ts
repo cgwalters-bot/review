@@ -16,7 +16,7 @@ describe("Focus publication", () => {
   it("round-trips the shared fixture through the existing holds parser", () => {
     assert.deepEqual(snapshot(sample()).epicFocus, sample());
     assert.equal(snapshot().epicFocus, undefined);
-    assert.match(focusView(undefined, now).textContent!, /Focus is not published.*holds.epicFocus/);
+    assert.match(focusView(undefined, now).textContent!, /Focus is not published.*holds.epicFocus.*blockers are unknown/);
   });
 
   it("preserves partial/unread sources and all omitted counts", () => {
@@ -117,6 +117,26 @@ describe("Focus section", () => {
     const el = focusView(data, now, "cached");
     assert.match(el.textContent!, /Focus unavailable: cached/);
     assert.match(el.querySelector(".focus-card > summary")!.textContent!, /Waiting on operator — Ship it\?/);
+  });
+
+  it("links both child-owned and epic-owned runs", () => {
+    const data = sample();
+    const epic = data.epics[0]!;
+    epic.runs.push({ ...epic.runs[0]!, item: epic.item, run: { repository: "other/runner", id: 42 } });
+    const el = focusView(snapshot(data).epicFocus, now);
+    const links = [...el.querySelectorAll(".focus-card:first-of-type .focus-runs a")].map((a) => a.getAttribute("href"));
+    assert.deepEqual(links, ["o/t/issues/3", "o/runner/actions/runs/41", "o/t/issues/1", "other/runner/actions/runs/42"].map((p) => `https://github.com/${p}`));
+  });
+
+  it("labels stale and future observations without changing their timestamp", () => {
+    const data = sample();
+    const at = Date.parse(data.observed_at);
+    const text = (offset: number) => focusView(data, at + offset).textContent!;
+    assert.doesNotMatch(text(3_600_000), /stale/);
+    assert.match(text(3_600_001), /stale \(over an hour\); facts are last observed, not current/);
+    assert.doesNotMatch(text(-60_000), /clock is in the future/);
+    assert.match(text(-60_001), /clock is in the future; current state unknown/);
+    assert.equal(data.observed_at, "2026-11-08T12:00:00Z");
   });
 
   it("starts collapsed with only the overview in its summary", () => {

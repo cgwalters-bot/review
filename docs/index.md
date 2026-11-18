@@ -593,10 +593,11 @@ child group retain producer order. A not-started child means nothing is moving i
 never ran. Plain tasks without an item cannot have an item link.
 
 Coverage, observation time, omitted epics/children/runs and unread epics remain
-visible; partial or unread sources are not a complete inventory. An absent
-section explicitly says Focus is not published while tracker's existing
-off-by-default `holds.epicFocus` is being turned on. Unknown schemas and
-malformed records make only Focus unavailable. To prevent unbounded DOM growth
+visible; partial or unread sources are not a complete inventory. Observations
+over an hour old or more than a minute in the future are not presented as
+current. If the optional `holds.epicFocus` publication is absent, work and
+blockers are unknown, not absent. Unknown schemas and malformed records make
+only Focus unavailable. To prevent unbounded DOM growth
 and arbitrary publisher-address navigation, the reader bounds the section to
 10 epics, 50 children and 8 runs per epic, bounds prose and counts, and builds
 links from validated typed identities. Published prose is text, not authority.
@@ -764,14 +765,17 @@ future clocks and unavailable/cached reads are labelled separately. Undecided
 repositories have unknown coverage, not an empty inventory.
 
 The producer's [published schema](https://github.com/cgwalters-forge/agent-board/blob/main/docs/maintainer-report.schema.json)
-does **not** include merge-queue depth: the row says unknown, never counts
-queue-removal events as current queue entries. This remains a producer gap.
+optionally includes `merge_queues`. The row shows the number of published
+entries for a decided repository, including zero for an explicit empty queue.
+An older producer, missing repository key, unread (`null`) queue or undecided
+repository leaves the depth unknown. Queue-removal events are never counted.
 The consumer ignores unknown fields, renders prose as text, and shows invalid
 blocks as error rows without losing valid reports or the pass view. To prevent
 unbounded DOM and publisher-address navigation, it bounds comments to 60,000
 characters, blocks per comment to 8, displayed repositories, records per array
-and total PR inventory to 1,000, state groups to 100 and strings to 4,096
-characters; links use validated typed components. Overflow is labelled.
+and total PR inventory and queue entries to 1,000 each, state groups to 100
+and strings to 4,096 characters; links use validated typed components.
+Overflow is labelled.
 `test/fixtures/maintainer-report.json` is synthetic offline replay of the
 published v1 schema, not live publication evidence.
 
