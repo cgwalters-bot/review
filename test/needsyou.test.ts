@@ -30,6 +30,45 @@ interface Holds { status: number; comments: unknown[]; etag: string; gate?: Prom
 
 let runs = 0;
 
+it("Focus shares the holds poll, ages on 304, and labels failed, malformed and absent publications", async (t) => {
+  const data = { ...fixture<Record<string, unknown>>("epic-focus.json"), observed_at: iso(T0) };
+  const raw: Record<string, unknown> = { schema: "agent-board/holds/v1", at: iso(T0), holds: [], epic_focus: data };
+  const comment = () => ({ user: { login: "cgwalters-bot" }, body: `<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${JSON.stringify(raw)}\n\`\`\`` });
+  const holds: Holds = { status: 200, etag: '"focus-1"', comments: [comment()] };
+  const app = await boot(t, holds);
+  try {
+    const panel = () => app.doc.querySelector("[aria-label='Focus']")!;
+    assert.equal(panel().querySelectorAll(".focus-card").length, 2);
+    assert.deepEqual(app.reads.all.map((r) => r.path), ["/user", HOLDS, SEARCH], "Focus adds no discovery reads");
+    await app.wake(61 * MINUTE);
+    assert.match(panel().textContent!, /stale \(over an hour\)/);
+    assert.deepEqual(app.reads.holds, [null, '"focus-1"']);
+    holds.status = 503;
+    await app.reload();
+    assert.match(panel().textContent!, /Focus unavailable: .*work and blockers are unknown/);
+    assert.equal(panel().querySelectorAll(".focus-card").length, 0);
+    holds.status = 200;
+    holds.etag = '"focus-2"';
+    raw.epic_focus = { invalid: true };
+    holds.comments = [comment()];
+    await app.reload();
+    assert.match(panel().textContent!, /Focus unavailable: unsupported schema/);
+    assert.equal(panel().querySelectorAll(".focus-card").length, 0);
+    holds.etag = '"focus-3"';
+    delete raw.epic_focus;
+    holds.comments = [comment()];
+    await app.reload();
+    assert.match(panel().textContent!, /not published.*unknown/);
+    holds.etag = '"focus-4"';
+    raw.epic_focus = { ...data, observed_at: iso(T0 + 61 * MINUTE) };
+    holds.comments = [comment()];
+    await app.reload();
+    assert.equal(panel().querySelectorAll(".focus-card").length, 2);
+    assert.doesNotMatch(panel().textContent!, /stale|unavailable|not published/);
+    assert.equal(app.reads.writes.length, 0);
+  } finally { await app.close(); }
+});
+
 it("Today shares the inbox read, ages on 304, labels failures and recovers without cost", async (t) => {
   const today = { ...fixture<Record<string, unknown>>("today.json"), day: "2026-10-30", observed_at: iso(T0), cost: undefined,
     changes: { landed: 3, closed: 1, opened: 2, extra: { toString: null }, ...Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`extra-${i}`, "not a metric"])) } };

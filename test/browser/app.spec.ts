@@ -178,6 +178,9 @@ test("Needs you and Status render without errors", async ({ page }) => {
     await card.locator(":scope > summary").click();
     await expect(openChild).toBeVisible();
     await expect(doneChild).toBeHidden();
+    const epicRun = card.locator(".focus-runs li").filter({ has: page.getByRole("link", { name: "o/runner/42", exact: true }) });
+    await expect(epicRun.getByRole("link", { name: "o/runner/42", exact: true })).toHaveAttribute("href", "https://github.com/o/runner/actions/runs/42");
+    await expect(epicRun.getByRole("link", { name: "o/t#1", exact: true })).toHaveAttribute("href", "https://github.com/o/t/issues/1");
     await focus.screenshot({ path: `${SCREENSHOT_DIR}/focus-expanded-${test.info().project.name}.png` });
     await card.locator(".focus-done > summary").click();
     await expect(doneChild).toBeVisible();
@@ -207,12 +210,19 @@ test("Needs you and Status render without errors", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /^(Scheduler|Poller) passes$/ })).toBeVisible();
   if (!LIVE_TOKEN) {
     const board = page.getByRole("region", { name: "Repositories", exact: true });
-    await expect(board.getByRole("table")).toHaveCount(2);
+    await expect(board.getByRole("table")).toHaveCount(DATA === "259" ? 2 : 3);
     await expect(board.getByRole("cell", { name: "3", exact: true })).toBeVisible();
     await expect(board.getByText(/1 items omitted/)).toBeVisible();
     const entry = board.getByRole("link", { name: "Run a pass now" });
     await entry.focus();
     await expect(entry).toBeFocused();
+    if (DATA !== "259") {
+      const observations = board.getByText("Maintainer observations", { exact: true });
+      await expect(observations).toHaveCount(2);
+      for (const summary of await observations.all()) await summary.click();
+      await expect(board.getByText("Merge-queue depth: 2.", { exact: true })).toBeVisible();
+      await expect(board.getByText("Merge-queue depth: unknown (repository undecided this pass).", { exact: true })).toBeVisible();
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
   await screenshot(page, "status");

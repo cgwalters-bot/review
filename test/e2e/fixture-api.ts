@@ -121,11 +121,16 @@ export function fixtureResponse(data: FixtureData, method: string, pathname: str
     today.observed_at = at;
     today.cost.day = new Date(Date.parse(`${today.day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
     const epic_focus = { ...fixture("epic-focus.json"), observed_at: at };
+    // Exercise epic-owned runs without changing the shared producer fixture.
+    const epic = epic_focus.epics[0];
+    epic.runs.push({ item: epic.item, kind: "triage", pool: "openai", run: { repository: "o/runner", id: 42 } });
     const holds = JSON.stringify({ schema: "agent-board/holds/v1", at, truncated: 0, holds: publishedTestHolds(list), needs_you: list, pass_view, dispatchable_work, today, epic_focus });
     const passes = fixture("passes.json");
     passes.published_at = at;
+    const report = { ...fixture("maintainer-report.json"), generated_at: at };
     return [...compressedHolds(`<!-- agent-board-holds v1 -->\n\n\`\`\`json\n${holds}\n\`\`\`\n`, at, FIXTURE_PART_CHARS),
-      { user: { login: "cgwalters-bot" }, body: `<!-- agent-board-passes v1 -->\n\n\`\`\`json\n${JSON.stringify(passes)}\n\`\`\`` }];
+      { user: { login: "cgwalters-bot" }, body: `<!-- agent-board-passes v1 -->\n\n\`\`\`json\n${JSON.stringify(passes)}\n\`\`\`` },
+      { id: 42, user: { login: "cgwalters-bot" }, body: `<!-- agent-board-maintainer-report -->\n\n\`\`\`agent-board/maintainer-report/v1\n${JSON.stringify(report)}\n\`\`\`` }];
   }
   if (pathname === "/repos/cgwalters-forge/tracker/actions/workflows/poll.yml/runs") return { total_count: 0, workflow_runs: [] };
   // One chat session run whose agent job is on the tailnet; the browser test answers its socket.
