@@ -356,8 +356,16 @@ older detailed-only publication. `test/fixtures/needs-you-661.json` is a
 publication on `bot-ops#1` was not readable to the run that wrote it.
 `test/e2e/render-needs-you.ts` draws Needs you from any checkout against these
 fixtures, offline, for desktop and phone screenshots that compare commits;
-`npm run test:browser` screenshots this checkout in Chromium. Inventory
-and detailed records are bounded at 10,000 each. Published question,
+`npm run test:browser` screenshots this checkout in Chromium. Ordinary CI sets
+`CAPTURE_NEEDS_YOU=1` to add the `174-grouped`, `174`, `661`, and `approval`
+replays at 1280px and 390px to the existing `screenshots` artifact. These
+images show the initial Needs you cards, not just Act now. The accompanying
+`needs-you-replay.txt` records the checkout commit and lists the images; this
+is fixture evidence only, not a signed-in capture. To reproduce just these
+images locally, run
+`CAPTURE_NEEDS_YOU=1 npm run test:browser -- test/browser/needs-you-replay.spec.ts --project=desktop`.
+
+Inventory and detailed records are bounded at 10,000 each. Published question,
 recommendation, ownership and resolution text is display-only: hostile or
 stale publisher prose must not become write authorization. A collapsed
 **Published context** fold shows bounded hold/step/run facts, WIP, limit

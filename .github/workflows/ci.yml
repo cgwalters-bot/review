@@ -39,6 +39,8 @@ jobs:
       # The browser test against the fixtures, in Playwright's own Chromium
       # (test/browser/app.spec.ts); --with-deps installs its system libraries.
       - if: hashFiles('package-lock.json') != ''
+        env:
+          CAPTURE_NEEDS_YOU: '1'
         run: npx playwright install --with-deps chromium && npm run test:browser
       # Its fixture-data screenshots, for a PR whose author could not attach them.
       - if: always() && hashFiles('package-lock.json') != ''
