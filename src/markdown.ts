@@ -141,7 +141,12 @@ function taskBox(tokens: Token[], i: number): RegExpExecArray | null {
   return /^\[([ xX])\] /.exec(first.content);
 }
 
-export type Renderer = (source: string, repository?: string) => DocumentFragment;
+/**
+ * With `inline`, only inline Markdown (links, emphasis, code spans) is
+ * rendered, with no paragraph, list or heading: for one line of text
+ * shown within a row, such as an ask.
+ */
+export type Renderer = (source: string, repository?: string, inline?: boolean) => DocumentFragment;
 
 /**
  * Make a renderer bound to a window: the browser's, or jsdom's in tests.
@@ -158,9 +163,9 @@ export function createRenderer(win: WindowLike): Renderer {
       node.setAttribute("rel", "noopener noreferrer");
     }
   });
-  return (source: string, repository?: string) => {
+  return (source: string, repository?: string, inline = false) => {
     // A paragraph that held only a comment would be left as an empty <p>.
-    const parsed = md.parse(source, {});
+    const parsed = inline ? md.parseInline(source, {}) : md.parse(source, {});
     const empty = new Set<number>();
     parsed.forEach((token, i) => {
       if (token.type === "paragraph_open" && parsed[i + 1]?.children?.length === 0 && parsed[i + 2]?.type === "paragraph_close") [i, i + 1, i + 2].forEach((n) => empty.add(n));

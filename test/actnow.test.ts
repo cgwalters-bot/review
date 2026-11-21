@@ -126,6 +126,17 @@ describe("Act now publication", () => {
     assert.equal(home.slots.actNow.hidden, true);
   });
 
+  it("renders links in ask text and group reasons as sanitized hyperlinks", () => {
+    const p = published([rawAsk(1, { ask: "Decide what [this triage verdict](https://github.com/o/r/issues/5#c) asks: see https://example.com/x",
+      action: { type: "pull_request", repository: "cgwalters-forge/tracker", number: 1 }, group: { reason: "[verdict](https://example.com/v) holds", numbers: [1, 2] } })]);
+    const slot = document.createElement("section");
+    fillActNow(slot, actNowRows(p, NOW), hooks);
+    const text = slot.querySelector("li p")!;
+    assert.deepEqual([...text.querySelectorAll("a[href]")].map((a) => a.getAttribute("href")), ["https://github.com/o/r/issues/5#c", "https://example.com/x", "https://example.com/v"]);
+    assert.equal(text.textContent, "Decide what this triage verdict asks: see https://example.com/x · 2 PRs: verdict holds · unblocks 1");
+    assert.doesNotMatch(text.textContent!, /[[\]]/);
+  });
+
   it("keeps route visibility separate from publication visibility across redraws", () => {
     const home = homeSkeleton({ toggled: () => {} });
     const slot = home.slots.actNow;

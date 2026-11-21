@@ -29,6 +29,17 @@ it("linkifies status references only in prose, and still sanitizes", () => {
   assert.equal(dom("#34 other/project#12").querySelector("a"), null);
 });
 
+it("renders only inline Markdown in inline mode, and still sanitizes", () => {
+  const root = win.document.createElement("div");
+  root.append(render("1. Decide [this](https://example.com/a) per https://example.com/b, #3 <b>x</b> [bad](javascript:alert(1))", "local/board", true));
+  assert.equal(root.querySelector("p, ol, li"), null);
+  assert.deepEqual([...root.querySelectorAll("a")].map((a) => a.getAttribute("href")), [
+    "https://example.com/a", "https://example.com/b", "https://github.com/local/board/issues/3",
+  ]);
+  assert.match(root.textContent!, /^1\. Decide this per/);
+  assertSafe(root);
+});
+
 function html(source: string): string {
   const div = win.document.createElement("div");
   div.append(render(source));
