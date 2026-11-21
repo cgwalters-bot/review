@@ -188,7 +188,7 @@ export function fillActNow(slot: HTMLElement, rows: readonly ActNowRow[], hooks:
     ...(rows.some((r) => r.fallback) ? [h("p", { class: "note" }, ACT_NOW_FALLBACK)] : []), h("ol", {}, ...rows.map(({ ask: a, unblocks, fallback }) => {
     const card = askCard(a);
     const row = h("li", {}, link(askUrl(a.action), a.item),
-      h("p", {}, a.ask, a.group ? ` · ${a.group.numbers.length} PRs: ${a.group.reason}` : "",
+      h("p", {}, hooks.render(a.ask, undefined, true), ...(a.group ? [` · ${a.group.numbers.length} PRs: `, hooks.render(a.group.reason, undefined, true)] : []),
       unblocks ? ` · unblocks ${unblocks}` : " · unblocks unknown", a.carried ? " · carried over; may be resolved" : ""));
     if (fallback) {
       row.append(h("a", { href: askHref(a.action) }, "Inspect"));
