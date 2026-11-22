@@ -2,7 +2,7 @@
 name = "review-service"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "Builds the control app's state from GitHub queries and serves it, read-only, with the app"
 publish = false
 
@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-board-forge = { git = "https://github.com/cgwalters-forge/agent-board", rev = "7a1af07d7ffd10d2048efb98ba8010eb2f1e0c95" }
+board-forge = { git = "https://github.com/cgwalters-forge/agent-board", rev = "16648c24a555ef58494f6fe9c87b17e10e1615e4" }
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 humantime = "2"

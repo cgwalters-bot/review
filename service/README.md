@@ -315,9 +315,9 @@ Offline tests replay `service/fixtures/state.json`, checked by the Rust state
 tests against `service/fixtures/github.json`. Browser tests shift all recorded
 clocks together for freshness; mutations are failure/update scenarios, not claims
 of additional observed producer facts. PR/waiting and per-repository board
-integration follow in the next section; actual pass-summary decisions and producer
-[agent-board#794](https://github.com/cgwalters-forge/agent-board/issues/794)'s
-reusable warm-cache API remain follow-ups. This does not retire the comment
+integration follow in the next section; actual pass-summary decisions remain a
+follow-up, and the browser does not use the service's optional response cache
+described below. This does not retire the comment
 store, enable a deployment, or complete #281.
 
 ### Opt-in browser service board (#281)
@@ -555,10 +555,13 @@ Throttled, skipped and coalesced previews likewise retain the prior snapshot
 and its `readAt` with an explicit incomplete/error state. The additive
 `decisionRefresh` sibling reports `lastSuccessAgeSeconds` (null until a
 preview has complete coverage and no read failures), `retryInSeconds`,
-`consecutiveFailures`, the last parsed `rateLimit` evidence, and `requests`
-admitted in the last attempted preview. Ages/countdowns are sampled at
-publication, not on HTTP reads. A
-successful computation can still have incomplete coverage. Such a computation
+`consecutiveFailures`, the last parsed `rateLimit` evidence, `requests`
+admitted in the last attempted preview, `networkSends`, the HTTP send attempts
+(a 304 revalidation is one, a failed connection too; protocol retries are
+disabled), and `chargedRequests`, what board-forge charged to its request budget
+(304s refunded; null when the preview returned nothing). Ages/countdowns are
+sampled at publication, not on HTTP reads. A successful computation can still
+have incomplete coverage. Such a computation
 does not reset the last-success age: otherwise repeatedly missing usage or
 needs-you evidence could look like a newly successful complete preview. It
 still clears read-failure backoff, since missing coverage is not a transport
@@ -585,16 +588,37 @@ The preview captures its own observation clock after the legacy reads;
 `refreshedAt` is the publication clock, not a source validation timestamp.
 
 The dependency is pinned to immutable agent-board revision
-`7a1af07d7ffd10d2048efb98ba8010eb2f1e0c95` (includes #799's snapshot API).
-As of this integration, agent-board#794 is open. `board::Reader::refresh`
-is the explicit direct-read/cache seam: every preview receives fresh
-disposable pass state; no second response cache is implemented. Repeated
-reads and loss/restart produce the same evidence at the same clock, but
-**warm-cache acceptance remains open** pending #794's reusable API and
-fixtures. Losing this service's memory loses no authority or durable state;
-the legacy REST ETag cache is unchanged. This is not completion of #281 or
-the tracker#1456 epic. Opt-in decision consumers are described above; full
-service browser integration remains #281.
+`16648c24a555ef58494f6fe9c87b17e10e1615e4`. The service rejects configs with
+`livingStatus` in both preview modes because board-forge would open that
+ledger outside the transport's bounds, even in a read-only preview.
+
+The warm cache is board-forge's own disposable response index, gated by the
+board config's `state` key as in board-forge; it is off without that key, and
+every preview then reads directly (board-forge may still ask for the credential
+context, which costs only a bounded token read). With the gate, `board::Reader`
+keeps only the returned scoped response index in memory. Each preview starts
+with fresh scheduler state: no cursors, pending work, or prior decisions carry
+forward. Cache savings can still affect how far a bounded preview gets. The
+configured state file is never read or written, poll state is never imported,
+and only the redacted snapshot is published, never the response index. A warm
+preview revalidates its REST reads with the stored validators: a 304 still costs a send, but
+board-forge refunds it from its budget, which is why `networkSends` and
+`chargedRequests` are reported apart.
+
+The response index is bound to the credential it was read under. The transport's
+credential context is a digest of the pinned token's fingerprint, never the
+token, and every context check rereads the token source within the same
+request bounds, so a cache hit that sends nothing is checked as well (at most
+512 checks a preview). A different credential gets cold reads; a rotation,
+revocation or unreadable credential during a preview fails it as described
+above and drops the index. Each refresh takes the index, and only the caller
+accepting an observation puts new responses back. Partial observations that
+are accepted can still warm the index; failed, cancelled, credential-invalid or
+rate-limited attempts leave the next preview cold. With the gate, running out of
+the preview's time or checks also fails the preview rather than publishing a
+partial one. The index holds no authority or writer state, and `poll.yml` remains
+the only writer. This is not completion of #281 or the tracker#1456 epic; app, CLI and
+chat consumers are #292, and the static app does not depend on this cache.
 
 ## Forgejo source (review#310 a)
 
@@ -790,7 +814,7 @@ recorded answers in `fixtures/forgejo.json`, giving
 `fixtures/forgejo-state.json`, and the Kubernetes section against those
 in `fixtures/kubernetes.json`, giving `fixtures/kubernetes-state.json`.
 
-The added preview tests use a local fake forge for cold/repeated/lost state,
+The added preview tests use a local fake forge for cold and repeated previews,
 partial board reads, stale usage, missing broker evidence and token rotation,
 and check effect rejection, read bounds, redaction and HTTP/SSE generation
 parity, including failed, deferred and recovered generations. Paused-clock
@@ -798,9 +822,15 @@ tests exercise slow ticks, completion spacing, repeated capped backoff,
 freshness and shutdown; scripted HTTP reads exercise repeated throttling,
 concurrent-wake coalescing and cancellation during a slow response. The empty
 synthetic direct-read fixture sends 10 requests cold and 10 per repeated
-preview when admitted, with no warm-cache savings. The throttle fixture sends
-one per admitted attempt and zero across ten skipped ticks; charged requests
-and live rate limits were not measured. Warm-cache checks await
-agent-board#794's reusable read-only preview API (merging #798 alone does not
-return reusable cache state from `decision::preview`). The hosted personal-infra
+preview when admitted, with no warm-cache savings. With the state gate the
+fake forge's fixture sends 9 requests and is charged 9 cold; warm it still
+sends 9, five of them answered 304, and is charged 4. On that fixture, losing
+the index or restarting returns to the cold counts with the same decisions,
+and the configured state file is left untouched. Tests also check that warm
+input has no scheduler progress and that preview configuration rejects local
+status ledgers. Further gated fixtures cover the
+gate off, credential changes between and during previews, an unreadable
+credential, partial reads, upstream failure and cancellation. The throttle
+fixture sends one per admitted attempt and zero across ten skipped ticks;
+live rate limits were not measured. The hosted personal-infra
 panel reads the service; migration of the GitHub browser remains a follow-up.

@@ -1,9 +1,12 @@
-//! Direct-read seam for board-forge's disposable cache (#794). No pass state,
-//! authority, credentials or response cache is persisted here.
+//! Read-only board-forge decision previews. With the board config's `state`
+//! gate, only the disposable response index is carried in memory to the next
+//! preview under the same credential context. Scheduling always starts fresh.
+//! Neither preview mode accesses a local pass state or status ledger file.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -26,6 +29,10 @@ const PASS_TIMEOUT: Duration = Duration::from_secs(45);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const MAX_CONFIG: u64 = 1024 * 1024;
+// Credential context checks reread the token, including for cache hits that
+// send nothing; the pass asks about three times per read.
+const MAX_CONTEXT_CHECKS: usize = 4 * MAX_REQUESTS;
+const CONTEXT_DOMAIN: &[u8] = b"review-service/board-preview/v1\0";
 
 const BACKOFF: Duration = Duration::from_secs(30);
 const MAX_BACKOFF: Duration = Duration::from_secs(900);
@@ -45,6 +52,22 @@ async fn read_config(input: impl AsyncRead + Unpin) -> Result<String> {
     String::from_utf8(bytes).context("board config is not UTF-8")
 }
 
+fn preview_config(text: &str) -> Result<pass::Config> {
+    // Configuration errors can quote prompts or broker addresses.
+    let config = pass::Config::parse(text).map_err(|_| anyhow::anyhow!("invalid board config"))?;
+    ensure!(
+        config.forgejo_board().is_none(),
+        "service preview supports GitHub boards only"
+    );
+    // The library opens this ledger even in Preview and before transport
+    // bounds apply. Reject the option, not particular filesystem path types.
+    ensure!(
+        config.living_status.is_none(),
+        "service preview does not support livingStatus"
+    );
+    Ok(config)
+}
+
 #[derive(Default)]
 struct Pacing {
     failures: u32,
@@ -52,6 +75,8 @@ struct Pacing {
     last_success: Option<tokio::time::Instant>,
     limit: Option<LimitEvidence>,
     requests: usize,
+    network_sends: usize,
+    charged_requests: Option<usize>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -70,6 +95,11 @@ pub struct RefreshStatus {
     consecutive_failures: u32,
     rate_limit: Option<LimitEvidence>,
     requests: usize,
+    // HTTP send attempts (a 304 revalidation is one), apart from the
+    // requests board-forge charged to its budget, which refunds 304s. Charged
+    // requests are unknown when the preview failed.
+    network_sends: usize,
+    charged_requests: Option<usize>,
 }
 
 impl Pacing {
@@ -113,6 +143,36 @@ struct Work {
     credential_changed: AtomicBool,
     credential: Mutex<Option<[u8; 32]>>,
     request: Mutex<Option<tokio::task::AbortHandle>>,
+    sends: AtomicUsize,
+}
+
+/// Only response evidence from the last accepted preview. In particular, a
+/// cache miss or a restart must not change where the scheduler starts scanning.
+struct Carried {
+    context: String,
+    response_scope: String,
+    responses: BTreeMap<String, Value>,
+    pass_responses: BTreeMap<String, Value>,
+}
+
+impl Carried {
+    fn new(context: String, state: board_forge::poll::State) -> Option<Self> {
+        Some(Self {
+            context,
+            response_scope: state.response_scope?,
+            responses: state.responses,
+            pass_responses: state.pass_responses,
+        })
+    }
+
+    fn into_state(self) -> board_forge::poll::State {
+        board_forge::poll::State {
+            response_scope: Some(self.response_scope),
+            responses: self.responses,
+            pass_responses: self.pass_responses,
+            ..Default::default()
+        }
+    }
 }
 
 struct CancelOnDrop(Arc<Work>);
@@ -161,6 +221,9 @@ pub struct Reader {
     pacing: Arc<Mutex<Pacing>>,
     // Identity of the last published observation; never persist the token.
     credential: Arc<Mutex<Option<[u8; 32]>>>,
+    // Taken by each refresh and replaced only by a committed preview, so a
+    // failed, cancelled or credential-invalid refresh leaves the next one cold.
+    carried: Arc<Mutex<Option<Carried>>>,
     active: Arc<tokio::sync::Semaphore>,
     #[cfg(test)]
     api_root: Option<String>,
@@ -185,14 +248,7 @@ impl Reader {
             "board config must be a regular file"
         );
         let config = read_config(file).await?;
-        // Configuration errors can quote prompts or broker addresses. Do not
-        // print them, or pass them into a public section error.
-        let parsed =
-            pass::Config::parse(&config).map_err(|_| anyhow::anyhow!("invalid board config"))?;
-        ensure!(
-            parsed.forgejo_board().is_none(),
-            "service preview supports GitHub boards only"
-        );
+        preview_config(&config)?;
         let mut private = Vec::new();
         private_urls(&serde_json::from_str(&config)?, &mut private);
         Ok(Self {
@@ -200,11 +256,13 @@ impl Reader {
             token,
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
                 .timeout(REQUEST_TIMEOUT)
                 .build()?,
             private,
             pacing: Default::default(),
             credential: Default::default(),
+            carried: Default::default(),
             active: Arc::new(tokio::sync::Semaphore::new(1)),
             #[cfg(test)]
             api_root: None,
@@ -234,18 +292,31 @@ impl Reader {
                 runtime: runtime.clone(),
                 deadline: Instant::now() + PASS_TIMEOUT,
                 requests: Cell::new(0),
+                checks: Cell::new(0),
                 secrets: Arc::new(Mutex::new(Vec::new())),
                 work: worker,
             };
-            let result = (|| -> Result<Value> {
-                let config = pass::Config::parse(&transport.reader.config)?;
-                let snapshot = runtime.block_on(decision::preview(
+            let carried = transport.reader.carried.lock().unwrap().take();
+            let result = (|| -> Result<(Value, Option<Carried>, usize)> {
+                let config = preview_config(&transport.reader.config)?;
+                // Without the gate board-forge keeps no responses: read directly.
+                let context = match config.state {
+                    Some(_) => Some(
+                        transport
+                            .cache_context()
+                            .context("preview credential unavailable")?,
+                    ),
+                    None => None,
+                };
+                let state = carried
+                    .filter(|carried| context.as_ref() == Some(&carried.context))
+                    .map(Carried::into_state)
+                    .unwrap_or_default();
+                let preview = runtime.block_on(decision::preview(
                     &transport,
                     &transport,
                     &config,
-                    // Explicit cache seam: fresh disposable state, until #794
-                    // exports its reusable cache. Never reconstruct writer state.
-                    Default::default(),
+                    state,
                     Default::default(),
                     OffsetDateTime::parse(&at_owned, &Rfc3339)?,
                 ))?;
@@ -253,30 +324,34 @@ impl Reader {
                     !transport.work.credential_changed.load(Ordering::SeqCst),
                     "preview credential changed"
                 );
-                let mut value = serde_json::to_value(snapshot)?;
+                let mut value = serde_json::to_value(preview.snapshot)?;
                 let mut private = transport.reader.private.clone();
                 private.extend(transport.secrets.lock().unwrap().iter().cloned());
                 redact(&mut value, &private);
-                Ok(value)
+                let carried = context.and_then(|context| Carried::new(context, preview.state));
+                Ok((value, carried, preview.spent.requests))
             })();
-            if !transport.work.cancelled.load(Ordering::SeqCst) {
-                let success = result.as_ref().is_ok_and(|s| s["failures"] == 0);
-                let complete = result.as_ref().is_ok_and(|s| s["complete"] == true);
-                transport.reader.pacing.lock().unwrap().finished(
-                    success,
-                    complete,
-                    transport.requests.get(),
-                );
-            }
-            (result, permit)
+            (result, transport.requests.get(), permit)
         })
         .await;
         // Keep admission closed through publication of the credential binding,
         // not just through the blocking reads. Cancellation still leaves the
         // permit with the worker until it exits.
-        let (result, _permit) = match result {
-            Ok((result, permit)) => (result.ok(), Some(permit)),
-            Err(_) => (None, None),
+        let (result, carried, _permit) = match result {
+            Ok((result, requests, permit)) => {
+                let (value, carried, charged) = match result {
+                    Ok((value, carried, charged)) => (Some(value), carried, Some(charged)),
+                    Err(_) => (None, None, None),
+                };
+                let success = value.as_ref().is_some_and(|s| s["failures"] == 0);
+                let complete = value.as_ref().is_some_and(|s| s["complete"] == true);
+                let mut pacing = self.pacing.lock().unwrap();
+                pacing.finished(success, complete, requests);
+                pacing.network_sends = work.sends.load(Ordering::SeqCst);
+                pacing.charged_requests = charged;
+                (value, carried, Some(permit))
+            }
+            Err(_) => (None, None, None),
         };
         let credential = *work.credential.lock().unwrap();
         let prev = if let Some(credential) = credential {
@@ -295,6 +370,9 @@ impl Reader {
         } else if work.limited.load(Ordering::SeqCst) {
             deferred(prev, "board preview rate limited")
         } else {
+            // The worker may finish after the awaiting refresh was dropped.
+            // Only this path accepts the observation and its response evidence.
+            *self.carried.lock().unwrap() = carried;
             observed(result, prev, at)
         }
     }
@@ -313,6 +391,8 @@ impl Reader {
             consecutive_failures: pacing.failures,
             rate_limit: pacing.limit.clone(),
             requests: pacing.requests,
+            network_sends: pacing.network_sends,
+            charged_requests: pacing.charged_requests,
         }
     }
 }
@@ -351,11 +431,98 @@ struct Direct {
     runtime: tokio::runtime::Handle,
     deadline: Instant,
     requests: Cell<usize>,
+    checks: Cell<usize>,
     secrets: Arc<Mutex<Vec<String>>>,
     work: Arc<Work>,
 }
 
+/// Pin the first credential a preview reads; any other one ends the preview.
+fn pin(
+    work: &Work,
+    reader: &Reader,
+    secrets: &Mutex<Vec<String>>,
+    token: &str,
+) -> Result<[u8; 32]> {
+    let digest = Sha256::digest(token.as_bytes()).into();
+    {
+        let mut credential = work.credential.lock().unwrap();
+        if credential.is_none() {
+            *credential = Some(digest);
+            if *reader.credential.lock().unwrap() != Some(digest) {
+                // Success age and fallback evidence belong to the
+                // prior credential, not merely to this board config.
+                reader.pacing.lock().unwrap().last_success = None;
+            }
+        }
+    }
+    let mut secrets = secrets.lock().unwrap();
+    // A single preview must not combine visibility scopes from different
+    // credentials. Still reread the source each time, so rotation/revocation
+    // is not hidden by a pinned token.
+    if secrets.first().is_some_and(|first| first != token) {
+        work.credential_changed.store(true, Ordering::SeqCst);
+        bail!("preview credential changed");
+    }
+    if secrets.is_empty() {
+        secrets.push(token.to_owned());
+    }
+    Ok(digest)
+}
+
 impl Direct {
+    /// Run `future` on the runtime within `timeout`, cancellable by the
+    /// refresh's drop. Serialize task registration with cancellation; no late
+    /// detached spawn.
+    fn block<T: Send + 'static>(
+        &self,
+        timeout: Duration,
+        future: impl std::future::Future<Output = Result<T>> + Send + 'static,
+    ) -> Result<T> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let mut active = self.work.request.lock().unwrap();
+        ensure!(
+            !self.work.cancelled.load(Ordering::SeqCst),
+            "preview cancelled"
+        );
+        let task = self.runtime.spawn(async move {
+            let result = tokio::time::timeout(timeout, future)
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("forge read timed out")));
+            let _ = tx.send(result);
+        });
+        *active = Some(task.abort_handle());
+        drop(active);
+        let result = rx.recv_timeout(timeout + Duration::from_secs(1));
+        // Also cancel if the synchronous waiter times out before the async task.
+        task.abort();
+        result.context("forge read timed out")?
+    }
+
+    /// Reread the credential source and check it is the one this preview
+    /// pinned, returning its fingerprint. Within the request bounds; an
+    /// unreadable or changed credential invalidates the preview.
+    fn verify(&self) -> Result<[u8; 32]> {
+        ensure!(
+            !self.work.credential_changed.load(Ordering::SeqCst),
+            "preview credential changed"
+        );
+        ensure!(
+            self.checks.get() < MAX_CONTEXT_CHECKS && Instant::now() < self.deadline,
+            "board credential check bound exhausted"
+        );
+        self.checks.set(self.checks.get() + 1);
+        let timeout = REQUEST_TIMEOUT.min(self.deadline.saturating_duration_since(Instant::now()));
+        let (reader, work) = (self.reader.clone(), self.work.clone());
+        let token = self.block(timeout, async move {
+            preview_token(&work, reader.token.token()).await
+        });
+        if token.is_err() {
+            // A timed-out wait has not verified the identity either.
+            self.work.credential_changed.store(true, Ordering::SeqCst);
+        }
+        pin(&self.work, &self.reader, &self.secrets, &token?)
+    }
+
     fn request(
         &self,
         url: &str,
@@ -387,161 +554,117 @@ impl Direct {
         let work = self.work.clone();
         let secrets = self.secrets.clone();
         let validator = validator.map(|(k, v)| (k.to_owned(), v.to_owned()));
-        let (tx, rx) = mpsc::sync_channel(1);
-        // Serialize task registration with cancellation; no late detached spawn.
-        let mut active = self.work.request.lock().unwrap();
-        ensure!(
-            !self.work.cancelled.load(Ordering::SeqCst),
-            "preview cancelled"
-        );
-        let task = self.runtime.spawn(async move {
-            let result = tokio::time::timeout(timeout, async {
-                let token = preview_token(&work, reader.token.token()).await?;
-                {
-                    let mut credential = work.credential.lock().unwrap();
-                    if credential.is_none() {
-                        let digest = Sha256::digest(token.as_bytes()).into();
-                        *credential = Some(digest);
-                        if *reader.credential.lock().unwrap() != Some(digest) {
-                            // Success age and fallback evidence belong to the
-                            // prior credential, not merely to this board config.
-                            reader.pacing.lock().unwrap().last_success = None;
-                        }
-                    }
-                }
-                {
-                    let mut secrets = secrets.lock().unwrap();
-                    // A single preview must not combine visibility scopes from
-                    // different credentials. Still reread the source each time,
-                    // so rotation/revocation is not hidden by a pinned token.
-                    if secrets.first().is_some_and(|first| first != &token) {
-                        work.credential_changed.store(true, Ordering::SeqCst);
-                        bail!("preview credential changed");
-                    }
-                    if secrets.is_empty() {
-                        secrets.push(token.clone());
-                    }
-                }
-                let is_query = query.is_some();
-                let mut req = match query {
-                    Some(query) => reader.http.post(url).json(&query),
-                    None => reader.http.get(url),
-                }
-                .bearer_auth(&token)
-                .header("User-Agent", "control-app")
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28");
-                if let Some((key, value)) = validator {
-                    ensure!(
-                        ["if-none-match", "if-modified-since"]
-                            .contains(&key.to_ascii_lowercase().as_str()),
-                        "validator refused"
-                    );
-                    req = req.header(key, value);
-                }
-                let mut response = req
-                    .send()
-                    .await
-                    .map_err(|_| anyhow::anyhow!("forge request failed"))?;
-                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-                    // An unchanged token can have been revoked at the forge.
-                    // Reject all evidence before reading an untrusted error body.
-                    work.credential_changed.store(true, Ordering::SeqCst);
-                    return Err(board_forge::github::AuthenticationRequired.into());
-                }
-                let header = |key| {
-                    response
-                        .headers()
-                        .get(key)
-                        .and_then(|v| v.to_str().ok())
-                        .map(str::to_owned)
-                };
-                let mut out = RestResponse {
-                    status: response.status().as_u16(),
-                    etag: header("etag"),
-                    last_modified: header("last-modified"),
-                    link: header("link"),
-                    body: Value::Null,
-                };
-                let evidence = limit_evidence(response.headers(), std::time::SystemTime::now());
-                // A temporarily unavailable forge can ask us to wait even when
-                // its rate budget is nonzero. Stop this preview and later ticks
-                // through the same bounded cooldown, before reading its body.
-                let limited = out.status == 429
-                    || (out.status == 503 && evidence.retry_after_seconds.is_some())
-                    || (out.status == 403
-                        && (response
-                            .headers()
-                            .get("x-ratelimit-remaining")
-                            .is_some_and(|v| v == "0")
-                            || response.headers().contains_key("retry-after")));
-                let exhausted = response
+        self.block(timeout, async move {
+            let token = preview_token(&work, reader.token.token()).await?;
+            pin(&work, &reader, &secrets, &token)?;
+            let is_query = query.is_some();
+            let mut req = match query {
+                Some(query) => reader.http.post(url).json(&query),
+                None => reader.http.get(url),
+            }
+            .bearer_auth(&token)
+            .header("User-Agent", "control-app")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+            if let Some((key, value)) = validator {
+                ensure!(
+                    ["if-none-match", "if-modified-since"]
+                        .contains(&key.to_ascii_lowercase().as_str()),
+                    "validator refused"
+                );
+                req = req.header(key, value);
+            }
+            work.sends.fetch_add(1, Ordering::SeqCst);
+            let mut response = req
+                .send()
+                .await
+                .map_err(|_| anyhow::anyhow!("forge request failed"))?;
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                // An unchanged token can have been revoked at the forge.
+                // Reject all evidence before reading an untrusted error body.
+                work.credential_changed.store(true, Ordering::SeqCst);
+                return Err(board_forge::github::AuthenticationRequired.into());
+            }
+            let header = |key| {
+                response
                     .headers()
-                    .get("x-ratelimit-remaining")
-                    .is_some_and(|v| v == "0");
-                if limited || exhausted {
+                    .get(key)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned)
+            };
+            let mut out = RestResponse {
+                status: response.status().as_u16(),
+                etag: header("etag"),
+                last_modified: header("last-modified"),
+                link: header("link"),
+                body: Value::Null,
+            };
+            let evidence = limit_evidence(response.headers(), std::time::SystemTime::now());
+            // A temporarily unavailable forge can ask us to wait even when
+            // its rate budget is nonzero. Stop this preview and later ticks
+            // through the same bounded cooldown, before reading its body.
+            let limited = out.status == 429
+                || (out.status == 503 && evidence.retry_after_seconds.is_some())
+                || (out.status == 403
+                    && (response
+                        .headers()
+                        .get("x-ratelimit-remaining")
+                        .is_some_and(|v| v == "0")
+                        || response.headers().contains_key("retry-after")));
+            let exhausted = response
+                .headers()
+                .get("x-ratelimit-remaining")
+                .is_some_and(|v| v == "0");
+            if limited || exhausted {
+                work.limited.store(true, Ordering::SeqCst);
+                let wait = retry_wait(&evidence, OffsetDateTime::now_utc().unix_timestamp());
+                pacing.lock().unwrap().limited(evidence.clone(), wait);
+            }
+            let mut body = Vec::new();
+            // Header-classified refusals need no body evidence. A stalled
+            // error stream must not hold the preview until its timeout or
+            // turn a known throttle into a generic body-read failure.
+            if !limited {
+                while let Some(chunk) = response
+                    .chunk()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("forge body failed"))?
+                {
+                    ensure!(body.len() + chunk.len() <= MAX_BODY, "forge body too large");
+                    body.extend_from_slice(&chunk);
+                }
+            }
+            drop(response);
+            // The last response has no subsequent request to detect a
+            // rotation. Recheck before accepting its evidence, within the
+            // same request timeout (including token acquisition).
+            let current = preview_token(&work, reader.token.token()).await?;
+            if current != token {
+                work.credential_changed.store(true, Ordering::SeqCst);
+                bail!("preview credential changed");
+            }
+            if (200..300).contains(&out.status) {
+                out.body = serde_json::from_slice(&body).context("invalid forge JSON")?;
+            } else {
+                out.body = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            }
+            let message = out.body["message"]
+                .as_str()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if limited
+                || (out.status == 403 && message.contains("rate limit"))
+                || (is_query && query_limited(&out.body))
+            {
+                if !limited && !exhausted {
                     work.limited.store(true, Ordering::SeqCst);
                     let wait = retry_wait(&evidence, OffsetDateTime::now_utc().unix_timestamp());
-                    pacing.lock().unwrap().limited(evidence.clone(), wait);
+                    pacing.lock().unwrap().limited(evidence, wait);
                 }
-                let mut body = Vec::new();
-                // Header-classified refusals need no body evidence. A stalled
-                // error stream must not hold the preview until its timeout or
-                // turn a known throttle into a generic body-read failure.
-                if !limited {
-                    while let Some(chunk) = response
-                        .chunk()
-                        .await
-                        .map_err(|_| anyhow::anyhow!("forge body failed"))?
-                    {
-                        ensure!(body.len() + chunk.len() <= MAX_BODY, "forge body too large");
-                        body.extend_from_slice(&chunk);
-                    }
-                }
-                drop(response);
-                // The last response has no subsequent request to detect a
-                // rotation. Recheck before accepting its evidence, within the
-                // same request timeout (including token acquisition).
-                let current = preview_token(&work, reader.token.token()).await?;
-                if current != token {
-                    work.credential_changed.store(true, Ordering::SeqCst);
-                    bail!("preview credential changed");
-                }
-                if (200..300).contains(&out.status) {
-                    out.body = serde_json::from_slice(&body).context("invalid forge JSON")?;
-                } else {
-                    out.body = serde_json::from_slice(&body).unwrap_or(Value::Null);
-                }
-                let message = out.body["message"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if limited
-                    || (out.status == 403 && message.contains("rate limit"))
-                    || (is_query && query_limited(&out.body))
-                {
-                    if !limited && !exhausted {
-                        work.limited.store(true, Ordering::SeqCst);
-                        let wait =
-                            retry_wait(&evidence, OffsetDateTime::now_utc().unix_timestamp());
-                        pacing.lock().unwrap().limited(evidence, wait);
-                    }
-                    return Err(
-                        board_forge::github::RateLimited("forge rate limited".into()).into(),
-                    );
-                }
-                Ok(out)
-            })
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("forge read timed out")));
-            let _ = tx.send(result);
-        });
-        *active = Some(task.abort_handle());
-        drop(active);
-        let result = rx.recv_timeout(timeout + Duration::from_secs(1));
-        // Also cancel if the synchronous waiter times out before the async task.
-        task.abort();
-        result.context("forge read timed out")?
+                return Err(board_forge::github::RateLimited("forge rate limited".into()).into());
+            }
+            Ok(out)
+        })
     }
 
     fn admit(&self) -> Result<()> {
@@ -566,6 +689,24 @@ impl Direct {
 }
 
 impl Rest for Direct {
+    fn network_requests(&self) -> Option<usize> {
+        Some(self.work.sends.load(Ordering::SeqCst))
+    }
+
+    /// A digest of the pinned credential's fingerprint, never the credential.
+    /// Every call rereads the source, so a cache hit that sends nothing is
+    /// still bound to the credential every request of this preview uses.
+    fn cache_context(&self) -> Option<String> {
+        let digest = self.verify().ok()?;
+        let context = Sha256::new()
+            .chain_update(CONTEXT_DOMAIN)
+            .chain_update(board_forge::github::API_ROOT)
+            .chain_update(b"\0")
+            .chain_update(digest)
+            .finalize();
+        Some(format!("{context:x}"))
+    }
+
     fn get(&self, url: &str, validator: Option<(&str, &str)>) -> Result<RestResponse> {
         read_response(self.request(url, None, validator)?)
     }
@@ -928,7 +1069,18 @@ mod tests {
                 .unwrap();
             }
         });
-        let reader = reader(Some(root), TokenSource::Fixed("fixture".into()));
+        let dir = tempfile::tempdir().unwrap();
+        let reader = gated(
+            reader(Some(root), TokenSource::Fixed("fixture".into())),
+            dir.path(),
+        );
+        *reader.carried.lock().unwrap() = Carried::new(
+            String::new(),
+            board_forge::poll::State {
+                response_scope: Some("fixture-scope".into()),
+                ..Default::default()
+            },
+        );
         let task = tokio::spawn({
             let reader = reader.clone();
             async move { reader.refresh(None, AT).await }
@@ -959,6 +1111,10 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(reader.status().last_success_age_seconds, None);
+        assert!(
+            reader.carried.lock().unwrap().is_none(),
+            "a cancelled refresh commits no state"
+        );
         drop(permit);
         server.abort();
     }
@@ -1112,6 +1268,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preview_config_rejects_local_status_ledgers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.json");
+        let ledger = dir.path().join("status.fifo");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &ledger,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            0,
+        )
+        .unwrap();
+        let token = Arc::new(TokenSource::Fixed("fixture".into()));
+        let mut config: Value = serde_json::from_str(&config()).unwrap();
+        config["livingStatus"] = ledger.to_str().unwrap().into();
+        for gated in [false, true] {
+            if gated {
+                config["state"] = "pass-state.json".into();
+            }
+            tokio::fs::write(&path, config.to_string()).await.unwrap();
+            let result =
+                tokio::time::timeout(Duration::from_secs(2), Reader::new(&path, token.clone()))
+                    .await
+                    .expect("preview admission must not wait for a FIFO writer");
+            assert_eq!(
+                result.err().expect("ledger must be rejected").to_string(),
+                "service preview does not support livingStatus"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn config_file_size_boundary() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("board.json");
@@ -1143,11 +1331,13 @@ mod tests {
             token: Arc::new(token),
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
                 .build()
                 .unwrap(),
             private: Vec::new(),
             pacing: Default::default(),
             credential: Default::default(),
+            carried: Default::default(),
             active: Arc::new(tokio::sync::Semaphore::new(1)),
             api_root: root,
         }
@@ -1159,6 +1349,7 @@ mod tests {
             runtime: tokio::runtime::Handle::current(),
             deadline: Instant::now() + PASS_TIMEOUT,
             requests: Cell::new(0),
+            checks: Cell::new(0),
             secrets: Arc::new(Mutex::new(Vec::new())),
             work: Default::default(),
         }
@@ -1216,6 +1407,10 @@ mod tests {
         rotate_at: Arc<Mutex<Option<usize>>>,
         remove_token: Arc<Mutex<Option<(usize, std::path::PathBuf)>>>,
         reject_at: Arc<Mutex<Option<usize>>>,
+        // REST validators received, and the 304s answered to them.
+        validators: Arc<Mutex<Vec<String>>>,
+        revalidated: Arc<AtomicUsize>,
+        fail: Arc<AtomicBool>,
     }
 
     async fn fake(
@@ -1223,7 +1418,8 @@ mod tests {
         uri: axum::extract::OriginalUri,
         headers: HeaderMap,
         body: String,
-    ) -> Result<Json<Value>, (axum::http::StatusCode, &'static str)> {
+    ) -> axum::response::Response {
+        use axum::{http::StatusCode, response::IntoResponse};
         let call = fake.calls.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let mut remove = fake.remove_token.lock().unwrap();
@@ -1236,7 +1432,10 @@ mod tests {
             .unwrap()
             .push(headers["authorization"].to_str().unwrap().to_owned());
         if *fake.reject_at.lock().unwrap() == Some(call) {
-            return Err((axum::http::StatusCode::UNAUTHORIZED, "not JSON"));
+            return (StatusCode::UNAUTHORIZED, "not JSON").into_response();
+        }
+        if fake.fail.load(Ordering::SeqCst) {
+            return (StatusCode::BAD_GATEWAY, "upstream failure").into_response();
         }
         if fake.rotate_at.lock().unwrap().is_none_or(|at| at == call)
             && let Some(path) = fake.rotate_token.lock().unwrap().take()
@@ -1245,16 +1444,28 @@ mod tests {
         }
         let query: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
         if query.is_null() {
-            if uri.path().contains("/actions/") {
-                return Ok(Json(json!({"total_count":0, "workflow_runs":[]})));
-            }
-            let usage = fake.usage.lock().unwrap().clone();
-            return Ok(Json(match usage {
-                Some(usage) => {
-                    json!([{"user":{"login":"robot"}, "body": format!("<!-- bot-usage v1 -->\n```json\n{usage}\n```")}])
+            let body = if uri.path().contains("/actions/") {
+                json!({"total_count":0, "workflow_runs":[]})
+            } else {
+                match fake.usage.lock().unwrap().clone() {
+                    Some(usage) => {
+                        json!([{"user":{"login":"robot"}, "body": format!("<!-- bot-usage v1 -->\n```json\n{usage}\n```")}])
+                    }
+                    None => json!([]),
                 }
-                None => json!([]),
-            }));
+            };
+            // A content validator: the same for every credential, so only the
+            // service's scoping can keep one identity's from another's reads.
+            let etag = format!("\"{:x}\"", Sha256::digest(body.to_string()));
+            if let Some(validator) = headers.get("if-none-match") {
+                let validator = validator.to_str().unwrap().to_owned();
+                fake.validators.lock().unwrap().push(validator.clone());
+                if validator == etag {
+                    fake.revalidated.fetch_add(1, Ordering::SeqCst);
+                    return (StatusCode::NOT_MODIFIED, [("etag", etag)]).into_response();
+                }
+            }
+            return ([("etag", etag)], Json(body)).into_response();
         }
         let query = query["query"].as_str().unwrap_or("");
         let data = if query.contains("fragment Board") {
@@ -1277,7 +1488,7 @@ mod tests {
         } else {
             json!({"node":{"items":{"nodes":fake.items.lock().unwrap().clone(), "pageInfo":{"hasNextPage":fake.partial.load(Ordering::SeqCst), "endCursor":null}}}})
         };
-        Ok(Json(json!({"data":data})))
+        Json(json!({"data":data})).into_response()
     }
 
     async fn serve(fake_state: Fake) -> String {
@@ -1762,6 +1973,347 @@ mod tests {
             assert_eq!(recovered.items, previous.items);
             assert_eq!(reader.status().consecutive_failures, 0);
         }
+    }
+
+    const NOT_STATE: &str = "not a pass state file";
+
+    /// The board config with board-forge's state gate, naming a file that is
+    /// not a state file: reading it would fail the preview.
+    fn gated(mut reader: Reader, dir: &Path) -> Reader {
+        std::fs::write(dir.join("pass-state.json"), NOT_STATE).unwrap();
+        let mut config: Value = serde_json::from_str(&reader.config).unwrap();
+        config["usage"].as_object_mut().unwrap().remove("url");
+        config["state"] = dir.join("pass-state.json").to_str().unwrap().into();
+        reader.config = Arc::new(config.to_string());
+        reader
+    }
+
+    fn untouched(dir: &Path) {
+        assert_eq!(
+            std::fs::read_to_string(dir.join("pass-state.json")).unwrap(),
+            NOT_STATE
+        );
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["pass-state.json", "token"], "no state is written");
+    }
+
+    /// One refresh: what it published, its sends and the validators it sent.
+    async fn counted(
+        reader: &Reader,
+        fake: &Fake,
+        prev: Option<&Section<Value>>,
+    ) -> (Section<Value>, usize, usize) {
+        let (sends, validators) = (
+            fake.calls.load(Ordering::SeqCst),
+            fake.validators.lock().unwrap().len(),
+        );
+        reader.pacing.lock().unwrap().until = None;
+        let section = reader.refresh(prev, AT).await;
+        (
+            section,
+            fake.calls.load(Ordering::SeqCst) - sends,
+            fake.validators.lock().unwrap().len() - validators,
+        )
+    }
+
+    #[test]
+    fn warm_input_carries_only_scoped_responses() {
+        let responses = board_forge::poll::State {
+            response_scope: Some("fixture-scope".into()),
+            responses: BTreeMap::from([("poll-read".into(), json!({"etag":"one"}))]),
+            pass_responses: BTreeMap::from([("pass-read".into(), json!({"etag":"two"}))]),
+            ..Default::default()
+        };
+        // Simulate a budgeted preview that returned progress along with its
+        // response evidence. A warm preview must start from the cold positions.
+        let output = board_forge::poll::State {
+            scan_cursor: Some("example/repo#1".into()),
+            follow_cursor: Some("example/repo".into()),
+            holds_pending: vec!["example/repo#2".into()],
+            ..responses.clone()
+        };
+        let carried = Carried::new("fixture-context".into(), output).unwrap();
+        assert_eq!(carried.into_state(), responses);
+        assert!(Carried::new("fixture-context".into(), Default::default()).is_none());
+    }
+
+    #[tokio::test]
+    async fn warm_previews_revalidate_responses_without_replaying_a_snapshot() {
+        let fake = Fake::default();
+        *fake.usage.lock().unwrap() = Some(json!({"schema":"bot-usage/v1", "updated_at":AT,
+            "pools":{"test":{"observed_at":AT,"used_percent":10,"allowed_percent":50,"hold":false}}}));
+        let root = serve(fake.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("token"), "fixture-one").unwrap();
+        let token = TokenSource::File(dir.path().join("token"));
+        let reader = gated(reader(Some(root.clone()), token), dir.path());
+
+        let (cold, cold_sends, validators) = counted(&reader, &fake, None).await;
+        assert_eq!(cold.items[0]["failures"], 0, "{cold:?}");
+        assert_eq!(validators, 0);
+        let status = reader.status();
+        assert_eq!(status.network_sends, cold_sends);
+        let cold_charged = status.charged_requests.unwrap();
+        assert!(reader.carried.lock().unwrap().is_some());
+
+        let (warm, warm_sends, validators) = counted(&reader, &fake, Some(&cold)).await;
+        let status = reader.status();
+        let warm_charged = status.charged_requests.unwrap();
+        eprintln!(
+            "gated preview: cold {cold_sends} sends/{cold_charged} charged; warm {warm_sends} sends/{warm_charged} charged, {} 304s",
+            fake.revalidated.load(Ordering::SeqCst)
+        );
+        assert_eq!(warm.items, cold.items, "reuse changes no decision");
+        assert_eq!(warm.read_at, cold.read_at);
+        assert!(validators > 0);
+        assert_eq!(fake.revalidated.load(Ordering::SeqCst), validators);
+        // A 304 still costs a send; board-forge refunds it from its budget.
+        assert_eq!(status.network_sends, warm_sends);
+        assert_eq!(warm_sends, cold_sends);
+        assert_eq!(warm_charged, cold_charged - validators);
+        // The counts service/README.md quotes.
+        assert_eq!(
+            (cold_sends, cold_charged, warm_charged, validators),
+            (9, 9, 4, 5)
+        );
+
+        // On this board, losing the response index makes revalidation cold.
+        *reader.carried.lock().unwrap() = None;
+        let (lost, sends, validators) = counted(&reader, &fake, Some(&warm)).await;
+        assert_eq!(
+            (lost.items.as_slice(), sends, validators),
+            (&cold.items[..], cold_sends, 0)
+        );
+        assert_eq!(reader.status().charged_requests, Some(cold_charged));
+        let restarted = gated(
+            self::reader(Some(root), TokenSource::File(dir.path().join("token"))),
+            dir.path(),
+        );
+        let (fresh, sends, validators) = counted(&restarted, &fake, None).await;
+        assert_eq!(
+            (fresh.items.as_slice(), sends, validators),
+            (&cold.items[..], cold_sends, 0)
+        );
+        untouched(dir.path());
+    }
+
+    #[tokio::test]
+    async fn dropping_completed_worker_result_does_not_accept_responses() {
+        use std::future::Future;
+        use std::task::{Context, Wake, Waker};
+
+        struct Ready(tokio::sync::Notify);
+
+        impl Wake for Ready {
+            fn wake(self: Arc<Self>) {
+                self.0.notify_one();
+            }
+        }
+
+        let fake = Fake::default();
+        let root = serve(fake.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let reader = gated(
+            reader(Some(root), TokenSource::Fixed("fixture".into())),
+            dir.path(),
+        );
+        let (first, cold_sends, _) = counted(&reader, &fake, None).await;
+        assert!(reader.carried.lock().unwrap().is_some());
+        let ready = Arc::new(Ready(tokio::sync::Notify::new()));
+        let waker = Waker::from(ready.clone());
+        let mut refresh = Box::pin(reader.refresh(Some(&first), AT));
+        assert!(
+            refresh
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        // The join handle wakes the caller with a finished result. Drop the
+        // caller before it polls again, rather than aborting an active request.
+        tokio::time::timeout(Duration::from_secs(2), ready.0.notified())
+            .await
+            .unwrap();
+        assert_eq!(reader.active.available_permits(), 0);
+        assert!(fake.revalidated.load(Ordering::SeqCst) > 0);
+        drop(refresh);
+        drop(
+            tokio::time::timeout(Duration::from_secs(2), reader.active.acquire())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        assert!(reader.carried.lock().unwrap().is_none());
+        let (_, sends, validators) = counted(&reader, &fake, Some(&first)).await;
+        assert_eq!((sends, validators), (cold_sends, 0));
+    }
+
+    #[tokio::test]
+    async fn without_the_state_gate_previews_read_directly() {
+        let fake = Fake::default();
+        let root = serve(fake.clone()).await;
+        let mut reader = reader(Some(root), TokenSource::Fixed("fixture".into()));
+        let mut config: Value = serde_json::from_str(&reader.config).unwrap();
+        config["usage"].as_object_mut().unwrap().remove("url");
+        reader.config = Arc::new(config.to_string());
+        let (first, cold_sends, _) = counted(&reader, &fake, None).await;
+        let (second, sends, validators) = counted(&reader, &fake, Some(&first)).await;
+        assert_eq!(second.items, first.items);
+        assert_eq!((sends, validators), (cold_sends, 0));
+        assert!(reader.carried.lock().unwrap().is_none());
+        assert_eq!(reader.status().network_sends, cold_sends);
+        assert_eq!(reader.status().charged_requests, Some(cold_sends));
+    }
+
+    #[tokio::test]
+    async fn credential_changes_never_reuse_old_identity_state() {
+        let fake = Fake::default();
+        let root = serve(fake.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        std::fs::write(&file, "fixture-one").unwrap();
+        let reader = gated(
+            reader(Some(root), TokenSource::File(file.clone())),
+            dir.path(),
+        );
+        let (cold, cold_sends, _) = counted(&reader, &fake, None).await;
+        assert_eq!(cold.items[0]["failures"], 0, "{cold:?}");
+
+        // Between refreshes: the new identity reads cold, then warms its own.
+        std::fs::write(&file, "fixture-two").unwrap();
+        let (rotated, sends, validators) = counted(&reader, &fake, Some(&cold)).await;
+        assert_eq!((sends, validators), (cold_sends, 0));
+        assert_eq!(rotated.items, cold.items);
+        let (_, _, validators) = counted(&reader, &fake, Some(&rotated)).await;
+        assert!(validators > 0);
+
+        // During a refresh: no decision, evidence or state survives it.
+        let before = fake.calls.load(Ordering::SeqCst);
+        *fake.rotate_at.lock().unwrap() = Some(before + 1);
+        *fake.rotate_token.lock().unwrap() = Some(file.clone());
+        let (changed, sends, _) = counted(&reader, &fake, Some(&rotated)).await;
+        assert_eq!(sends, 1);
+        assert!(changed.items.is_empty(), "{changed:?}");
+        assert_eq!(
+            changed.error.as_deref(),
+            Some("board preview credential changed")
+        );
+        assert!(reader.carried.lock().unwrap().is_none());
+        assert_eq!(reader.status().charged_requests, None);
+        assert_eq!(reader.status().network_sends, 1);
+        let (recovered, sends, validators) = counted(&reader, &fake, Some(&changed)).await;
+        assert_eq!((sends, validators), (cold_sends, 0));
+        assert_eq!(recovered.items, cold.items);
+        assert!(
+            fake.auth
+                .lock()
+                .unwrap()
+                .iter()
+                .skip(before + 1)
+                .all(|auth| auth == "Bearer fixture-rotated")
+        );
+
+        // An unreadable credential before any send also drops the state.
+        assert!(reader.carried.lock().unwrap().is_some());
+        std::fs::remove_file(&file).unwrap();
+        let (unreadable, sends, _) = counted(&reader, &fake, Some(&recovered)).await;
+        assert_eq!(sends, 0);
+        assert!(unreadable.items.is_empty());
+        assert!(reader.carried.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn partial_and_failed_refreshes_keep_stale_semantics() {
+        let fake = Fake::default();
+        let root = serve(fake.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("token"), "fixture").unwrap();
+        let token = TokenSource::File(dir.path().join("token"));
+        let reader = gated(reader(Some(root), token), dir.path());
+        let (cold, cold_sends, _) = counted(&reader, &fake, None).await;
+
+        fake.partial.store(true, Ordering::SeqCst);
+        let (partial, _, _) = counted(&reader, &fake, Some(&cold)).await;
+        assert!(partial.items[0]["failures"].as_u64().unwrap() > 0);
+        assert!(partial.error.is_some());
+        assert!(reader.carried.lock().unwrap().is_some());
+        fake.partial.store(false, Ordering::SeqCst);
+
+        fake.fail.store(true, Ordering::SeqCst);
+        let (failed, sends, _) = counted(&reader, &fake, Some(&partial)).await;
+        // board-forge reports upstream failures as a partial observation.
+        assert!(!failed.complete);
+        assert_eq!(
+            failed.error.as_deref(),
+            Some("board preview has incomplete reads")
+        );
+        assert!(failed.items[0]["failures"].as_u64().unwrap() > 0);
+        let status = reader.status();
+        assert_eq!(
+            (status.network_sends, status.charged_requests),
+            (sends, Some(1))
+        );
+        assert!(reader.carried.lock().unwrap().is_some());
+        fake.fail.store(false, Ordering::SeqCst);
+        *reader.pacing.lock().unwrap() = Pacing::default();
+        let (recovered, _, validators) = counted(&reader, &fake, Some(&failed)).await;
+        assert_eq!(recovered.items, cold.items);
+        assert!(validators > 0, "the returned state stays warm");
+
+        // A preview that returns nothing commits nothing: the next is cold.
+        let mut invalid = reader.clone();
+        invalid.config = Arc::new("{}".into());
+        let (stale, sends, _) = counted(&invalid, &fake, Some(&recovered)).await;
+        assert_eq!(sends, 0);
+        assert_eq!(stale.items, recovered.items);
+        assert_eq!(stale.read_at, recovered.read_at);
+        assert_eq!(stale.error.as_deref(), Some("board preview unavailable"));
+        assert!(reader.carried.lock().unwrap().is_none());
+        let (_, sends, validators) = counted(&reader, &fake, Some(&stale)).await;
+        assert_eq!((sends, validators), (cold_sends, 0));
+        untouched(dir.path());
+    }
+
+    #[tokio::test]
+    async fn context_checks_bind_cache_hits_to_the_pinned_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        std::fs::write(&file, "fixture-one").unwrap();
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let _guard = runtime.enter();
+            let fixed = direct(reader(None, TokenSource::Fixed("fixture".into())));
+            let context = fixed.cache_context().unwrap();
+            assert_eq!(fixed.cache_context().unwrap(), context);
+            assert!(!context.contains("fixture"));
+            fixed.checks.set(MAX_CONTEXT_CHECKS);
+            assert!(fixed.cache_context().is_none(), "checks are bounded");
+
+            // No send happens here: the check alone rereads the source.
+            let client = direct(reader(None, TokenSource::File(file.clone())));
+            let one = client.cache_context().unwrap();
+            assert_ne!(one, context);
+            std::fs::write(&file, "fixture-two").unwrap();
+            assert!(client.cache_context().is_none());
+            assert!(client.work.credential_changed.load(Ordering::SeqCst));
+            std::fs::write(&file, "fixture-one").unwrap();
+            assert!(
+                client.cache_context().is_none(),
+                "switching back is not enough"
+            );
+
+            let client = direct(reader(None, TokenSource::File(file.clone())));
+            assert_eq!(client.cache_context().unwrap(), one);
+            std::fs::remove_file(&file).unwrap();
+            assert!(client.cache_context().is_none());
+            assert!(client.work.credential_changed.load(Ordering::SeqCst));
+            assert_eq!(client.network_requests(), Some(0));
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
