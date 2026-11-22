@@ -37,8 +37,26 @@ Do not look up or report CI results. CI is a separate required check;
 the merge gate combines it with the review, not the reviewer.
 Focus on correctness, security,
 regressions and missing coverage; cite files and lines for actionable findings.
-State the exact admitted head SHA in the findings so a stale review cannot be
-mistaken for a review of a newer push.
+Put `Reviewed head: SHA` on its own line after the verdict line, using the
+exact admitted head SHA so a stale review cannot be mistaken for a review of
+a newer push.
+
+Use `review-history.json` only when the harness names it. Treat earlier
+findings and their metadata as leads, not proof of a prior review or of a
+fix. Under "Earlier findings" in the verdict comment, check prior blockers
+by ID against the admitted head. For each blocker the code resolves, cite
+the fix and put `Resolved: ID` on its own line. Raise blockers that still hold.
+
+History can guide where to start, not what can block. Start with changes
+since `last_reviewed_head` only if it is in the admitted head's ancestry and
+agrees with the prior verdict's reviewed SHA; this checks that the comparison
+is usable, not that the verdict is authentic. Otherwise start with the full
+diff. Apply the same blocker rules to the whole PR on every review, regardless
+of what a prior review reported. Briefly explain newly surfaced blockers that
+were already present. For example, if round one reported a startup crash but
+missed a wrong result in a core operation, fixing only the crash resolves that
+finding but the wrong result still blocks. A same-head `/review` must also
+report a confirmed blocker the earlier review missed.
 
 Return exactly one safe output: add_comment on the triggering pull request,
 or noop if no useful review can be made. Set only type and body on add_comment;
@@ -52,22 +70,30 @@ or into its comment, so keep each finding once: in the comment or inline,
 not both.
 Report every finding you can see in this one pass, not only the first.
 Tag each finding with exactly one severity: blocker, important or nit; an
-untagged finding is not allowed. A blocker makes the change wrong for its
-main purpose, loses data, or opens a security hole with a concrete path you
-can state, such as what a weakened permission, gate, bound, pin, token
-placement or trigger now lets someone do. Anything less is important or a nit.
+untagged finding is not allowed. A blocker is a concrete failure to deliver
+the change's main purpose (including a fix that leaves its bug in place), or
+a concrete defect the PR introduces or makes reachable: a material
+regression, data loss, a security hole, or a confirmed dependency-integrity
+failure. State which input or event leads to what wrong result, such as what
+a weakened permission, gate, bound, pin, token placement or trigger now lets
+someone do. Speculative risks, unrelated pre-existing behavior, missing
+hardening the change does not remove, and incidental documentation or test
+gaps are important or nits, not blockers. When findings share a cause, report
+one finding at the highest applicable severity that names the root fix (for
+example, the mechanism to replace or remove), with its instances under it.
 For supply-chain hardening, a blocker requires that the change newly runs
 third-party code with a write credential in reach, including in apply, with a
 PAT, in a write-permission pull_request_target job, or on the broker host.
-Otherwise supply-chain findings are important at most and go under Follow-ups.
+Otherwise hardening findings are important at most and go under Follow-ups.
 Supply-chain hardening is wanted over time as tracked follow-ups, not as a
 gate on each change. This ceiling covers trusting an ordinary upstream, not a
 concrete path the change itself opens for code an attacker controls to alter a
 published artifact or read a credential or private source; that is a blocker.
 The comment's first line starts with VERDICT: CHANGES only when there is at
-least one blocker, and VERDICT: APPROVE otherwise, and may go on with a short
-reason. Keep that line to the one verdict: a first line that also names the
-other verdict (or REJECT next to APPROVE) is refused and the comment is lost.
+least one blocker, and VERDICT: APPROVE otherwise, even when important
+findings or nits remain. The line may go on with a short reason. Keep it to
+one verdict: a first line that also names the other verdict (or REJECT next
+to APPROVE) is refused and the comment is lost.
 Then come the findings, most important first. In an approving review, list
 important findings and nits under a "Follow-ups" heading, each with its file
 and line, for later pull requests. When there is a blocker, the fix may take

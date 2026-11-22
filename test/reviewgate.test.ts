@@ -70,13 +70,16 @@ jobs:
 
   // A release tag, not a branch: the permissions above go to whatever the
   // ref names, and a branch would move under the gate without a review here.
-  it("calls agentic-job at a release tag", () => {
+  it("calls agentic-job at a release tag that supports review history", () => {
     const refs = [...caller.matchAll(/uses: (\S+)@(\S+)/g)];
     assert.deepEqual(
       refs.map((match) => match[1]),
       ["cgwalters-forge/agentic-job/.github/workflows/review.yml"],
     );
-    assert.match(refs[0]?.[2] ?? "", /^v\d+\.\d+\.\d+$/);
+    const release = /^v(\d+)\.(\d+)\.(\d+)$/.exec(refs[0]?.[2] ?? "");
+    assert.ok(release, "expected a release tag");
+    const [major = 0, minor = 0, patch = 0] = release.slice(1).map(Number);
+    assert.ok(major > 0 || minor > 6 || (minor === 6 && patch >= 5), "review history needs v0.6.5 or later");
   });
 
   it("the bounds admit one comment, and inline findings, on one repository only", () => {
@@ -123,5 +126,23 @@ commands = ["/review"]`,
     for (const claim of ["no person approves after you", "the merge gate for every change here"]) {
       assert.ok(!task.includes(claim), claim);
     }
+  });
+
+  it("the task blocks on concrete defects and keeps follow-ups out of the verdict", () => {
+    const task = read("workflow/review.md").replace(/\s+/g, " ");
+    assert.match(task, /introduces or makes reachable.*State which input or event leads to what wrong result/);
+    assert.match(task, /When findings share a cause, report one finding.*names the root fix/);
+    assert.match(task, /VERDICT: APPROVE otherwise, even when important findings or nits remain/);
+    assert.match(task, /important findings and nits under a "Follow-ups" heading/);
+  });
+
+  it("history orders review work without narrowing which current defects block", () => {
+    const task = read("workflow/review.md").replace(/\s+/g, " ");
+    assert.match(task, /History can guide where to start, not what can block/);
+    assert.match(task, /Apply the same blocker rules to the whole PR on every review/);
+    assert.match(task, /if round one reported a startup crash but missed a wrong result in a core operation, fixing only the crash resolves that finding but the wrong result still blocks/);
+    assert.match(task, /A same-head `\/review` must also report a confirmed blocker the earlier review missed/);
+    assert.match(task, /put `Resolved: ID` on its own line/);
+    assert.doesNotMatch(task, /block only on defects introduced or made reachable since that head/);
   });
 });
