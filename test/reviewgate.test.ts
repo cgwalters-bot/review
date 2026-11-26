@@ -124,4 +124,21 @@ commands = ["/review"]`,
       assert.ok(!task.includes(claim), claim);
     }
   });
+
+  it("blocks concrete regressions and complete misses, not follow-ups", () => {
+    const task = read("workflow/review.md").replace(/\s+/g, " ");
+    for (const contract of [
+      "this diff introduces or makes reachable that makes behavior worse than the base",
+      "security hole, data loss or a confirmed dependency-integrity failure this diff introduces or makes reachable, even when the faulty code is unchanged; those always block",
+      "a change that does not do its main stated purpose at all",
+      "Partial delivery is a follow-up",
+      "A dependency or pin bump that fixes something and regresses nothing is approved",
+      "edge cases in an off-by-default option this PR adds, which nothing in it enables, are follow-ups",
+      "A change to an existing option, enabled or not, keeps the regression bar",
+      "VERDICT: APPROVE otherwise, also when important findings and nits remain",
+    ]) {
+      assert.ok(task.includes(contract), contract);
+    }
+    assert.doesNotMatch(task, /a blocker requires that the change newly runs third-party code/);
+  });
 });
